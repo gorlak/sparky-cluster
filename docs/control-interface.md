@@ -1,8 +1,9 @@
 # Control interface (admin panel + metrics) — design
 
-**Status:** Planning — not yet built. Groundwork already in place: the `deploy`
-automation user, Caddy reverse proxy, the landing page, and the
-`ansible-runner`-from-`User=deploy` model.
+**Status:** P1 (control panel — read-only status at `/admin`) and P2 (metrics:
+node + GPU exporters, Prometheus, Grafana at `metrics.{{ web_domain }}`) are
+**built and deployed**. P3 (control actions via `ansible-runner`) is the
+remaining phase.
 
 This is the "Dashboard" item from the README's Future Work. It has two halves: a
 small custom **control panel** that drives Ansible, and a **Grafana metrics**
@@ -73,10 +74,12 @@ covers the new hosts — no new DNS.
 
 ## Phases (read-only → destructive last)
 
-1. **P1 — status only:** `control-panel` role + service + `/admin` route + landing
-   link + a status view (services up/down, API health). No actions. Lowest risk;
-   proves the `User=deploy` service + routing.
-2. **P2 — metrics:** exporters + Prometheus + Grafana + dashboards + `metrics.`.
+1. **P1 — status only (DONE):** `control-panel` role + service + `/admin` route +
+   landing link + a status view (services up/down, API health). No actions.
+   Lowest risk; proves the `User=deploy` service + routing.
+2. **P2 — metrics (DONE):** exporters + Prometheus + Grafana + dashboards +
+   `metrics.`. Grafana lands on the cluster dashboard by default; anonymous
+   Viewer; GB10 GPU-exporter `--query-field-names` workaround in place.
 3. **P3 — control actions:** deploy / teardown / restart via `ansible-runner`
    (detached, locked) + confirm modals + live run log.
 
@@ -96,3 +99,8 @@ covers the new hosts — no new DNS.
 - **2026-05-24** — initial design: split control/metrics; control app on-host as
   `User=deploy`; FastAPI+HTMX; auth-free behind the firewall with a built-in seam;
   confirmation modals (no type-to-confirm); phased P1 → P3.
+- **2026-05-24** — P1 (status panel) + P2 (exporters + Prometheus + Grafana)
+  built and deployed. GB10 GPU exporter needed a pinned `--query-field-names`
+  set (its `clocks_event_reasons_* [us]` fields become invalid Prometheus metric
+  names and crash-loop the container). Grafana set to land on the cluster
+  dashboard via `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`. P3 remains.

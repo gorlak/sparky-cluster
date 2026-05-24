@@ -11,6 +11,11 @@ http://chat.{{ web_domain }} {
 	reverse_proxy 127.0.0.1:{{ webui_port }}
 }
 
+# Grafana — its own hostname.
+http://metrics.{{ web_domain }} {
+	reverse_proxy 127.0.0.1:{{ grafana_port }}
+}
+
 # Landing page + control panel — catch-all for any other host on :80
 # ({{ web_domain }}, bare IP, etc.)
 :80 {

@@ -45,6 +45,9 @@ nvidia_exporter_query_fields: "utilization.gpu,temperature.gpu,power.draw,clocks
 prometheus_image: prom/prometheus:latest
 prometheus_dir: /opt/prometheus
 prometheus_port: 9090
+grafana_image: grafana/grafana:latest
+grafana_dir: /opt/grafana
+grafana_port: 3000
 
 # Open WebUI front-end (sparky, host networking, talks to vLLM on :8000).
 # Kept here (not role defaults) so teardown.yml can reach them too.
@@ -84,3 +87,6 @@ landing_services:
   - name: Admin
     url: "/admin"
     blurb: "Cluster control panel (status)"
+  - name: Metrics
+    url: "http://metrics.{{ web_domain }}"
+    blurb: "Grafana dashboards — throughput, GPU, latency"

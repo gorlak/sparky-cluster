@@ -1,0 +1,6 @@
+---
+- name: restart grafana
+  ansible.builtin.command:
+    cmd: docker restart grafana
+  changed_when: true
+  become: true

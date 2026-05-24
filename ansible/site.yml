@@ -61,3 +61,10 @@
     - role: prometheus
       tags: [metrics]
       when: enable_metrics | default(true)
+
+- name: Grafana (sparky)
+  hosts: head
+  roles:
+    - role: grafana
+      tags: [metrics]
+      when: enable_metrics | default(true)

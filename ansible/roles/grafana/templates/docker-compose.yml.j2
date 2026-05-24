@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+services:
+  grafana:
+    image: {{ grafana_image }}
+    container_name: grafana
+    network_mode: host
+    restart: always
+    environment:
+      - GF_SERVER_HTTP_PORT={{ grafana_port }}
+      - GF_SERVER_ROOT_URL=http://metrics.{{ web_domain }}/
+      # Anonymous read-only viewing (cluster is behind the firewall). Admin login
+      # still exists (default admin/admin) for editing — change it on first use.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      # Land on the cluster dashboard instead of Grafana's default home.
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/cluster.json
+    volumes:
+      - {{ grafana_dir }}/data:/var/lib/grafana
+      - {{ grafana_dir }}/provisioning:/etc/grafana/provisioning:ro
+      - {{ grafana_dir }}/dashboards:/etc/grafana/dashboards:ro

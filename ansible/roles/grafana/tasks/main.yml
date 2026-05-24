@@ -1,0 +1,82 @@
+---
+# Grafana on the head node — anonymous viewing, provisioned Prometheus datasource
+# + a starter cluster dashboard. Fronted by Caddy at metrics.{{ web_domain }}.
+
+- name: Ensure Grafana directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "0755"
+  loop:
+    - { path: "{{ grafana_dir }}", owner: root }
+    - { path: "{{ grafana_dir }}/provisioning/datasources", owner: root }
+    - { path: "{{ grafana_dir }}/provisioning/dashboards", owner: root }
+    - { path: "{{ grafana_dir }}/dashboards", owner: root }
+    # Grafana's container user is uid 472; the data dir must be writable by it.
+    - { path: "{{ grafana_dir }}/data", owner: "472" }
+  become: true
+
+- name: Provision the Prometheus datasource
+  ansible.builtin.template:
+    src: datasource.yml.j2
+    dest: "{{ grafana_dir }}/provisioning/datasources/datasource.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart grafana
+
+- name: Provision the dashboard provider
+  ansible.builtin.copy:
+    src: dashboards-provider.yml
+    dest: "{{ grafana_dir }}/provisioning/dashboards/dashboards.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart grafana
+
+- name: Install the cluster dashboard (live-reloaded by the provider)
+  ansible.builtin.copy:
+    src: cluster.json
+    dest: "{{ grafana_dir }}/dashboards/cluster.json"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Template the Grafana compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ grafana_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart grafana
+
+- name: Bring up Grafana
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: "{{ grafana_dir }}"
+  become: true
+  register: grafana_up
+  changed_when: >-
+    ('Started' in grafana_up.stderr) or ('Created' in grafana_up.stderr)
+    or ('Recreated' in grafana_up.stderr)
+
+- name: Apply provisioning changes if needed
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Grafana to be healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ grafana_port }}/api/health"
+    status_code: 200
+  register: grafana_health
+  until: grafana_health.status is defined and grafana_health.status == 200
+  retries: 20
+  delay: 3
+  changed_when: false
+  when: not ansible_check_mode

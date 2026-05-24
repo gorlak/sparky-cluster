@@ -26,12 +26,18 @@ the working tree.
 | `vllm-worker.service` | snoopy | enabled, running — headless worker (rank 1) |
 | `caddy` | sparky | Docker Compose, restart: always — reverse proxy on :80 |
 | `open-webui` | sparky | Docker Compose, restart: always — internal :8080, behind Caddy |
+| `control-panel.service` | sparky | systemd (User=deploy) — status panel on 127.0.0.1:8088, behind Caddy `/admin` |
+| `prometheus` | sparky | Docker Compose — metrics TSDB on :9090 |
+| `grafana` | sparky | Docker Compose — dashboards on :3000, behind Caddy `metrics.` |
+| `node-exporter` + `nvidia-gpu-exporter` | both | Docker Compose — system + GPU metrics (:9100 / :9835) |
 
 ### Web access
 
-Caddy fronts `:80` and routes by hostname:
+Caddy fronts `:80` and routes by hostname/path:
 - `http://sparky.flummoxed.net/` — landing page (links to services)
+- `http://sparky.flummoxed.net/admin` — cluster control panel (read-only status)
 - `http://chat.sparky.flummoxed.net/` — Open WebUI (login required)
+- `http://metrics.sparky.flummoxed.net/` — Grafana dashboards (anonymous view)
 
 This needs a **wildcard DNS record** `*.sparky.flummoxed.net → sparky's IP` (one
 record; every future service is then just a new route in the Caddyfile, no DNS
