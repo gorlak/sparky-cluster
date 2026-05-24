@@ -341,6 +341,7 @@ A new model must fit within ~108.9 GiB (0.90 × 121 GiB) per shard.
    `User=deploy` model are ready. Remaining: a `User=deploy` backend that invokes
    Ansible via `ansible-runner` and scrapes vLLM `/metrics` + node/GPU exporters,
    growing out of (and eventually replacing) the static landing page.
+   **Design:** [`docs/control-interface.md`](docs/control-interface.md).
 
 ---
 

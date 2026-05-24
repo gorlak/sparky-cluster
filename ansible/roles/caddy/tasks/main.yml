@@ -22,7 +22,7 @@
     owner: root
     group: root
     mode: "0644"
-  notify: reload caddy
+  notify: restart caddy
 
 # Static — file_server serves it live, so no reload needed on content change.
 - name: Template the landing page

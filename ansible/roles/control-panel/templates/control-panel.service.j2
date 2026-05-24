@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Cluster control panel (FastAPI status; runs as deploy)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory={{ control_panel_dir }}
+# Config via env so the app hardcodes nothing. Worker host derived from inventory.
+Environment=VLLM_API=http://127.0.0.1:8000
+Environment=WORKER_SSH=deploy@{{ hostvars[groups['worker'][0]].vllm_host_ip }}
+Environment=DEPLOY_SSH_KEY=/home/deploy/.ssh/id_ed25519
+ExecStart={{ control_panel_dir }}/venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port {{ control_panel_port }} --root-path /admin
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

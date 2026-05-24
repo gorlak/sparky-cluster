@@ -54,8 +54,17 @@ webui_default_user_role: "user"
 web_domain: sparky.flummoxed.net
 caddy_image: caddy:2
 caddy_dir: /opt/caddy
+
+# Control panel (status now; control actions later) — see docs/control-interface.md.
+# Runs on-host as User=deploy, bound to 127.0.0.1; Caddy fronts it at /admin.
+control_panel_dir: /opt/cluster/control-panel
+control_panel_port: 8088
+
 # Links shown on the landing page (sparky.flummoxed.net/).
 landing_services:
   - name: Open WebUI
     url: "http://chat.{{ web_domain }}"
     blurb: "Chat with the cluster's served model"
+  - name: Admin
+    url: "/admin"
+    blurb: "Cluster control panel (status)"

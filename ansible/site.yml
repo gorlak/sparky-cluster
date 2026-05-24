@@ -34,6 +34,13 @@
       tags: [webui]
       when: enable_open_webui | default(true)
 
+- name: Control panel (sparky)
+  hosts: head
+  roles:
+    - role: control-panel
+      tags: [control-panel]
+      when: enable_control_panel | default(true)
+
 - name: Reverse proxy + landing page (sparky)
   hosts: head
   roles:

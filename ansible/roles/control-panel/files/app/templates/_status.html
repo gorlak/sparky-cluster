@@ -1,0 +1,22 @@
+<div id="status" hx-get="{{ root }}/status" hx-trigger="every 5s" hx-swap="outerHTML">
+  <p class="api">
+    API:
+    {% if s.api_ok %}
+      <span class="ok">up</span> — serving <code>{{ s.model }}</code>
+    {% else %}
+      <span class="bad">down</span> — {{ s.model }}
+    {% endif %}
+  </p>
+  <table>
+    <thead><tr><th>Service</th><th>State</th></tr></thead>
+    <tbody>
+    {% for name, state in s.services %}
+      <tr>
+        <td>{{ name }}</td>
+        <td><span class="{{ 'ok' if state in s.ok_states else 'bad' }}">{{ state }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="ts">auto-refreshes every 5s</p>
+</div>

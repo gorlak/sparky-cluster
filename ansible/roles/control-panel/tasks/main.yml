@@ -1,0 +1,83 @@
+---
+# Control panel: a FastAPI status app run on-host as the deploy user (it needs
+# native access to ansible-core / the deploy SSH key / sudo in later phases).
+# Bound to 127.0.0.1; Caddy fronts it at /admin. See docs/control-interface.md.
+
+- name: Ensure python venv tooling is present
+  ansible.builtin.apt:
+    name:
+      - python3-venv
+      - python3-pip
+    state: present
+  become: true
+
+# /opt/cluster is deploy:cluster (2775) — deploy owns it, so these run without
+# become (as the connection user, deploy), keeping the files deploy-owned.
+- name: Create control-panel directory
+  ansible.builtin.file:
+    path: "{{ control_panel_dir }}"
+    state: directory
+    mode: "0775"
+  become: false
+
+- name: Deploy the app source
+  ansible.builtin.copy:
+    src: app/
+    dest: "{{ control_panel_dir }}/app/"
+    mode: preserve
+  become: false
+  notify: restart control-panel
+
+- name: Create venv and install Python dependencies
+  ansible.builtin.pip:
+    requirements: "{{ control_panel_dir }}/app/requirements.txt"
+    virtualenv: "{{ control_panel_dir }}/venv"
+    virtualenv_command: python3 -m venv
+  become: false
+  notify: restart control-panel
+
+# Vendor htmx at deploy time so the panel is self-contained at runtime (no CDN).
+- name: Vendor htmx into the app's static dir
+  ansible.builtin.get_url:
+    url: https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js
+    dest: "{{ control_panel_dir }}/app/static/htmx.min.js"
+    mode: "0644"
+  become: false
+  notify: restart control-panel
+
+- name: Install the control-panel systemd unit
+  ansible.builtin.template:
+    src: control-panel.service.j2
+    dest: /etc/systemd/system/control-panel.service
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart control-panel
+
+- name: Enable control-panel (reload unit definitions)
+  ansible.builtin.systemd:
+    name: control-panel.service
+    enabled: true
+    daemon_reload: true
+  become: true
+
+- name: Apply restart if anything changed
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure control-panel is running
+  ansible.builtin.systemd:
+    name: control-panel.service
+    state: started
+  become: true
+
+- name: Wait for the control panel to respond
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ control_panel_port }}/"
+    status_code: 200
+  register: cp_health
+  until: cp_health.status is defined and cp_health.status == 200
+  retries: 20
+  delay: 2
+  changed_when: false
+  when: not ansible_check_mode

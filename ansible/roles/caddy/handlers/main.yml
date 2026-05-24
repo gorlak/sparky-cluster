@@ -1,7 +1,11 @@
 ---
-# Graceful config reload (no restart, no downtime) when the Caddyfile changes.
-# The landing page (static, served by file_server) needs no reload.
-- name: reload caddy
+# Caddy bind-mounts the Caddyfile as a SINGLE FILE; Ansible's template replaces
+# it atomically (new inode), which the running container can't see — so a
+# `caddy reload` would re-read the container's stale inode (old config). Restart
+# the container instead: it re-binds the current file. Brief :80 blip, but
+# Caddyfile changes are infrequent. (The landing dir is a directory mount, so it
+# updates live and needs no restart.)
+- name: restart caddy
   ansible.builtin.command:
-    cmd: docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+    cmd: docker restart caddy
   changed_when: true

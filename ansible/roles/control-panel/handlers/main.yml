@@ -1,0 +1,7 @@
+---
+- name: restart control-panel
+  ansible.builtin.systemd:
+    name: control-panel.service
+    state: restarted
+    daemon_reload: true
+  become: true

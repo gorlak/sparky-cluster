@@ -32,3 +32,4 @@ vllm_worker_extra_args:
 # Front-end
 enable_open_webui: true
 enable_reverse_proxy: true
+enable_control_panel: true

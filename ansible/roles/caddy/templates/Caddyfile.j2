@@ -11,8 +11,22 @@ http://chat.{{ web_domain }} {
 	reverse_proxy 127.0.0.1:{{ webui_port }}
 }
 
-# Landing page — catch-all for any other host on :80 ({{ web_domain }}, bare IP, etc.)
+# Landing page + control panel — catch-all for any other host on :80
+# ({{ web_domain }}, bare IP, etc.)
 :80 {
-	root * /srv/landing
-	file_server
+	# Control panel at /admin (prefix stripped before proxying). It's open today
+	# (cluster is behind the firewall); to gate it later, uncomment basic_auth and
+	# supply a hash from a gitignored var (e.g. `caddy hash-password`).
+	handle_path /admin* {
+		# basic_auth {
+		# 	admin {{ admin_basic_auth_hash | default('REPLACE_ME') }}
+		# }
+		reverse_proxy 127.0.0.1:{{ control_panel_port }}
+	}
+
+	# Everything else → static landing page
+	handle {
+		root * /srv/landing
+		file_server
+	}
 }
