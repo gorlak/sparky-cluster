@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+services:
+  open-webui:
+    image: {{ webui_image }}
+    container_name: open-webui
+    # host networking so Open WebUI can reach vLLM at localhost:8000
+    network_mode: host
+    volumes:
+      - {{ webui_install_dir }}/data:/app/backend/data
+    environment:
+      - PORT={{ webui_port }}
+      - OPENAI_API_BASE_URL={{ webui_api_base_url }}
+      - OPENAI_API_KEY={{ webui_api_key }}
+      - WEBUI_AUTH={{ webui_auth }}
+      - ENABLE_OLLAMA_API=false
+    restart: always

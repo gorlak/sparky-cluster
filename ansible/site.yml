@@ -1,0 +1,35 @@
+---
+# Bring the cluster to a profile's desired state.
+#   make deploy PROFILE=step-flash
+#   (or: ansible-playbook site.yml -e @profiles/step-flash.yml)
+#
+# Plays run in order so services come up cleanly: prerequisites + model on all
+# nodes, then the worker (snoopy), then the head (sparky) which waits for the
+# API, then the Open WebUI front-end.
+
+- name: Prerequisites and model (all nodes)
+  hosts: all
+  roles:
+    - common
+    - role: model
+      tags: [model]
+
+- name: vLLM worker (snoopy)
+  hosts: worker
+  roles:
+    - role: vllm
+      tags: [vllm]
+      when: multinode | default(true)
+
+- name: vLLM head (sparky)
+  hosts: head
+  roles:
+    - role: vllm
+      tags: [vllm]
+
+- name: Open WebUI front-end (sparky)
+  hosts: head
+  roles:
+    - role: open-webui
+      tags: [webui]
+      when: enable_open_webui | default(true)

@@ -1,0 +1,40 @@
+---
+# Infrastructure constants — the same across every profile. Profile files
+# (profiles/*.yml) layer the per-deployment choices (model, TP, flags) on top.
+
+# Container runtime. Pinned to NVIDIA's image with the SM12.1 CUTLASS fix
+# required for GB10 (see CLAUDE.md). Update on both nodes, digests must match.
+vllm_image: nvcr.io/nvidia/vllm:26.04-py3
+
+# Host paths
+vllm_models_dir: /opt/vllm/models
+nccl_conf_path: /opt/vllm/nccl-env.conf
+
+# Service identity that owns the weights (not the deploy automation user)
+vllm_user: vllm
+vllm_group: vllm
+
+# Staging dir for model weights before they're moved into vllm_models_dir.
+# Lives under the deploy-owned /opt/cluster on the control node. NOTE: the
+# worker (snoopy) has no /opt/cluster — cross-node model distribution is a
+# future enhancement; today both nodes already hold the weights so the model
+# role is a no-op there. See roles/model.
+model_cache_dir: /opt/cluster/model-cache
+
+# Multi-node rendezvous — sparky head over ConnectX-7. vLLM 0.19 native
+# multinode (no Ray); default master port (29500) is used implicitly.
+master_addr: 10.0.200.12
+
+# Docker run / systemd memory knobs shared by head + worker.
+vllm_shm_size: 32g
+vllm_container_memory: 120g
+vllm_systemd_memory_max: 124G
+
+# Open WebUI front-end (sparky, host networking, talks to vLLM on :8000).
+# Kept here (not role defaults) so teardown.yml can reach them too.
+webui_image: ghcr.io/open-webui/open-webui:latest
+webui_install_dir: /opt/open-webui
+webui_port: 80
+webui_api_base_url: http://localhost:8000/v1
+webui_api_key: sk-local
+webui_auth: "false"

@@ -1,0 +1,48 @@
+---
+# Stop the cluster and free GPU memory. Head is stopped first so it quits
+# trying to reach the worker, then the worker. Open WebUI is CPU-only and is
+# left running unless you explicitly ask for it:
+#
+#   make teardown                 # stops vLLM on both nodes
+#   ansible-playbook teardown.yml --tags webui   # also stops Open WebUI
+
+- name: Stop vLLM head (sparky)
+  hosts: head
+  tasks:
+    - name: Stop and disable {{ service_name }}
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove the head container
+      ansible.builtin.command: docker rm -f {{ container_name }}
+      changed_when: false
+      failed_when: false
+
+- name: Stop vLLM worker (snoopy)
+  hosts: worker
+  tasks:
+    - name: Stop and disable {{ service_name }}
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove the worker container
+      ansible.builtin.command: docker rm -f {{ container_name }}
+      changed_when: false
+      failed_when: false
+
+- name: Stop Open WebUI (only with --tags webui)
+  hosts: head
+  tags: [never, webui]
+  tasks:
+    - name: Compose down Open WebUI
+      ansible.builtin.command:
+        cmd: docker compose down
+        chdir: "{{ webui_install_dir }}"
+      changed_when: true
+      failed_when: false

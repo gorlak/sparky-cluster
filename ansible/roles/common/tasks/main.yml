@@ -1,0 +1,42 @@
+---
+# Common prerequisites on every node: the vllm service identity, the model
+# directory it owns, and the NCCL env config. Idempotent.
+
+- name: Ensure vllm service group exists
+  ansible.builtin.group:
+    name: "{{ vllm_group }}"
+    system: true
+
+- name: Ensure vllm service user exists
+  ansible.builtin.user:
+    name: "{{ vllm_user }}"
+    group: "{{ vllm_group }}"
+    system: true
+    home: /home/vllm
+    shell: /usr/sbin/nologin
+    # Service account — no home dir (it runs containers; HF_HOME is /tmp/hf
+    # inside the container). Matches how it was originally created.
+    create_home: false
+
+- name: Ensure vLLM directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ vllm_user }}"
+    group: "{{ vllm_group }}"
+    mode: "0755"
+  loop:
+    - /opt/vllm
+    - "{{ vllm_models_dir }}"
+
+- name: Install NCCL env config (byte-identical on both nodes)
+  ansible.builtin.copy:
+    src: nccl-env.conf
+    dest: "{{ nccl_conf_path }}"
+    owner: "{{ vllm_user }}"
+    group: "{{ vllm_group }}"
+    mode: "0644"
+
+- name: Verify the docker daemon is responding
+  ansible.builtin.command: docker info
+  changed_when: false

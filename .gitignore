@@ -1,0 +1,17 @@
+# Model weights — hundreds of GB, NEVER commit
+model-cache/
+
+# Ansible runtime artifacts
+*.retry
+.ansible/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Benchmark run outputs (regenerable; the dir is kept via .gitkeep)
+benchmark/results/*.json
+
+# Claude Code local state (settings.local.json, etc.) — kept out of the repo.
+# CLAUDE.md itself IS tracked (a thin entry point that imports README.md).
+.claude/

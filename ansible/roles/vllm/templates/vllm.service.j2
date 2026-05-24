@@ -1,0 +1,65 @@
+# {{ ansible_managed }}
+# Generated from roles/vllm/templates/vllm.service.j2 — do NOT edit on the
+# host. Edit the template / profile and re-run the playbook.
+[Unit]
+{% if node_role == 'head' %}
+Description=vLLM head (rank {{ node_rank }}, API on :8000) — TP={{ tensor_parallel_size }}, no Ray
+{% else %}
+Description=vLLM headless worker (rank {{ node_rank }}) — TP={{ tensor_parallel_size }}, no Ray
+{% endif %}
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile={{ nccl_conf_path }}
+
+ExecStartPre=-/usr/bin/docker rm -f {{ container_name }}
+
+{% set serve_args = [] %}
+{% if node_role == 'head' %}
+{% set _ = serve_args.extend(['--host 0.0.0.0', '--port 8000', '--served-model-name ' ~ served_model_name]) %}
+{% endif %}
+{% set _ = serve_args.extend(['--tensor-parallel-size ' ~ tensor_parallel_size, '--distributed-executor-backend mp']) %}
+{% if multinode %}
+{% set _ = serve_args.extend(['--nnodes ' ~ num_nodes, '--node-rank ' ~ node_rank, '--master-addr ' ~ master_addr]) %}
+{% endif %}
+{% if node_role == 'worker' %}
+{% set _ = serve_args.append('--headless') %}
+{% endif %}
+{% set _ = serve_args.extend(['--trust-remote-code', '--max-model-len ' ~ max_model_len, '--gpu-memory-utilization ' ~ gpu_memory_utilization]) %}
+{% set _ = serve_args.extend(vllm_head_extra_args if node_role == 'head' else vllm_worker_extra_args) %}
+ExecStart=/usr/bin/docker run --rm --name {{ container_name }} \
+    --network=host \
+    --gpus all \
+    --cgroupns=host \
+    --ipc=host \
+    --device=/dev/infiniband \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    --shm-size={{ vllm_shm_size }} \
+    --memory={{ vllm_container_memory }} \
+    -v {{ vllm_models_dir }}:/models:ro \
+    -v {{ nccl_conf_path }}:/etc/nccl-env.conf:ro \
+    --env-file {{ nccl_conf_path }} \
+    -e HF_HOME=/tmp/hf \
+    -e VLLM_HOST_IP={{ vllm_host_ip }} \
+    -e VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 \
+    {{ vllm_image }} \
+    vllm serve /models/{{ model_name }} \
+        {{ serve_args | join(' \\\n        ') }}
+
+ExecStop=/usr/bin/docker stop --time=120 {{ container_name }}
+
+MemoryMax={{ vllm_systemd_memory_max }}
+OOMPolicy=stop
+
+Restart=on-failure
+RestartSec={{ restart_sec }}
+
+TimeoutStartSec=1200
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

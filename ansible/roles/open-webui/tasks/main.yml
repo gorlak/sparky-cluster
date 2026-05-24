@@ -1,0 +1,30 @@
+---
+# Deploy Open WebUI as a docker compose service on the head node.
+
+- name: Ensure Open WebUI data directory exists
+  ansible.builtin.file:
+    path: "{{ webui_install_dir }}/data"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Template the Open WebUI compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ webui_install_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Driven via the docker compose CLI (not community.docker) so we depend only on
+# ansible.builtin and can run on apt's ansible-core. `up -d` is idempotent: it
+# no-ops when the compose file + image are unchanged and the container is up.
+- name: Bring up Open WebUI
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: "{{ webui_install_dir }}"
+  register: webui_up
+  changed_when: >-
+    ('Started' in webui_up.stderr) or ('Created' in webui_up.stderr)
+    or ('Recreated' in webui_up.stderr)

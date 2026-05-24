@@ -1,0 +1,23 @@
+---
+# Two-node DGX Spark cluster. Ansible runs as `deploy` (see bootstrap-deploy.sh).
+#   sparky = head/control  — local connection (deploy invokes ansible here)
+#   snoopy = worker        — reached over SSH as deploy@10.0.200.13
+#
+# Per-host facts (vllm_host_ip, node_rank) feed the vLLM service templates.
+# All interconnect (SSH + NCCL) uses the ConnectX-7 10.0.200.0/24 fabric.
+all:
+  children:
+    head:
+      hosts:
+        sparky:
+          ansible_connection: local
+          vllm_host_ip: 10.0.200.12
+          node_rank: 0
+    worker:
+      hosts:
+        snoopy:
+          ansible_host: 10.0.200.13
+          ansible_user: deploy
+          ansible_ssh_private_key_file: /home/deploy/.ssh/id_ed25519
+          vllm_host_ip: 10.0.200.13
+          node_rank: 1

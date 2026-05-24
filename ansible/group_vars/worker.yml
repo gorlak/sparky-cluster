@@ -1,0 +1,7 @@
+---
+# Facts for the worker node (snoopy) — headless rank 1.
+node_role: worker
+service_name: vllm-worker.service
+container_name: vllm-worker
+# Short backoff: retries until sparky's head is reachable at the rendezvous.
+restart_sec: "10"
