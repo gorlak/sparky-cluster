@@ -1,0 +1,74 @@
+[Unit]
+# vLLM OpenAI-compatible API server, multinode TP=2 across sparky+snoopy.
+# Two containers participate (no Ray — vLLM 0.19+ uses torch.distributed
+# directly via --nnodes / --node-rank / --master-addr):
+#
+#   sparky:  vllm.service (this)       head node (rank 0), serves API on :8000
+#   snoopy:  vllm-worker.service       headless worker (rank 1), handles compute
+#
+# Both containers connect at master-addr 10.0.200.12:29500 over ConnectX-7.
+# With TP=2 the 100GB FP8 model shards to ~50GB per node — leaves ~78GB
+# headroom for KV cache and other workloads.
+Description=vLLM Inference Server (containerized, multinode TP=2, no Ray)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/vllm/nccl-env.conf
+
+ExecStartPre=-/usr/bin/docker rm -f vllm
+
+# --shm-size=32g: /dev/shm for cross-rank tensor passing
+# --memory=120g: head container hosts the API + a TP shard (~50GB weights)
+# VLLM_HOST_IP: forces vLLM to advertise the ConnectX-7 IP (not 10GbE)
+ExecStart=/usr/bin/docker run --rm --name vllm \
+    --network=host \
+    --gpus all \
+    --cgroupns=host \
+    --ipc=host \
+    --device=/dev/infiniband \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    --shm-size=32g \
+    --memory=120g \
+    -v /opt/vllm/models:/models:ro \
+    -v /opt/vllm/nccl-env.conf:/etc/nccl-env.conf:ro \
+    --env-file /opt/vllm/nccl-env.conf \
+    -e HF_HOME=/tmp/hf \
+    -e VLLM_HOST_IP=10.0.200.12 \
+    -e VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 \
+    nvcr.io/nvidia/vllm:26.04-py3 \
+    vllm serve /models/Step-3.5-Flash-FP8 \
+        --host 0.0.0.0 \
+        --port 8000 \
+        --served-model-name step-3.5-flash \
+        --tensor-parallel-size 2 \
+        --distributed-executor-backend mp \
+        --nnodes 2 \
+        --node-rank 0 \
+        --master-addr 10.0.200.12 \
+        --trust-remote-code \
+        --max-model-len 32768 \
+        --gpu-memory-utilization 0.90 \
+        --enable-chunked-prefill \
+        --enable-auto-tool-choice \
+        --tool-call-parser step3p5 \
+        --reasoning-parser step3p5
+
+ExecStop=/usr/bin/docker stop --time=120 vllm
+
+MemoryMax=124G
+OOMPolicy=stop
+
+Restart=on-failure
+# Long backoff — restarts reload ~50GB of weights, don't thrash.
+RestartSec=60
+
+# 20min: ~50GB load on each node + NCCL bootstrap + CUDA graph capture.
+TimeoutStartSec=1200
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

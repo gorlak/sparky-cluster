@@ -1,0 +1,15 @@
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: open-webui
+    # host networking so Open WebUI can reach vLLM at localhost:8000
+    network_mode: host
+    volumes:
+      - /opt/open-webui/data:/app/backend/data
+    environment:
+      - PORT=80
+      - OPENAI_API_BASE_URL=http://localhost:8000/v1
+      - OPENAI_API_KEY=sk-local
+      - WEBUI_AUTH=false
+      - ENABLE_OLLAMA_API=false
+    restart: always

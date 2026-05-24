@@ -1,0 +1,105 @@
+SNOOPY        := geoff@10.0.200.13
+SSH_KEY       := /home/geoff/.ssh/id_ed25519_shared
+SNOOPY_REPO   := ~/Projects/DGX-Spark-Setup/nodes/snoopy
+SPARKY_SCRIPTS := nodes/sparky/scripts
+
+API            := http://localhost:8000
+API_TIMEOUT    := 1200
+
+.PHONY: deploy restart stop status wait logs-sparky logs-snoopy push-snoopy \
+        webui-install webui-up webui-down webui-logs
+
+# Full deploy: sync snoopy files then run install-step5 (handles both nodes).
+# Requires full root — run as: sudo make deploy
+deploy: push-snoopy
+	sudo bash $(SPARKY_SCRIPTS)/install-step5.sh
+
+# Restart both services in the right order (worker first, then head),
+# then poll until the API is healthy. Exits 0 on success, 1 on timeout.
+restart: push-snoopy
+	ssh -i $(SSH_KEY) $(SNOOPY) "sudo install -o root -g root -m 0644 \
+	    $(SNOOPY_REPO)/etc/systemd/system/vllm-worker.service \
+	    /etc/systemd/system/vllm-worker.service && \
+	    sudo systemctl daemon-reload && \
+	    sudo systemctl restart vllm-worker.service"
+	sudo install -o root -g root -m 0644 \
+	    nodes/sparky/etc/systemd/system/vllm.service \
+	    /etc/systemd/system/vllm.service
+	sudo systemctl daemon-reload
+	sudo systemctl restart vllm.service
+	@$(MAKE) wait
+
+# Enable + start both services (bring the cluster up)
+enable:
+	ssh -i $(SSH_KEY) $(SNOOPY) sudo systemctl enable --now vllm-worker.service
+	sudo systemctl enable --now vllm.service
+	@$(MAKE) wait
+
+# Disable + stop both services (take the cluster down, free all RAM)
+disable:
+	sudo systemctl disable --now vllm.service || true
+	ssh -i $(SSH_KEY) $(SNOOPY) sudo systemctl disable --now vllm-worker.service || true
+
+# Stop both services (without disabling — will restart on next boot)
+stop:
+	sudo systemctl stop vllm.service || true
+	ssh -i $(SSH_KEY) $(SNOOPY) sudo systemctl stop vllm-worker.service || true
+
+# Poll until the vLLM API responds (or timeout). Exits 0/1.
+wait:
+	@printf 'Waiting for API at $(API)/v1/models (timeout=$(API_TIMEOUT)s)...\n'; \
+	start=$$(date +%s); \
+	while true; do \
+	    now=$$(date +%s); elapsed=$$((now - start)); \
+	    state=$$(systemctl is-active vllm.service 2>/dev/null || true); \
+	    if [ "$$state" = "failed" ]; then \
+	        printf '\nvllm.service failed at %ds — run: make logs-sparky\n' "$$elapsed"; exit 1; \
+	    fi; \
+	    if curl -fsS $(API)/v1/models >/dev/null 2>&1; then \
+	        printf '\nAPI ready after %ds\n' "$$elapsed"; exit 0; \
+	    fi; \
+	    if [ $$elapsed -ge $(API_TIMEOUT) ]; then \
+	        printf '\nTimeout after %ds — run: make logs-sparky\n' "$$elapsed"; exit 1; \
+	    fi; \
+	    printf '.'; sleep 5; \
+	done
+
+# Show service status on both nodes
+status:
+	@printf '\n=== sparky: vllm.service ===\n'
+	@sudo systemctl status vllm.service --no-pager --lines=5 || true
+	@printf '\n=== snoopy: vllm-worker.service ===\n'
+	@ssh -i $(SSH_KEY) $(SNOOPY) sudo systemctl status vllm-worker.service --no-pager --lines=5 || true
+
+# Tail sparky's vllm log
+logs-sparky:
+	sudo journalctl -u vllm.service -f
+
+# Tail snoopy's worker log
+logs-snoopy:
+	ssh -i $(SSH_KEY) $(SNOOPY) sudo journalctl -u vllm-worker.service -f
+
+# --- Open WebUI -------------------------------------------------------------
+
+# First-time install (pulls image, creates /opt/open-webui, starts container)
+webui-install:
+	sudo bash $(SPARKY_SCRIPTS)/install-step6.sh
+
+# Start/restart Open WebUI (after webui-install has run once)
+webui-up:
+	sudo docker compose -f /opt/open-webui/docker-compose.yml up -d
+
+# Stop Open WebUI (frees no GPU memory — it's CPU only, but frees ~1GB RAM)
+webui-down:
+	sudo docker compose -f /opt/open-webui/docker-compose.yml down
+
+# Tail Open WebUI logs
+webui-logs:
+	sudo docker logs -f open-webui
+
+# --- Sync -------------------------------------------------------------------
+
+# Sync snoopy/ directory to the node (fast, runs before deploy/restart).
+# Uses geoff's SSH identity explicitly so this works under sudo make too.
+push-snoopy:
+	sudo -u geoff rsync -av -e "ssh -i $(SSH_KEY)" nodes/snoopy/ $(SNOOPY):$(SNOOPY_REPO)/

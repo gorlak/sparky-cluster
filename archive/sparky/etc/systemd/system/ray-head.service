@@ -1,0 +1,74 @@
+[Unit]
+# Ray head node, running inside nvcr.io/nvidia/vllm:26.03.post1-py3 (same
+# image as vllm.service so torch/ray/python ABI all match across the
+# cluster). Listens on 10.0.200.12:6379 (the ConnectX-7 IP) for snoopy's
+# ray-worker to join.
+#
+# Type=simple + `ray start --head --block` keeps the container running in
+# the foreground so systemd tracks it correctly.
+#
+# vllm.service (also on sparky) connects to this Ray cluster via
+# RAY_ADDRESS=10.0.200.12:6379 — same image, same --network=host, so
+# they're all just localhost peers from the host's POV.
+Description=Ray head node (containerized)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/vllm/nccl-env.conf
+
+ExecStartPre=-/usr/bin/docker rm -f ray-head
+# /tmp/ray holds raylet unix sockets. The vllm.service driver container on
+# this same host needs to reach them, so we bind-mount a shared host dir.
+ExecStartPre=/usr/bin/mkdir -p /opt/vllm/ray-tmp
+
+# --network=host             ray rendezvous + NCCL bootstrap on host IPs
+# --gpus all                 ray needs to see the GB10 to advertise it
+# --ipc=host                 shared memory for inter-worker IPC
+# --device=/dev/infiniband   RoCE verbs device for cross-node NCCL
+# --ulimit memlock=-1        NCCL pins pages for RDMA
+# --ulimit stack=67108864    NCCL thread stacks
+# --shm-size=16g             /dev/shm for ray's plasma store
+# --memory=120g              ray head ALSO hosts a TP shard (~110GB) when
+#                            vllm.service places workers on this node, so
+#                            it needs the full memory budget — not just
+#                            coordinator-sized
+# --num-gpus=1               advertise this node's 1 GB10 to the cluster
+ExecStart=/usr/bin/docker run --rm --name ray-head \
+    --network=host \
+    --gpus all \
+    --cgroupns=host \
+    --ipc=host \
+    --device=/dev/infiniband \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    --shm-size=16g \
+    --memory=120g \
+    -v /opt/vllm/ray-tmp:/tmp/ray \
+    -v /opt/vllm/models:/models:ro \
+    --env-file /opt/vllm/nccl-env.conf \
+    -e VLLM_HOST_IP=10.0.200.12 \
+    -e RAY_memory_monitor_refresh_ms=0 \
+    nvcr.io/nvidia/vllm:26.04-py3 \
+    ray start --head \
+        --port=6379 \
+        --node-ip-address=10.0.200.12 \
+        --num-gpus=1 \
+        --block
+
+ExecStop=/usr/bin/docker stop --time=30 ray-head
+
+Restart=on-failure
+RestartSec=10
+
+# vllm.service will land a TP shard in here; cap matches ray-worker.service.
+MemoryMax=124G
+OOMPolicy=stop
+
+TimeoutStartSec=120
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,65 @@
+[Unit]
+# vLLM headless worker on snoopy, TP=2 peer to sparky's vllm.service.
+# Uses vLLM 0.19+ native multi-node (no Ray): connects to sparky's head
+# process at 10.0.200.12:29500 over ConnectX-7 and participates in
+# torch.distributed collective ops.
+#
+# --headless: no API server on this node — sparky's vllm.service owns :8000.
+# --node-rank 1: snoopy is the second of two TP shards.
+#
+# Restart=on-failure + RestartSec=10 so snoopy retries until sparky's
+# head is ready at the rendezvous address (boot order doesn't matter).
+Description=vLLM headless worker (containerized, multinode TP=2 rank 1)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/vllm/nccl-env.conf
+
+ExecStartPre=-/usr/bin/docker rm -f vllm-worker
+
+ExecStart=/usr/bin/docker run --rm --name vllm-worker \
+    --network=host \
+    --gpus all \
+    --cgroupns=host \
+    --ipc=host \
+    --device=/dev/infiniband \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    --shm-size=32g \
+    --memory=120g \
+    -v /opt/vllm/models:/models:ro \
+    -v /opt/vllm/nccl-env.conf:/etc/nccl-env.conf:ro \
+    --env-file /opt/vllm/nccl-env.conf \
+    -e HF_HOME=/tmp/hf \
+    -e VLLM_HOST_IP=10.0.200.13 \
+    -e VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 \
+    nvcr.io/nvidia/vllm:26.04-py3 \
+    vllm serve /models/Step-3.5-Flash-FP8 \
+        --tensor-parallel-size 2 \
+        --distributed-executor-backend mp \
+        --nnodes 2 \
+        --node-rank 1 \
+        --master-addr 10.0.200.12 \
+        --headless \
+        --trust-remote-code \
+        --max-model-len 32768 \
+        --gpu-memory-utilization 0.90 \
+        --enable-chunked-prefill
+
+ExecStop=/usr/bin/docker stop --time=120 vllm-worker
+
+MemoryMax=124G
+OOMPolicy=stop
+
+Restart=on-failure
+# Short backoff — retries until sparky head is reachable at rendezvous.
+RestartSec=10
+
+TimeoutStartSec=1200
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target
