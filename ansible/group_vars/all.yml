@@ -32,9 +32,30 @@ vllm_systemd_memory_max: 124G
 
 # Open WebUI front-end (sparky, host networking, talks to vLLM on :8000).
 # Kept here (not role defaults) so teardown.yml can reach them too.
+# Binds an INTERNAL port (8080) — Caddy fronts it at chat.{{ web_domain }}.
 webui_image: ghcr.io/open-webui/open-webui:latest
 webui_install_dir: /opt/open-webui
-webui_port: 80
+webui_port: 8080
 webui_api_base_url: http://localhost:8000/v1
 webui_api_key: sk-local
-webui_auth: "false"
+# Auth. First account = admin (done). Signup is CLOSED — the admin allocates
+# accounts in Admin Panel → Users; new accounts default to the "user" role.
+# NOTE: ENABLE_SIGNUP is a PersistentConfig — Open WebUI seeds it from this env
+# only on a FRESH data volume, then the live value lives in the data volume /
+# Admin Panel (the env is ignored on later starts). So for a from-scratch
+# install, temporarily set this "true" to create the first admin, then "false".
+webui_auth: "true"
+webui_enable_signup: "false"
+webui_default_user_role: "user"
+
+# Reverse proxy (Caddy) on :80. Landing page at the head host ({{ web_domain }});
+# each service is a subdomain (<svc>.{{ web_domain }}). Needs wildcard DNS
+# *.{{ web_domain }} -> sparky's IP (one record, then services are proxy-only).
+web_domain: sparky.flummoxed.net
+caddy_image: caddy:2
+caddy_dir: /opt/caddy
+# Links shown on the landing page (sparky.flummoxed.net/).
+landing_services:
+  - name: Open WebUI
+    url: "http://chat.{{ web_domain }}"
+    blurb: "Chat with the cluster's served model"

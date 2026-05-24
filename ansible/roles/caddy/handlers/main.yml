@@ -1,0 +1,7 @@
+---
+# Graceful config reload (no restart, no downtime) when the Caddyfile changes.
+# The landing page (static, served by file_server) needs no reload.
+- name: reload caddy
+  ansible.builtin.command:
+    cmd: docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+  changed_when: true

@@ -24,7 +24,26 @@ the working tree.
 |---|---|---|
 | `vllm.service` | sparky | enabled, running — head (rank 0), API on :8000 |
 | `vllm-worker.service` | snoopy | enabled, running — headless worker (rank 1) |
-| `open-webui` | sparky | Docker Compose, restart: always, port 80 |
+| `caddy` | sparky | Docker Compose, restart: always — reverse proxy on :80 |
+| `open-webui` | sparky | Docker Compose, restart: always — internal :8080, behind Caddy |
+
+### Web access
+
+Caddy fronts `:80` and routes by hostname:
+- `http://sparky.flummoxed.net/` — landing page (links to services)
+- `http://chat.sparky.flummoxed.net/` — Open WebUI (login required)
+
+This needs a **wildcard DNS record** `*.sparky.flummoxed.net → sparky's IP` (one
+record; every future service is then just a new route in the Caddyfile, no DNS
+change). Open WebUI runs at the root of its own hostname because it doesn't
+support being served under a sub-path. The landing page is templated from
+`landing_services` in `group_vars/all.yml` — add a service there to add a link.
+
+Open WebUI has **auth enabled**. The admin account is created by the first
+sign-up; open sign-up is then closed, so the admin adds users in **Admin Panel →
+Users**. Auth knobs are the `webui_*` vars in `group_vars/all.yml`. (Note: a
+from-scratch install must briefly re-enable sign-up to create that first admin —
+see the comment on `webui_enable_signup`.)
 
 ### Known working configuration
 
@@ -150,7 +169,8 @@ DGX-Spark-Setup/                # git repo (source of truth)
 │       ├── common/            # vllm user, /opt/vllm dirs, NCCL conf (files/)
 │       ├── model/             # idempotent install from staging (skips if present)
 │       ├── vllm/              # ONE template -> both unit files; restart-on-change
-│       └── open-webui/        # compose template + `docker compose up -d`
+│       ├── open-webui/        # compose template + `docker compose up -d`
+│       └── caddy/             # reverse proxy on :80 — landing page + service routes
 ├── benchmark/                 # vllm bench serve wrapper + compare tool
 ├── models/                    # model status notes
 └── model-cache/               # model weights staging (GITIGNORED — 100s of GB)
@@ -316,10 +336,11 @@ A new model must fit within ~108.9 GiB (0.90 × 121 GiB) per shard.
    system is in place.
 3. Voice mode: faster-whisper (STT) + Kokoro/Piper (TTS) as an Ansible role +
    compose service alongside Open WebUI.
-4. OpenHands at http://sparky:3000 — add as an `open-hands` role.
-5. Dashboard (cluster control + metrics) running as a `User=deploy` systemd
-   service, invoking Ansible via `ansible-runner` and scraping vLLM `/metrics`
-   + node/GPU exporters.
+4. Dashboard (cluster control + metrics). Groundwork is now in place: the landing
+   page at `sparky.flummoxed.net` is its first iteration, and Caddy + the
+   `User=deploy` model are ready. Remaining: a `User=deploy` backend that invokes
+   Ansible via `ansible-runner` and scrapes vLLM `/metrics` + node/GPU exporters,
+   growing out of (and eventually replacing) the static landing page.
 
 ---
 

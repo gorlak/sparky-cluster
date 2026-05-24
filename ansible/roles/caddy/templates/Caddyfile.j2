@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# Generated from roles/caddy/templates/Caddyfile.j2 — edit the template, not the host.
+{
+	# LAN-only HTTP; no public certs for these internal hostnames.
+	auto_https off
+	admin localhost:2019
+}
+
+# Open WebUI — its own hostname, served at root (avoids Open WebUI's subpath issues).
+http://chat.{{ web_domain }} {
+	reverse_proxy 127.0.0.1:{{ webui_port }}
+}
+
+# Landing page — catch-all for any other host on :80 ({{ web_domain }}, bare IP, etc.)
+:80 {
+	root * /srv/landing
+	file_server
+}

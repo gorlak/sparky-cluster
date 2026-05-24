@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+services:
+  caddy:
+    image: {{ caddy_image }}
+    container_name: caddy
+    # host networking so it binds :80 directly and can reach Open WebUI on
+    # 127.0.0.1:{{ webui_port }} (also host-networked).
+    network_mode: host
+    volumes:
+      - {{ caddy_dir }}/Caddyfile:/etc/caddy/Caddyfile:ro
+      - {{ caddy_dir }}/landing:/srv/landing:ro
+      - {{ caddy_dir }}/data:/data
+    restart: always

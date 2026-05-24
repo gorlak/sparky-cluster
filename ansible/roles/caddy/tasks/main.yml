@@ -1,0 +1,66 @@
+---
+# Caddy reverse proxy on :80 — serves the landing page at the catch-all host and
+# proxies chat.{{ web_domain }} to Open WebUI. Front-end for the cluster's web
+# services; grows as more roles add routes.
+
+- name: Ensure Caddy directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ caddy_dir }}"
+    - "{{ caddy_dir }}/landing"
+    - "{{ caddy_dir }}/data"
+
+- name: Template the Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ caddy_dir }}/Caddyfile"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: reload caddy
+
+# Static — file_server serves it live, so no reload needed on content change.
+- name: Template the landing page
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: "{{ caddy_dir }}/landing/index.html"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Template the Caddy compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ caddy_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Bring up Caddy
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: "{{ caddy_dir }}"
+  register: caddy_up
+  changed_when: >-
+    ('Started' in caddy_up.stderr) or ('Created' in caddy_up.stderr)
+    or ('Recreated' in caddy_up.stderr)
+
+# Apply a Caddyfile change now (graceful reload) so the wait below sees it.
+- name: Apply pending Caddy config reload
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the landing page to respond on :80
+  ansible.builtin.uri:
+    url: http://127.0.0.1:80/
+    status_code: 200
+  register: caddy_landing
+  until: caddy_landing.status is defined and caddy_landing.status == 200
+  retries: 15
+  delay: 2
+  changed_when: false
+  when: not ansible_check_mode

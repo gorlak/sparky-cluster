@@ -33,3 +33,10 @@
     - role: open-webui
       tags: [webui]
       when: enable_open_webui | default(true)
+
+- name: Reverse proxy + landing page (sparky)
+  hosts: head
+  roles:
+    - role: caddy
+      tags: [proxy]
+      when: enable_reverse_proxy | default(true)

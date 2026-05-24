@@ -12,5 +12,7 @@ services:
       - OPENAI_API_BASE_URL={{ webui_api_base_url }}
       - OPENAI_API_KEY={{ webui_api_key }}
       - WEBUI_AUTH={{ webui_auth }}
+      - ENABLE_SIGNUP={{ webui_enable_signup }}
+      - DEFAULT_USER_ROLE={{ webui_default_user_role }}
       - ENABLE_OLLAMA_API=false
     restart: always

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<!-- {{ ansible_managed }} — generated from roles/caddy/templates/index.html.j2 -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DGX Spark Cluster</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      max-width: 42rem; margin: 4rem auto; padding: 0 1.25rem; line-height: 1.5;
+    }
+    h1 { margin-bottom: 0.25rem; }
+    .sub { opacity: 0.65; margin-top: 0; }
+    ul { list-style: none; padding: 0; }
+    li { margin: 0.75rem 0; padding: 0.9rem 1.1rem; border: 1px solid; border-radius: 0.6rem; }
+    a { font-size: 1.1rem; font-weight: 600; text-decoration: none; }
+    .blurb { display: block; opacity: 0.7; font-size: 0.9rem; margin-top: 0.2rem; }
+  </style>
+</head>
+<body>
+  <h1>DGX Spark Cluster</h1>
+  <p class="sub">{{ web_domain }}</p>
+  <ul>
+  {% for svc in landing_services %}
+    <li>
+      <a href="{{ svc.url }}">{{ svc.name }}</a>
+      <span class="blurb">{{ svc.blurb }}</span>
+    </li>
+  {% endfor %}
+  </ul>
+</body>
+</html>
