@@ -15,7 +15,8 @@ is up at http://sparky (port 80).
 the `deploy` user reads) and applies it. The current deployment is the `step-flash`
 profile. Day-to-day ops: `cd ~/Projects/DGX-Spark-Setup/ansible && make <target>`
 — see Cluster Operations. The old per-step shell scripts + root Makefile are
-retired in `archive/` (`archive/nodes/`, `archive/Makefile.legacy`).
+preserved in git history (the initial "archive of prior scripts" commit), not in
+the working tree.
 
 ### Active services
 
@@ -152,11 +153,8 @@ DGX-Spark-Setup/                # git repo (source of truth)
 │       └── open-webui/        # compose template + `docker compose up -d`
 ├── benchmark/                 # vllm bench serve wrapper + compare tool
 ├── models/                    # model status notes
-├── model-cache/               # model weights staging (GITIGNORED — 100s of GB)
-└── archive/                   # retired scripts — historical only
-    ├── Makefile.legacy        # old script-based Makefile
-    ├── nodes/                 # old install-step*.sh + unit/compose sources
-    └── sparky|snoopy/         # even older Ray-era scripts
+└── model-cache/               # model weights staging (GITIGNORED — 100s of GB)
+                               # (prior scripts live in git history, not the tree)
 
 /opt/cluster/ansible/          # PUBLISHED runtime copy (deploy-owned; `make deploy`
                                # rsyncs the repo here, then runs from here)
@@ -327,16 +325,18 @@ A new model must fit within ~108.9 GiB (0.90 × 121 GiB) per shard.
 
 ## Historical Notes
 
-See `archive/README.md` for scripts from earlier phases:
+Scripts from earlier phases are preserved in **git history** (not the working
+tree). They were committed once as "Initial commit: archive of prior scripts
+used", then removed when the Ansible setup landed. Browse or recover them with
+`git log --all -- archive/` then `git show <commit>:archive/<path>`:
 - **Per-step shell scripts + root Makefile** (pre-Ansible): the cluster was
   deployed via `install-step*.sh` driven by a root `Makefile`. Migrated to
-  Ansible 2026-05-24. Retired sources in `archive/nodes/` and
-  `archive/Makefile.legacy`. The templated equivalents live in `ansible/roles/`.
+  Ansible 2026-05-24; the templated equivalents live in `ansible/roles/`.
 - **Ray-based multinode** (pre-vLLM 0.19): Ray was removed from vLLM 0.19;
-  native multinode replaced it. Ray unit files and helper scripts are in
-  `archive/` for reference.
-- **pip/venv install**: failed because pypi aarch64 torch is CPU-only.
-  Cleanup and setup scripts are in `archive/`.
+  native multinode replaced it. Ray unit files + helper scripts are in that
+  history for reference.
+- **pip/venv install**: failed because pypi aarch64 torch is CPU-only; its
+  cleanup/setup scripts are likewise in history.
 
 ---
 
