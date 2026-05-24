@@ -1,0 +1,30 @@
+---
+# Metrics exporters on every node: node-exporter + nvidia-gpu-exporter.
+
+- name: Ensure exporters directory exists
+  ansible.builtin.file:
+    path: "{{ exporters_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Template the exporters compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ exporters_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Bring up exporters
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: "{{ exporters_dir }}"
+  become: true
+  register: exporters_up
+  changed_when: >-
+    ('Started' in exporters_up.stderr) or ('Created' in exporters_up.stderr)
+    or ('Recreated' in exporters_up.stderr)

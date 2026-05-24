@@ -1,0 +1,59 @@
+---
+# Prometheus on the head node. Scrapes vLLM + node/GPU exporters on all nodes.
+
+- name: Ensure Prometheus directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "0755"
+  loop:
+    - { path: "{{ prometheus_dir }}", owner: root }
+    - { path: "{{ prometheus_dir }}/etc", owner: root }
+    # TSDB dir must be writable by the image's user (nobody, uid 65534).
+    - { path: "{{ prometheus_dir }}/data", owner: "65534" }
+  become: true
+
+- name: Template prometheus.yml
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ prometheus_dir }}/etc/prometheus.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: restart prometheus
+
+- name: Template the Prometheus compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ prometheus_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Bring up Prometheus
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: "{{ prometheus_dir }}"
+  become: true
+  register: prom_up
+  changed_when: >-
+    ('Started' in prom_up.stderr) or ('Created' in prom_up.stderr)
+    or ('Recreated' in prom_up.stderr)
+
+- name: Apply config change if needed
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Prometheus to be ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ prometheus_port }}/-/ready"
+    status_code: 200
+  register: prom_ready
+  until: prom_ready.status is defined and prom_ready.status == 200
+  retries: 15
+  delay: 2
+  changed_when: false
+  when: not ansible_check_mode

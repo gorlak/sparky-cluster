@@ -1,0 +1,35 @@
+# {{ ansible_managed }}
+# Runs on every node. node-exporter = system metrics (incl. unified memory, which
+# is the GB10's "GPU memory"); nvidia-gpu-exporter = GPU util/temp/power via
+# nvidia-smi (GB10 reports no GPU memory there — it's unified, see node-exporter).
+services:
+  node-exporter:
+    image: {{ node_exporter_image }}
+    container_name: node-exporter
+    network_mode: host
+    pid: host
+    restart: always
+    command:
+      - '--path.rootfs=/host'
+      - '--web.listen-address=:{{ node_exporter_port }}'
+    volumes:
+      - /:/host:ro,rslave
+
+  nvidia-gpu-exporter:
+    image: {{ nvidia_exporter_image }}
+    container_name: nvidia-gpu-exporter
+    network_mode: host
+    restart: always
+    # Pin query fields — GB10's nvidia-smi exposes clocks_event_reasons_* "[us]"
+    # fields that crash the exporter (invalid metric names). See group_vars.
+    command:
+      - '--query-field-names={{ nvidia_exporter_query_fields }}'
+      - '--web.listen-address=:{{ nvidia_exporter_port }}'
+    # --gpus equivalent (no named nvidia runtime here; toolkit provides access).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility]

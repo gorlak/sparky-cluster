@@ -1,0 +1,6 @@
+---
+- name: restart prometheus
+  ansible.builtin.command:
+    cmd: docker restart prometheus
+  changed_when: true
+  become: true

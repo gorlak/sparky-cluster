@@ -30,6 +30,22 @@ vllm_shm_size: 32g
 vllm_container_memory: 120g
 vllm_systemd_memory_max: 124G
 
+# Metrics stack (P2) — see docs/control-interface.md. Exporters run on every node;
+# Prometheus + Grafana on the head. (GB10 reports no GPU memory via nvidia-smi —
+# that's the unified memory, covered by node-exporter.)
+exporters_dir: /opt/exporters
+node_exporter_image: prom/node-exporter:latest
+node_exporter_port: 9100
+nvidia_exporter_image: utkuozdemir/nvidia_gpu_exporter:1.2.0
+nvidia_exporter_port: 9835
+# Pin query fields: GB10's nvidia-smi exposes clocks_event_reasons_* "[us]" fields
+# that the exporter turns into invalid Prometheus metric names and crashes on.
+# Querying an explicit safe set avoids that (GPU memory is N/A on GB10 anyway).
+nvidia_exporter_query_fields: "utilization.gpu,temperature.gpu,power.draw,clocks.current.sm,clocks.current.memory"
+prometheus_image: prom/prometheus:latest
+prometheus_dir: /opt/prometheus
+prometheus_port: 9090
+
 # Open WebUI front-end (sparky, host networking, talks to vLLM on :8000).
 # Kept here (not role defaults) so teardown.yml can reach them too.
 # Binds an INTERNAL port (8080) — Caddy fronts it at chat.{{ web_domain }}.

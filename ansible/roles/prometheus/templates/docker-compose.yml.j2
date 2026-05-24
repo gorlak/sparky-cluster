@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+services:
+  prometheus:
+    image: {{ prometheus_image }}
+    container_name: prometheus
+    network_mode: host
+    restart: always
+    # Config mounted as a DIRECTORY (not a single file) so edits are seen without
+    # the bind-mount stale-inode problem.
+    volumes:
+      - {{ prometheus_dir }}/etc:/etc/prometheus:ro
+      - {{ prometheus_dir }}/data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.listen-address=:{{ prometheus_port }}'
+      - '--web.enable-lifecycle'

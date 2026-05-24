@@ -47,3 +47,17 @@
     - role: caddy
       tags: [proxy]
       when: enable_reverse_proxy | default(true)
+
+- name: Metrics exporters (all nodes)
+  hosts: all
+  roles:
+    - role: exporters
+      tags: [metrics]
+      when: enable_metrics | default(true)
+
+- name: Prometheus (sparky)
+  hosts: head
+  roles:
+    - role: prometheus
+      tags: [metrics]
+      when: enable_metrics | default(true)

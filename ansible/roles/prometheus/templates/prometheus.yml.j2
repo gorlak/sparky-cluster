@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+# Scrape targets derived from the inventory (ConnectX IPs).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: vllm
+    static_configs:
+      - targets: ['{{ hostvars[groups['head'][0]].vllm_host_ip }}:8000']
+
+  - job_name: node
+    static_configs:
+      - targets:
+{% for h in groups['all'] %}
+          - '{{ hostvars[h].vllm_host_ip }}:{{ node_exporter_port }}'
+{% endfor %}
+
+  - job_name: gpu
+    static_configs:
+      - targets:
+{% for h in groups['all'] %}
+          - '{{ hostvars[h].vllm_host_ip }}:{{ nvidia_exporter_port }}'
+{% endfor %}
