@@ -1,0 +1,15 @@
+<div id="actionarea"
+     {% if run.status == 'running' %}hx-get="{{ root }}/run" hx-trigger="every 1s" hx-swap="outerHTML"{% endif %}>
+  <h2>
+    {{ run.label }}
+    {% if run.status == 'running' %}<span class="badge running">running…</span>
+    {% elif run.status == 'success' %}<span class="badge ok">success</span>
+    {% elif run.status == 'failed' %}<span class="badge bad">failed (exit {{ run.code }})</span>
+    {% else %}<span class="badge bad">{{ run.status }}</span>{% endif %}
+  </h2>
+  <p class="hint">started {{ run.started }}</p>
+  <pre class="log">{{ run.log }}</pre>
+  {% if run.status != 'running' %}
+    <button class="btn" hx-get="{{ root }}/actions" hx-target="#actionarea" hx-swap="outerHTML">← Back to actions</button>
+  {% endif %}
+</div>

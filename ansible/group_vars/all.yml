@@ -21,11 +21,12 @@ vllm_group: vllm
 # role is a no-op there. See roles/model.
 model_cache_dir: /opt/cluster/model-cache
 
-# Multi-node rendezvous — sparky head over ConnectX-7. vLLM 0.19 native
-# multinode (no Ray); default master port (29500) is used implicitly.
-master_addr: 10.0.200.12
+# Multi-node rendezvous (vLLM 0.19 native multinode, no Ray) is per-engine:
+# each engine's master_addr is computed from its first node's vllm_host_ip
+# (see roles/vllm/templates/vllm.service.j2). Default master port (29500) is
+# used implicitly. Nothing to set globally here.
 
-# Docker run / systemd memory knobs shared by head + worker.
+# Docker run / systemd memory knobs shared by all engines.
 vllm_shm_size: 32g
 vllm_container_memory: 120g
 vllm_systemd_memory_max: 124G
@@ -74,10 +75,15 @@ web_domain: sparky.flummoxed.net
 caddy_image: caddy:2
 caddy_dir: /opt/caddy
 
-# Control panel (status now; control actions later) — see docs/control-interface.md.
+# Control panel (status + control actions) — see docs/control-interface.md.
 # Runs on-host as User=deploy, bound to 127.0.0.1; Caddy fronts it at /admin.
 control_panel_dir: /opt/cluster/control-panel
 control_panel_port: 8088
+# The published (live) playbook tree the panel runs actions from, and the profile
+# its deploy/teardown actions target. (cluster_ansible_dir mirrors the Makefile's
+# LIVE; cluster_profile is the panel's default — profile switching is future work.)
+cluster_ansible_dir: /opt/cluster/ansible
+cluster_profile: step
 
 # Links shown on the landing page (sparky.flummoxed.net/).
 landing_services:

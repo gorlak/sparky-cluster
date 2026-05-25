@@ -1,11 +1,11 @@
 ---
 # Bring the cluster to a profile's desired state.
-#   make deploy PROFILE=step-flash
-#   (or: ansible-playbook site.yml -e @profiles/step-flash.yml)
+#   make deploy PROFILE=step
+#   (or: ansible-playbook site.yml -e @profiles/step.yml)
 #
-# Plays run in order so services come up cleanly: prerequisites + model on all
-# nodes, then the worker (snoopy), then the head (sparky) which waits for the
-# API, then the Open WebUI front-end.
+# Plays run in order so services come up cleanly: prerequisites + models on all
+# nodes, then every vLLM engine in the profile's serving_topology is brought up
+# across all nodes, then we wait for each engine's API, then the front-end.
 
 - name: Prerequisites and model (all nodes)
   hosts: all
@@ -14,17 +14,19 @@
     - role: model
       tags: [model]
 
-- name: vLLM worker (snoopy)
-  hosts: worker
+- name: vLLM engines — configure and bring up (all nodes)
+  hosts: all
   roles:
     - role: vllm
       tags: [vllm]
-      when: multinode | default(true)
 
-- name: vLLM head (sparky)
-  hosts: head
-  roles:
-    - role: vllm
+- name: vLLM engines — wait for APIs to report ready (all nodes)
+  hosts: all
+  tasks:
+    - name: Wait for each engine's API where this host is the API node
+      ansible.builtin.include_role:
+        name: vllm
+        tasks_from: wait
       tags: [vllm]
 
 - name: Open WebUI front-end (sparky)

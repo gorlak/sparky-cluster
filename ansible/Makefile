@@ -9,12 +9,12 @@
 # write /opt/cluster. Ansible runs as deploy via sudo (your password is the gate);
 # a dashboard running as User=deploy invokes the same targets with no prompt.
 #
-#   make deploy   PROFILE=step-flash
-#   make check    PROFILE=step-flash    # dry run (--check --diff)
+#   make deploy   PROFILE=step
+#   make check    PROFILE=step    # dry run (--check --diff)
 #   make teardown                       # stop vLLM on both nodes
 #   make status / make logs-head / make logs-worker
 
-PROFILE       ?= step-flash
+PROFILE       ?= step
 EXTRA         := -e @profiles/$(PROFILE).yml
 LIVE          := /opt/cluster/ansible
 DEPLOY_KEY    := /home/deploy/.ssh/id_ed25519
@@ -52,10 +52,10 @@ ping:
 
 status:
 	cd $(LIVE) && $(RUN_AS_DEPLOY) ansible all -m shell \
-	    -a 'systemctl --no-pager --lines=0 status vllm.service vllm-worker.service 2>/dev/null; true'
+	    -a "systemctl --no-pager --lines=0 status 'vllm-*.service' 2>/dev/null; true"
 
 logs-head:
-	sudo journalctl -u vllm.service -f
+	sudo journalctl -u 'vllm-*' -f
 
 logs-worker:
-	$(RUN_AS_DEPLOY) ssh -i $(DEPLOY_KEY) $(SNOOPY) 'sudo journalctl -u vllm-worker.service -f'
+	$(RUN_AS_DEPLOY) ssh -i $(DEPLOY_KEY) $(SNOOPY) 'sudo journalctl -u "vllm-*" -f'

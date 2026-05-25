@@ -1,0 +1,42 @@
+---
+# Install one model (`model` is the loop var: a dir name under the model stores).
+# Mirrors the old install-step2.sh: a same-filesystem `mv` from staging, then
+# chown to the vllm user. Idempotent — skips if already installed.
+
+- name: Check whether {{ model }} is already installed
+  ansible.builtin.stat:
+    path: "{{ vllm_models_dir }}/{{ model }}/config.json"
+  register: model_installed
+
+- name: Install {{ model }} from staging
+  when: not model_installed.stat.exists
+  block:
+    - name: Verify staged copy exists ({{ model }})
+      ansible.builtin.stat:
+        path: "{{ model_cache_dir }}/{{ model }}/config.json"
+      register: model_staged
+
+    - name: Fail clearly if {{ model }} is neither installed nor staged
+      ansible.builtin.fail:
+        msg: >-
+          {{ model }} is not installed at {{ vllm_models_dir }} and not staged at
+          {{ model_cache_dir }}/{{ model }}. Download the weights into the staging
+          dir first (and ensure they're present on this node).
+      when: not model_staged.stat.exists
+
+    - name: Move staged weights into place ({{ model }} — instant, same filesystem)
+      ansible.builtin.command:
+        cmd: mv "{{ model_cache_dir }}/{{ model }}" "{{ vllm_models_dir }}/{{ model }}"
+        creates: "{{ vllm_models_dir }}/{{ model }}"
+
+    - name: Own {{ model }} as the vllm user
+      ansible.builtin.file:
+        path: "{{ vllm_models_dir }}/{{ model }}"
+        owner: "{{ vllm_user }}"
+        group: "{{ vllm_group }}"
+        recurse: true
+
+- name: Confirm the vllm user can read {{ model }} config
+  ansible.builtin.command: >-
+    runuser -u {{ vllm_user }} -- test -r {{ vllm_models_dir }}/{{ model }}/config.json
+  changed_when: false

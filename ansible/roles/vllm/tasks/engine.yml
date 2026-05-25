@@ -1,0 +1,31 @@
+---
+# Configure + start one vLLM engine on this host. `engine` is the topology entry
+# (loop_var from main.yml); rank / API-ness / master_addr are computed from its
+# node list in the template. Only restarts when the unit actually changes, so a
+# no-op re-run won't trigger an expensive weight reload.
+
+- name: Install vllm-{{ engine.name }}.service
+  ansible.builtin.template:
+    src: vllm.service.j2
+    dest: "/etc/systemd/system/vllm-{{ engine.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  register: engine_unit
+
+- name: Enable vllm-{{ engine.name }}.service (reload unit definitions)
+  ansible.builtin.systemd:
+    name: "vllm-{{ engine.name }}.service"
+    enabled: true
+    daemon_reload: true
+
+- name: Restart vllm-{{ engine.name }}.service if the unit changed
+  ansible.builtin.systemd:
+    name: "vllm-{{ engine.name }}.service"
+    state: restarted
+  when: engine_unit.changed
+
+- name: Ensure vllm-{{ engine.name }}.service is running
+  ansible.builtin.systemd:
+    name: "vllm-{{ engine.name }}.service"
+    state: started

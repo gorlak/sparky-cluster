@@ -1,38 +1,36 @@
 ---
-# Stop the cluster and free GPU memory. Head is stopped first so it quits
-# trying to reach the worker, then the worker. Open WebUI is CPU-only and is
-# left running unless you explicitly ask for it:
+# Stop the cluster and free GPU memory. Discovers every vLLM engine unit on each
+# node (vllm.service / vllm-*.service) and stops + disables + removes it — so it
+# works regardless of which engines a profile defined. Open WebUI is CPU-only and
+# is left running unless you explicitly ask for it:
 #
-#   make teardown                 # stops vLLM on both nodes
-#   ansible-playbook teardown.yml --tags webui   # also stops Open WebUI
+#   make teardown                 # stops all vLLM engines on both nodes
+#   ansible-playbook teardown.yml --tags webui   # also stops Open WebUI + Caddy
 
-- name: Stop vLLM head (sparky)
-  hosts: head
+- name: Stop all vLLM engines (all nodes)
+  hosts: all
   tasks:
-    - name: Stop and disable {{ service_name }}
+    - name: Find vLLM unit files
+      ansible.builtin.find:
+        paths: /etc/systemd/system
+        patterns: ['vllm.service', 'vllm-*.service']
+      register: vllm_units
+
+    - name: Stop and disable each vLLM unit
       ansible.builtin.systemd:
-        name: "{{ service_name }}"
+        name: "{{ item.path | basename }}"
         state: stopped
         enabled: false
+      loop: "{{ vllm_units.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
       failed_when: false
 
-    - name: Remove the head container
-      ansible.builtin.command: docker rm -f {{ container_name }}
-      changed_when: false
-      failed_when: false
-
-- name: Stop vLLM worker (snoopy)
-  hosts: worker
-  tasks:
-    - name: Stop and disable {{ service_name }}
-      ansible.builtin.systemd:
-        name: "{{ service_name }}"
-        state: stopped
-        enabled: false
-      failed_when: false
-
-    - name: Remove the worker container
-      ansible.builtin.command: docker rm -f {{ container_name }}
+    - name: Remove each vLLM container
+      ansible.builtin.command: "docker rm -f {{ item.path | basename | regex_replace('\\.service$', '') }}"
+      loop: "{{ vllm_units.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
       changed_when: false
       failed_when: false
 

@@ -1,0 +1,24 @@
+<div id="actionarea">
+  <h2>Actions</h2>
+  <p class="hint">Profile: <code>{{ profile }}</code> · actions run as the <code>deploy</code> user</p>
+  <div class="actions">
+    {% for a in actions %}
+      <button class="btn {{ 'danger' if a.danger }}"
+              onclick="document.getElementById('dlg-{{ a.name }}').showModal()">{{ a.label }}</button>
+    {% endfor %}
+  </div>
+
+  {% for a in actions %}
+    <dialog id="dlg-{{ a.name }}">
+      <h3>{{ a.label }}?</h3>
+      <p>{{ a.desc }}</p>
+      <menu class="modal-actions">
+        <button class="btn" onclick="this.closest('dialog').close()">Cancel</button>
+        <button class="btn {{ 'danger' if a.danger }}"
+                hx-post="{{ root }}/run/{{ a.name }}"
+                hx-target="#actionarea" hx-swap="outerHTML"
+                onclick="this.closest('dialog').close()">Confirm</button>
+      </menu>
+    </dialog>
+  {% endfor %}
+</div>

@@ -1,0 +1,39 @@
+---
+# Profile: step — the current production deployment.
+# Step-3.5-Flash-FP8 served at TP=2 across sparky + snoopy, Open WebUI on :80.
+#
+# Apply with:  make deploy PROFILE=step
+profile_name: step
+
+# Serving topology — the single source of truth for what runs where. Every
+# model-dependent service (vLLM units, Open WebUI, Prometheus, the control panel)
+# is a projection of this list. See docs/serving-topology.md.
+serving_topology:
+  - name: step
+    kind: vllm
+    nodes: [sparky, snoopy]      # order = ranks; nodes[0] is rank 0 / the API host
+    port: 8000
+    model: Step-3.5-Flash-FP8    # dir under /opt/vllm/models
+    served_as: step-3.5-flash
+    tensor_parallel_size: 2
+    gpu_memory_utilization: "0.90"
+    max_model_len: 32768
+    # The API node gets the tool/reasoning parsers + auto tool choice; the
+    # headless worker only needs the compute-side flag. --kv-cache-dtype fp8 /
+    # --enable-prefix-caching are intentionally omitted (multi-turn corruption
+    # on this model — see CLAUDE.md).
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --enable-auto-tool-choice
+      - --tool-call-parser step3p5
+      - --reasoning-parser step3p5
+    worker_extra_args:
+      - --enable-chunked-prefill
+
+# Front-end
+enable_open_webui: true
+enable_reverse_proxy: true
+enable_control_panel: true
+
+# Observability
+enable_metrics: true

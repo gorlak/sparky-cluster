@@ -1,43 +1,73 @@
 ---
-# Deploy a vLLM systemd service (head or worker, decided by group_vars).
-# The unit is templated from one .j2; only restarts when the unit actually
-# changes, so a no-op re-run won't trigger an expensive ~50GB weight reload.
+# Topology-driven vLLM engines. The profile's `serving_topology` is the source
+# of truth; this role templates one systemd unit per (engine, node) for every
+# vllm engine that includes this host, and prunes any vllm-* unit that's no
+# longer desired (including the legacy vllm.service / vllm-worker.service from
+# before the refactor). Node identity — rank, API host, master_addr — is
+# COMPUTED from the engine's node list. See docs/serving-topology.md.
+#
+# Bring-up only. API readiness waits run in a later play (tasks_from: wait) so
+# all workers are configured before any head blocks on rendezvous.
 
-- name: Install {{ service_name }} unit
-  ansible.builtin.template:
-    src: vllm.service.j2
-    dest: "/etc/systemd/system/{{ service_name }}"
-    owner: root
-    group: root
-    mode: "0644"
-  notify: restart vllm
+- name: Select the vLLM engines that run on this host
+  ansible.builtin.set_fact:
+    host_vllm_engines: "{{ host_vllm_engines | default([]) + [item] }}"
+  loop: "{{ serving_topology | default([]) | selectattr('kind', 'equalto', 'vllm') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: inventory_hostname in item.nodes
 
-- name: Enable {{ service_name }} (reload unit definitions)
+- name: Compute the desired unit names for this host
+  ansible.builtin.set_fact:
+    desired_vllm_units: >-
+      {{ host_vllm_engines | default([]) | map(attribute='name')
+         | map('regex_replace', '^', 'vllm-') | map('regex_replace', '$', '.service')
+         | list }}
+
+# --- prune: drop vLLM units this host should no longer run -------------------
+- name: Find existing vLLM unit files
+  ansible.builtin.find:
+    paths: /etc/systemd/system
+    patterns: ['vllm.service', 'vllm-*.service']
+  register: vllm_unit_files
+
+- name: Stop and disable pruned vLLM units
   ansible.builtin.systemd:
-    name: "{{ service_name }}"
-    enabled: true
+    name: "{{ item.path | basename }}"
+    state: stopped
+    enabled: false
+  loop: "{{ vllm_unit_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in desired_vllm_units
+  failed_when: false
+
+- name: Remove pruned vLLM containers
+  ansible.builtin.command: "docker rm -f {{ item.path | basename | regex_replace('\\.service$', '') }}"
+  loop: "{{ vllm_unit_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in desired_vllm_units
+  changed_when: false
+  failed_when: false
+
+- name: Remove pruned vLLM unit files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ vllm_unit_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in desired_vllm_units
+
+- name: Reload systemd after pruning
+  ansible.builtin.systemd:
     daemon_reload: true
 
-# Apply a pending restart now (if the unit changed) so the API wait below
-# observes the NEW process, not the old one. Handlers otherwise run at play end.
-- name: Apply restart if the unit changed
-  ansible.builtin.meta: flush_handlers
-
-- name: Ensure {{ service_name }} is running
-  ansible.builtin.systemd:
-    name: "{{ service_name }}"
-    state: started
-
-- name: Wait for the vLLM API to report ready (head only)
-  ansible.builtin.uri:
-    url: http://127.0.0.1:8000/v1/models
-    status_code: 200
-  register: vllm_api
-  # `is defined` guard: during startup the API refuses connections and the uri
-  # result has no .status — without the guard the until errors instead of
-  # retrying. Skipped under --check (nothing has actually restarted).
-  until: vllm_api.status is defined and vllm_api.status == 200
-  retries: 120
-  delay: 10
-  changed_when: false
-  when: node_role == 'head' and not ansible_check_mode
+# --- bring up the desired engines -------------------------------------------
+- name: Configure and start each vLLM engine on this host
+  ansible.builtin.include_tasks: engine.yml
+  loop: "{{ host_vllm_engines | default([]) }}"
+  loop_control:
+    loop_var: engine
+    label: "{{ engine.name }} (rank {{ engine.nodes.index(inventory_hostname) }})"

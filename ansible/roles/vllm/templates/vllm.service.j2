@@ -1,11 +1,18 @@
 # {{ ansible_managed }}
-# Generated from roles/vllm/templates/vllm.service.j2 — do NOT edit on the
-# host. Edit the template / profile and re-run the playbook.
+# Generated from roles/vllm/templates/vllm.service.j2 — do NOT edit on the host.
+# Edit the profile's serving_topology / the template and re-run the playbook.
+{% set rank = engine.nodes.index(inventory_hostname) %}
+{% set is_api = rank == 0 %}
+{% set nnodes = engine.nodes | length %}
+{% set is_multinode = nnodes > 1 %}
+{% set tp = engine.tensor_parallel_size | default(nnodes) %}
+{% set container_name = 'vllm-' ~ engine.name %}
+{% set master_addr = hostvars[engine.nodes[0]].vllm_host_ip %}
 [Unit]
-{% if node_role == 'head' %}
-Description=vLLM head (rank {{ node_rank }}, API on :8000) — TP={{ tensor_parallel_size }}, no Ray
+{% if is_api %}
+Description=vLLM {{ engine.name }} head (rank {{ rank }}, API on :{{ engine.port }}) — TP={{ tp }}, no Ray
 {% else %}
-Description=vLLM headless worker (rank {{ node_rank }}) — TP={{ tensor_parallel_size }}, no Ray
+Description=vLLM {{ engine.name }} headless worker (rank {{ rank }}) — TP={{ tp }}, no Ray
 {% endif %}
 After=docker.service network-online.target
 Requires=docker.service
@@ -18,18 +25,18 @@ EnvironmentFile={{ nccl_conf_path }}
 ExecStartPre=-/usr/bin/docker rm -f {{ container_name }}
 
 {% set serve_args = [] %}
-{% if node_role == 'head' %}
-{% set _ = serve_args.extend(['--host 0.0.0.0', '--port 8000', '--served-model-name ' ~ served_model_name]) %}
+{% if is_api %}
+{% set _ = serve_args.extend(['--host 0.0.0.0', '--port ' ~ engine.port, '--served-model-name ' ~ engine.served_as]) %}
 {% endif %}
-{% set _ = serve_args.extend(['--tensor-parallel-size ' ~ tensor_parallel_size, '--distributed-executor-backend mp']) %}
-{% if multinode %}
-{% set _ = serve_args.extend(['--nnodes ' ~ num_nodes, '--node-rank ' ~ node_rank, '--master-addr ' ~ master_addr]) %}
+{% set _ = serve_args.extend(['--tensor-parallel-size ' ~ tp, '--distributed-executor-backend mp']) %}
+{% if is_multinode %}
+{% set _ = serve_args.extend(['--nnodes ' ~ nnodes, '--node-rank ' ~ rank, '--master-addr ' ~ master_addr]) %}
 {% endif %}
-{% if node_role == 'worker' %}
+{% if not is_api %}
 {% set _ = serve_args.append('--headless') %}
 {% endif %}
-{% set _ = serve_args.extend(['--trust-remote-code', '--max-model-len ' ~ max_model_len, '--gpu-memory-utilization ' ~ gpu_memory_utilization]) %}
-{% set _ = serve_args.extend(vllm_head_extra_args if node_role == 'head' else vllm_worker_extra_args) %}
+{% set _ = serve_args.extend(['--trust-remote-code', '--max-model-len ' ~ engine.max_model_len, '--gpu-memory-utilization ' ~ engine.gpu_memory_utilization]) %}
+{% set _ = serve_args.extend(engine.head_extra_args | default([]) if is_api else engine.worker_extra_args | default([])) %}
 ExecStart=/usr/bin/docker run --rm --name {{ container_name }} \
     --network=host \
     --gpus all \
@@ -47,7 +54,7 @@ ExecStart=/usr/bin/docker run --rm --name {{ container_name }} \
     -e VLLM_HOST_IP={{ vllm_host_ip }} \
     -e VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 \
     {{ vllm_image }} \
-    vllm serve /models/{{ model_name }} \
+    vllm serve /models/{{ engine.model }} \
         {{ serve_args | join(' \\\n        ') }}
 
 ExecStop=/usr/bin/docker stop --time=120 {{ container_name }}
@@ -56,7 +63,7 @@ MemoryMax={{ vllm_systemd_memory_max }}
 OOMPolicy=stop
 
 Restart=on-failure
-RestartSec={{ restart_sec }}
+RestartSec={{ 60 if is_api else 10 }}
 
 TimeoutStartSec=1200
 TimeoutStopSec=180

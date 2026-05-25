@@ -1,7 +1,0 @@
----
-# Facts for the head node (sparky) — the API server / rank 0.
-node_role: head
-service_name: vllm.service
-container_name: vllm
-# Long restart backoff: a restart reloads ~50GB of weights, don't thrash.
-restart_sec: "60"

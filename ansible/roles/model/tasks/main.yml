@@ -1,48 +1,23 @@
 ---
-# Install model weights into {{ vllm_models_dir }} from the staging dir.
-# Idempotent: if the model is already installed it does nothing (the common
-# case after the initial bring-up). Mirrors the old install-step2.sh: a same
-# filesystem `mv` from staging, then chown to the vllm user.
+# Install model weights into {{ vllm_models_dir }} for every vllm engine that
+# runs on this host (idempotent: skips models already present). Models are
+# derived from the profile's serving_topology — see docs/serving-topology.md.
 #
 # Cross-node note: staging lives at {{ model_cache_dir }} (control node only).
-# Distributing weights to the worker is not yet automated here — both nodes
-# already hold them today, so this no-ops on snoopy. A future task can rsync
-# sparky -> snoopy before this runs.
+# Distributing weights to the worker is not yet automated here — nodes that
+# already hold them no-op. A future task can rsync sparky -> snoopy first.
 
-- name: Check whether {{ model_name }} is already installed
-  ansible.builtin.stat:
-    path: "{{ vllm_models_dir }}/{{ model_name }}/config.json"
-  register: model_installed
+- name: Collect the models this host needs
+  ansible.builtin.set_fact:
+    host_models: "{{ (host_models | default([]) + [item.model]) | unique }}"
+  loop: "{{ serving_topology | default([]) | selectattr('kind', 'equalto', 'vllm') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: inventory_hostname in item.nodes
 
-- name: Install {{ model_name }} from staging
-  when: not model_installed.stat.exists
-  block:
-    - name: Verify staged copy exists
-      ansible.builtin.stat:
-        path: "{{ model_cache_dir }}/{{ model_name }}/config.json"
-      register: model_staged
-
-    - name: Fail clearly if the model is neither installed nor staged
-      ansible.builtin.fail:
-        msg: >-
-          {{ model_name }} is not installed at {{ vllm_models_dir }} and not
-          staged at {{ model_cache_dir }}/{{ model_name }}. Download the weights
-          into the staging dir first (and ensure they're present on this node).
-      when: not model_staged.stat.exists
-
-    - name: Move staged weights into place (instant — same filesystem)
-      ansible.builtin.command:
-        cmd: mv "{{ model_cache_dir }}/{{ model_name }}" "{{ vllm_models_dir }}/{{ model_name }}"
-        creates: "{{ vllm_models_dir }}/{{ model_name }}"
-
-    - name: Own the model tree as the vllm user
-      ansible.builtin.file:
-        path: "{{ vllm_models_dir }}/{{ model_name }}"
-        owner: "{{ vllm_user }}"
-        group: "{{ vllm_group }}"
-        recurse: true
-
-- name: Confirm the vllm user can read the model config
-  ansible.builtin.command: >-
-    runuser -u {{ vllm_user }} -- test -r {{ vllm_models_dir }}/{{ model_name }}/config.json
-  changed_when: false
+- name: Install each required model from staging if missing
+  ansible.builtin.include_tasks: install_one.yml
+  loop: "{{ host_models | default([]) }}"
+  loop_control:
+    loop_var: model
+    label: "{{ model }}"

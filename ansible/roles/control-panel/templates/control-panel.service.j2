@@ -12,10 +12,20 @@ WorkingDirectory={{ control_panel_dir }}
 Environment=VLLM_API=http://127.0.0.1:8000
 Environment=WORKER_SSH=deploy@{{ hostvars[groups['worker'][0]].vllm_host_ip }}
 Environment=DEPLOY_SSH_KEY=/home/deploy/.ssh/id_ed25519
+# Control actions (P3): the panel runs ansible-playbook from the published live
+# tree against this profile, and records runs here.
+Environment=ANSIBLE_DIR={{ cluster_ansible_dir }}
+Environment=CLUSTER_PROFILE={{ cluster_profile }}
+Environment=RUNS_DIR={{ control_panel_dir }}/runs
 ExecStart={{ control_panel_dir }}/venv/bin/uvicorn app.main:app \
     --host 127.0.0.1 --port {{ control_panel_port }} --root-path /admin
 Restart=on-failure
 RestartSec=5
+# A control action is a detached child (own session) that writes its result to
+# disk. KillMode=process means restarting the panel (e.g. a deploy action that
+# re-runs this role) kills only uvicorn, so an in-flight run survives and a
+# fresh panel reconstructs its status from $RUNS_DIR.
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target

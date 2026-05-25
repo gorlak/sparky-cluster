@@ -31,3 +31,9 @@ means editing several spots instead of just the inventory:
 
 **Why:** makes the repo genuinely clone-and-edit-one-place for others with
 similar hardware but different hostnames/IPs.
+
+> **Note (2026-05-25):** the `serving_topology` refactor in
+> [`docs/serving-topology.md`](docs/serving-topology.md) makes node identity
+> inventory-only (head/worker becomes a per-engine computed rank, `master_addr`
+> per-engine) — its T1 phase closes the Ansible-side of this item. The shell
+> leaks (`Makefile`, `bootstrap-deploy.sh`) remain as documented above.

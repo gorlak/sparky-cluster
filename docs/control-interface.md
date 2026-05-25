@@ -87,8 +87,11 @@ covers the new hosts — no new DNS.
 
 - **GPU exporter on GB10 (sm_121):** does `dcgm-exporter` work on Blackwell GB10?
   Fallback: an `nvidia-smi`-based exporter.
-- **"Current profile" detection** for the status view — write a small state file at
-  deploy time (the panel records the profile it deployed).
+- **"Current profile" detection** for the status view — resolved by the
+  `current-topology.json` state file in
+  [`docs/serving-topology.md`](serving-topology.md): a deploy writes the resolved
+  topology + profile name, and the panel reads it for both status and per-engine
+  P3 actions.
 - **Self-restart safety** — confirm an `ansible-runner` job survives the panel
   restarting mid-run (it's a detached process, not a child of the HTTP request).
 - **Port assignments** — avoid the in-use ones: 8000 (vLLM), 8080 (Open WebUI),

@@ -12,7 +12,7 @@ is up at http://sparky (port 80).
 
 **The cluster is managed by Ansible.** The source of truth is this git repo at
 `ansible/`; `make deploy` publishes it to `/opt/cluster/ansible` (the runtime copy
-the `deploy` user reads) and applies it. The current deployment is the `step-flash`
+the `deploy` user reads) and applies it. The current deployment is the `step`
 profile. Day-to-day ops: `cd ~/Projects/DGX-Spark-Setup/ansible && make <target>`
 — see Cluster Operations. The old per-step shell scripts + root Makefile are
 preserved in git history (the initial "archive of prior scripts" commit), not in
@@ -170,7 +170,7 @@ DGX-Spark-Setup/                # git repo (source of truth)
 │   ├── teardown.yml           # stop vLLM (head then worker); webui via --tags
 │   ├── group_vars/            # all.yml (constants) + head.yml / worker.yml
 │   ├── profiles/
-│   │   └── step-flash.yml     # CURRENT config: model, TP=2, serve flags, webui
+│   │   └── step.yml     # CURRENT config: model, TP=2, serve flags, webui
 │   └── roles/
 │       ├── common/            # vllm user, /opt/vllm dirs, NCCL conf (files/)
 │       ├── model/             # idempotent install from staging (skips if present)
@@ -194,11 +194,11 @@ Run from the repo's `ansible/` directory. `make deploy`/`check`/`teardown` first
 **publish** your edits (rsync repo → `/opt/cluster/ansible`), then run
 `ansible-playbook` there as `deploy` (via `sudo -u deploy` — prompts for your
 password; it's the gate into the automation context). `PROFILE` defaults to
-`step-flash`. Publishing needs the `cluster` group (log in once after bootstrap).
+`step`. Publishing needs the `cluster` group (log in once after bootstrap).
 
 | Target | What it does |
 |---|---|
-| `make deploy` | Bring the cluster to a profile's state (`PROFILE=step-flash`). Restarts services only if a unit changed. |
+| `make deploy` | Bring the cluster to a profile's state (`PROFILE=step`). Restarts services only if a unit changed. |
 | `make check` | Dry run (`--check --diff`) — shows what would change, makes none |
 | `make teardown` | Stop + disable vLLM on both nodes (head first, then worker; frees GPU) |
 | `make teardown-all` | Also stops Open WebUI |
@@ -233,7 +233,7 @@ hf download stepfun-ai/Step-3.5-Flash-FP8 \
 # 3. Deploy a profile — publishes the repo to /opt/cluster, then handles both
 #    nodes end to end (common, model install if staged, worker, head + API wait,
 #    Open WebUI).
-cd ~/Projects/DGX-Spark-Setup/ansible && make deploy PROFILE=step-flash
+cd ~/Projects/DGX-Spark-Setup/ansible && make deploy PROFILE=step
 ```
 
 The `model` role is idempotent: if the weights are already at
@@ -320,7 +320,7 @@ A profile (`profiles/<name>.yml`) captures everything that varies per deployment
 
 1. Stage weights at `/opt/cluster/model-cache/<MODEL>` on sparky (and ensure
    they reach snoopy's `/opt/vllm/models` too — cross-node sync not yet automated).
-2. Copy `profiles/step-flash.yml` to `profiles/<name>.yml` and edit the values.
+2. Copy `profiles/step.yml` to `profiles/<name>.yml` and edit the values.
 3. `make deploy PROFILE=<name>` — Ansible re-templates the units and restarts.
 
 The `model` role moves staged weights into `/opt/vllm/models` (idempotent) and
