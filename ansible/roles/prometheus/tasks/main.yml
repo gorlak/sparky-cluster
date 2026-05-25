@@ -25,6 +25,17 @@
   become: true
   notify: restart prometheus
 
+- name: Template vLLM scrape targets from serving_topology (file_sd)
+  ansible.builtin.template:
+    src: vllm_targets.yml.j2
+    dest: "{{ prometheus_dir }}/etc/vllm_targets.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  # No restart/notify: Prometheus file_sd hot-reloads this file on change, so a
+  # profile switch that changes the engine set re-points scraping on its own.
+
 - name: Template the Prometheus compose file
   ansible.builtin.template:
     src: docker-compose.yml.j2

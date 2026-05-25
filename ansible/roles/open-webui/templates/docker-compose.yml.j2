@@ -1,18 +1,40 @@
 # {{ ansible_managed }}
+{% set vllm_engines = serving_topology | selectattr('kind', 'equalto', 'vllm') | list %}
+{% set ollama_engines = serving_topology | selectattr('kind', 'equalto', 'ollama') | list %}
+{% set openai_urls = [] %}
+{% for e in vllm_engines %}
+{% set _ = openai_urls.append('http://' ~ hostvars[e.nodes[0]].vllm_host_ip ~ ':' ~ e.port ~ '/v1') %}
+{% endfor %}
+{% set ollama_urls = [] %}
+{% for e in ollama_engines %}
+{% set _ = ollama_urls.append('http://' ~ hostvars[e.nodes[0]].vllm_host_ip ~ ':' ~ e.port) %}
+{% endfor %}
 services:
   open-webui:
     image: {{ webui_image }}
     container_name: open-webui
-    # host networking so Open WebUI can reach vLLM at localhost:8000
+    # host networking so Open WebUI can reach every engine on either node by IP
     network_mode: host
     volumes:
       - {{ webui_install_dir }}/data:/app/backend/data
     environment:
       - PORT={{ webui_port }}
-      - OPENAI_API_BASE_URL={{ webui_api_base_url }}
-      - OPENAI_API_KEY={{ webui_api_key }}
+      # Connections are generated from the profile's serving_topology: one OpenAI
+      # endpoint per vLLM engine (its API node + port), one Ollama endpoint per
+      # ollama engine. ENABLE_PERSISTENT_CONFIG=false makes every config env var
+      # below authoritative on EVERY start — otherwise these are seeded only on a
+      # fresh data volume and then the DB wins (see README "Known Shortcomings").
+      - ENABLE_PERSISTENT_CONFIG=false
+      - ENABLE_OPENAI_API={{ 'true' if openai_urls else 'false' }}
+{% if openai_urls %}
+      - OPENAI_API_BASE_URLS={{ openai_urls | join(';') }}
+      - OPENAI_API_KEYS={{ ([webui_api_key] * (openai_urls | length)) | join(';') }}
+{% endif %}
+      - ENABLE_OLLAMA_API={{ 'true' if ollama_urls else 'false' }}
+{% if ollama_urls %}
+      - OLLAMA_BASE_URLS={{ ollama_urls | join(';') }}
+{% endif %}
       - WEBUI_AUTH={{ webui_auth }}
       - ENABLE_SIGNUP={{ webui_enable_signup }}
       - DEFAULT_USER_ROLE={{ webui_default_user_role }}
-      - ENABLE_OLLAMA_API=false
     restart: always

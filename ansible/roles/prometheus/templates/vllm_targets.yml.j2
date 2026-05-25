@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# vLLM scrape targets generated from the profile's serving_topology. Prometheus
+# reads this via file_sd and hot-reloads on change, so deploying a profile with a
+# different set of engines re-points Prometheus with no restart. One entry per
+# vLLM engine = its API node (nodes[0]) on its port. Each engine's metrics already
+# carry a model_name label, which is what the Grafana dashboard groups by; the
+# extra node label below just makes the target's host readable (instance is an IP).
+{% set vllm_engines = serving_topology | selectattr('kind', 'equalto', 'vllm') | list %}
+{% if vllm_engines %}
+{% for e in vllm_engines %}
+- targets: ["{{ hostvars[e.nodes[0]].vllm_host_ip }}:{{ e.port }}"]
+  labels:
+    node: "{{ e.nodes[0] }}"
+{% endfor %}
+{% else %}
+[]
+{% endif %}

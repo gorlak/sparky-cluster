@@ -161,8 +161,6 @@ skill and run a memory-profiled bring-up before committing a dense profile.
 - **Ollama metrics** — does the pinned Ollama version expose Prometheus `/metrics`?
   If not, GPU/throughput visibility for Ollama models is a gap (a sidecar exporter
   later, or rely on the GPU exporter for utilization).
-- **PersistentConfig** — confirm `ENABLE_PERSISTENT_CONFIG=false` doesn't fight
-  the first-admin/signup seeding flow we already depend on.
 - **Pruning blast radius** — keep the `vllm-*`/`ollama-*` namespace strict so the
   enumerate-and-remove step can never touch an unmanaged unit.
 
@@ -174,3 +172,10 @@ skill and run a memory-profiled bring-up before committing a dense profile.
   Node identity becomes inventory-only; head/worker is a per-engine computed rank.
   Pruning via a strict `vllm-*`/`ollama-*` namespace. A `current-topology.json`
   state file serves runtime consumers and "which profile is live?".
+- **2026-05-25 (T3)** — Open WebUI connections are generated from `serving_topology`
+  (plural `OPENAI_API_BASE_URLS`/`OPENAI_API_KEYS`, `OLLAMA_BASE_URLS`, and
+  `ENABLE_OPENAI_API`/`ENABLE_OLLAMA_API` toggled by whether each engine kind is
+  present). Chose `ENABLE_PERSISTENT_CONFIG=false` (env authoritative on every
+  start) over the REST-API push, so each deploy re-asserts connections. Trade-off
+  — Admin Panel becomes read-only for config; drive admin settings via their env
+  vars instead — documented in README "Known Shortcomings".

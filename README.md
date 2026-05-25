@@ -333,6 +333,24 @@ A new model must fit within ~108.9 GiB (0.90 × 121 GiB) per shard.
 
 ---
 
+## Known Shortcomings
+
+- **Open WebUI config is env-authoritative, not UI-authoritative.** The
+  `open-webui` role sets `ENABLE_PERSISTENT_CONFIG=false` so the connection list
+  (and every other config env var) is re-asserted from the profile on **every**
+  deploy — that's what lets a profile switch re-point Open WebUI at a new set of
+  engines with no manual clicks. The trade-off: the **Admin Panel is effectively
+  read-only for config** — settings changed there don't survive the next deploy
+  (the container is recreated and config resets to env). To change a setting
+  durably, set its Open WebUI environment variable in `group_vars/all.yml` (or the
+  profile) instead — most admin-panel settings *are* PersistentConfig values with
+  a matching env var, so config-as-code covers them. The residual gap is any admin
+  setting with **no** corresponding env var: it can't be set declaratively and
+  won't persist if changed in the UI. (User accounts, chats, and uploaded files
+  are *data*, not config — they live in the data volume and are unaffected.)
+
+---
+
 ## Future Work
 
 1. Re-enable `--kv-cache-dtype fp8` and `--enable-prefix-caching` once the

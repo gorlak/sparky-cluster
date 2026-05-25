@@ -1,13 +1,18 @@
 # {{ ansible_managed }}
-# Scrape targets derived from the inventory (ConnectX IPs).
+# Infra targets (node/gpu) come from the inventory (ConnectX IPs); vLLM targets
+# come from the profile's serving_topology via file_sd (vllm_targets.yml), so
+# switching profiles reloads targets WITHOUT a Prometheus restart.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
 scrape_configs:
   - job_name: vllm
-    static_configs:
-      - targets: ['{{ hostvars[groups['head'][0]].vllm_host_ip }}:8000']
+    # One target per vLLM engine's API endpoint — generated from serving_topology
+    # into vllm_targets.yml (see vllm_targets.yml.j2). file_sd hot-reloads it.
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/vllm_targets.yml
 
   - job_name: node
     static_configs:

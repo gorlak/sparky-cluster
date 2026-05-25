@@ -50,20 +50,23 @@ grafana_image: grafana/grafana:latest
 grafana_dir: /opt/grafana
 grafana_port: 3000
 
-# Open WebUI front-end (sparky, host networking, talks to vLLM on :8000).
-# Kept here (not role defaults) so teardown.yml can reach them too.
-# Binds an INTERNAL port (8080) — Caddy fronts it at chat.{{ web_domain }}.
+# Open WebUI front-end (sparky, host networking). Its connections (OpenAI/Ollama
+# endpoints) are generated from the profile's serving_topology by the open-webui
+# role — no per-endpoint var here. Kept here (not role defaults) so teardown.yml
+# can reach them too. Binds an INTERNAL port (8080) — Caddy fronts it at
+# chat.{{ web_domain }}.
 webui_image: ghcr.io/open-webui/open-webui:latest
 webui_install_dir: /opt/open-webui
 webui_port: 8080
-webui_api_base_url: http://localhost:8000/v1
+# Sent as the API key for every vLLM engine endpoint (vLLM ignores it).
 webui_api_key: sk-local
 # Auth. First account = admin (done). Signup is CLOSED — the admin allocates
 # accounts in Admin Panel → Users; new accounts default to the "user" role.
-# NOTE: ENABLE_SIGNUP is a PersistentConfig — Open WebUI seeds it from this env
-# only on a FRESH data volume, then the live value lives in the data volume /
-# Admin Panel (the env is ignored on later starts). So for a from-scratch
-# install, temporarily set this "true" to create the first admin, then "false".
+# The open-webui role sets ENABLE_PERSISTENT_CONFIG=false, so every value here is
+# authoritative on every start (config-as-code; see README "Known Shortcomings").
+# For a from-scratch install, temporarily set webui_enable_signup "true" to create
+# the first admin, deploy, then set it back to "false" and deploy again. (User
+# accounts persist as data regardless.)
 webui_auth: "true"
 webui_enable_signup: "false"
 webui_default_user_role: "user"
