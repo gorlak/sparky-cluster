@@ -1,23 +1,60 @@
 ---
-# Install model weights into {{ vllm_models_dir }} for every vllm engine that
-# runs on this host (idempotent: skips models already present). Models are
-# derived from the profile's serving_topology — see docs/serving-topology.md.
+# Models live canonically in {{ vllm_models_dir }} on the head node (sparky). New
+# weights are downloaded into the inbox ({{ model_cache_dir }}, head only); this
+# role MOVES any inbox model into the canonical dir (owned by the vllm user), then
+# MIRRORS the whole canonical dir to every other node — so any node holds every
+# model and engine placement is free. See docs/serving-topology.md.
 #
-# Cross-node note: staging lives at {{ model_cache_dir }} (control node only).
-# Distributing weights to the worker is not yet automated here — nodes that
-# already hold them no-op. A future task can rsync sparky -> snoopy first.
+# Idempotent: inbox moves skip models already canonical; the mirror is rsync with
+# --size-only (immutable weights — same-size files are skipped without re-reading),
+# so re-runs are a fast metadata scan with ~zero transfer. No --delete: a model is
+# only removed by hand, never by a sync glitch.
 
-- name: Collect the models this host needs
-  ansible.builtin.set_fact:
-    host_models: "{{ (host_models | default([]) + [item.model]) | unique }}"
-  loop: "{{ serving_topology | default([]) | selectattr('kind', 'equalto', 'vllm') | list }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when: inventory_hostname in item.nodes
+# --- head (canonical node): ingest newly-downloaded models from the inbox -------
+- name: Ensure the model inbox exists (head)
+  ansible.builtin.file:
+    path: "{{ model_cache_dir }}"
+    state: directory
+    owner: deploy
+    group: cluster
+    mode: "2775"
+  when: inventory_hostname in groups['head']
 
-- name: Install each required model from staging if missing
+- name: Find models waiting in the inbox (head)
+  ansible.builtin.find:
+    paths: "{{ model_cache_dir }}"
+    file_type: directory
+    recurse: false
+  register: inbox_models
+  when: inventory_hostname in groups['head']
+
+- name: Ingest each inbox model into the canonical dir (head)
   ansible.builtin.include_tasks: install_one.yml
-  loop: "{{ host_models | default([]) }}"
+  loop: "{{ inbox_models.files | default([]) | map(attribute='path') | map('basename') | list }}"
   loop_control:
     loop_var: model
     label: "{{ model }}"
+  when: inventory_hostname in groups['head']
+
+# --- other nodes: mirror the whole canonical dir from the head ------------------
+# Runs ON the head (delegate_to), as deploy (become: false) so it uses deploy's own
+# SSH key; --rsync-path="sudo rsync" lets the remote side write the vllm-owned dir
+# (and preserve vllm:vllm ownership, uid 996 on both nodes). Uses the host's
+# vllm_host_ip (ConnectX) — the established SSH path between nodes.
+#
+# Timeouts: Ansible imposes none (task_timeout=0), so it waits for the whole copy.
+# --timeout=600 is rsync's I/O timeout: it keeps running as long as bytes flow, but
+# aborts if the link goes dead silent for 10 min (instead of hanging forever); a
+# re-deploy then resumes mid-file thanks to --partial.
+- name: Mirror all canonical models from the head to this node
+  ansible.builtin.command:
+    cmd: >-
+      rsync -a --size-only --partial --timeout=600 --itemize-changes
+      -e "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=30"
+      --rsync-path="sudo rsync"
+      {{ vllm_models_dir }}/ deploy@{{ vllm_host_ip }}:{{ vllm_models_dir }}/
+  delegate_to: "{{ groups['head'][0] }}"
+  become: false
+  register: model_mirror
+  changed_when: model_mirror.stdout | trim | length > 0
+  when: inventory_hostname not in groups['head']

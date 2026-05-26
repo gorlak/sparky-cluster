@@ -1,6 +1,10 @@
 """Cluster control panel.
 
-P1: read-only status. P3: control actions (deploy / dry-run / restart / teardown).
+Read-only status + control actions (deploy / dry-run / teardown / per-engine
+restart). Topology-aware: status and the per-engine restart buttons are driven by
+the live serving topology recorded at $CLUSTER_TOPOLOGY (current-topology.json,
+written by the deploy and cleared by teardown). Falls back to unit discovery when
+that file is absent (e.g. mid-deploy before it's written).
 
 Runs as the `deploy` user (systemd), bound to 127.0.0.1; Caddy fronts it at
 /admin. `deploy` has NOPASSWD sudo and owns the published playbooks at
@@ -15,7 +19,7 @@ re-runs the control-panel role, which may restart this service): a fresh panel
 process reconstructs the run's status from the filesystem. The unit sets
 KillMode=process so a restart only kills uvicorn, not the in-flight child.
 
-See docs/control-interface.md.
+See docs/control-interface.md and docs/serving-topology.md.
 """
 import json
 import os
@@ -31,12 +35,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-VLLM_API = os.environ.get("VLLM_API", "http://127.0.0.1:8000")
 WORKER_SSH = os.environ.get("WORKER_SSH", "")  # e.g. deploy@10.0.200.13
 DEPLOY_SSH_KEY = os.environ.get("DEPLOY_SSH_KEY", "/home/deploy/.ssh/id_ed25519")
 ANSIBLE_DIR = os.environ.get("ANSIBLE_DIR", "/opt/cluster/ansible")
 PROFILE = os.environ.get("CLUSTER_PROFILE", "step")
 RUNS_DIR = Path(os.environ.get("RUNS_DIR", "runs")).resolve()
+TOPOLOGY_FILE = os.environ.get("CLUSTER_TOPOLOGY", "/opt/cluster/current-topology.json")
+PANEL_NODE = os.environ.get("PANEL_NODE", "sparky")  # which topology node is local
 
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -52,17 +57,9 @@ _SSH = (
 )
 _PROFILE_ARG = f"-e @profiles/{shlex.quote(PROFILE)}.yml"
 
-# Restart every vLLM engine: worker node first, then the head/API node, so the
-# API comes back last. Globs vllm-*.service so it covers whatever the topology
-# placed on each node (systemctl resolves the glob against loaded units).
-_LOCAL_RESTART = "sudo systemctl restart 'vllm-*.service'"
-_RESTART_CMD = (
-    f"{_SSH} {shlex.quote(WORKER_SSH)} 'sudo systemctl restart vllm-*.service' && {_LOCAL_RESTART}"
-    if WORKER_SSH else _LOCAL_RESTART
-)
-
-# Each action maps to a fixed shell command built from server-side constants
-# only (no request data is ever interpolated), so there's no injection surface.
+# Global actions — fixed commands built from server-side constants only (no request
+# data is interpolated), so there's no injection surface. Per-engine restarts are
+# built from the topology state file (see _engine_restart_cmd).
 ACTIONS = {
     "deploy": {
         "label": "Deploy",
@@ -79,16 +76,10 @@ ACTIONS = {
         "desc": "Show what a deploy would change (--check --diff). Makes no changes.",
         "cmd": f"cd {shlex.quote(ANSIBLE_DIR)} && ansible-playbook site.yml {_PROFILE_ARG} --check --diff",
     },
-    "restart": {
-        "label": "Restart vLLM",
-        "danger": True,
-        "desc": "Restart vLLM on the worker node then the head. Briefly interrupts serving.",
-        "cmd": _RESTART_CMD,
-    },
     "teardown": {
-        "label": "Teardown vLLM",
+        "label": "Teardown",
         "danger": True,
-        "desc": "Stop and disable vLLM on both nodes (frees the GPUs). Open WebUI stays up.",
+        "desc": "Stop and disable all vLLM + Ollama engines on both nodes (frees the GPUs). Open WebUI stays up.",
         "cmd": f"cd {shlex.quote(ANSIBLE_DIR)} && ansible-playbook teardown.yml {_PROFILE_ARG}",
     },
 }
@@ -111,13 +102,18 @@ def _ssh_cmd(ssh, *args):
             ssh, *args]
 
 
-def _vllm_units(ssh=None):
-    """Discover vllm-*.service units and their state on a node.
+def _ssh_for(node):
+    """SSH target for a topology node, or None when it's the local (panel) node."""
+    return None if node == PANEL_NODE else WORKER_SSH
 
-    Topology-driven: whichever engines the current profile placed on this node
-    show up here, so the panel never hardcodes unit names that change when the
-    serving topology changes. Returns a list of (unit, state).
-    """
+
+def _is_active(unit, ssh=None):
+    cmd = ["systemctl", "is-active", unit]
+    return _run(_ssh_cmd(ssh, *cmd) if ssh else cmd)
+
+
+def _vllm_units(ssh=None):
+    """Discover vllm-*.service units and their state on a node (fallback only)."""
     cmd = ["systemctl", "list-units", "--type=service", "--all",
            "--plain", "--no-legend", "vllm-*.service"]
     units = []
@@ -132,26 +128,80 @@ def _container(name):
     return _run(["docker", "inspect", "-f", "{{.State.Status}}", name])
 
 
-def _api():
+def _vllm_api(base):
     try:
-        r = httpx.get(f"{VLLM_API}/v1/models", timeout=4)
+        r = httpx.get(f"{base}/v1/models", timeout=4)
         if r.status_code == 200:
-            return True, r.json()["data"][0]["id"]
+            data = r.json().get("data", [])
+            return True, (data[0]["id"] if data else "(no models)")
         return False, f"HTTP {r.status_code}"
     except Exception as e:  # noqa: BLE001
         return False, str(e)
 
 
+def _ollama_api(base):
+    try:
+        r = httpx.get(f"{base}/api/version", timeout=4)
+        return r.status_code == 200, ""
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
+def load_topology():
+    """The live serving topology recorded by the last deploy, or None."""
+    try:
+        with open(TOPOLOGY_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def topology_engines():
+    return (load_topology() or {}).get("engines", [])
+
+
 def gather():
-    api_ok, model = _api()
-    services = [(f"{unit} (sparky)", state) for unit, state in _vllm_units()]
-    if WORKER_SSH:
-        services += [(f"{unit} (snoopy)", state) for unit, state in _vllm_units(WORKER_SSH)]
-    services += [
-        ("Open WebUI", _container("open-webui")),
-        ("Caddy", _container("caddy")),
-    ]
-    return {"api_ok": api_ok, "model": model, "services": services, "ok_states": _OK_STATES}
+    topo = load_topology()
+    services = [("Open WebUI", _container("open-webui")), ("Caddy", _container("caddy"))]
+    if not topo:
+        # Fallback (no recorded topology, e.g. mid-deploy): show discovered units.
+        units = [(f"{u} (sparky)", st) for u, st in _vllm_units()]
+        if WORKER_SSH:
+            units += [(f"{u} (snoopy)", st) for u, st in _vllm_units(WORKER_SSH)]
+        return {"has_topology": False, "profile": None, "engines": [],
+                "units": units, "services": services, "ok_states": _OK_STATES}
+
+    engines = []
+    for e in topo.get("engines", []):
+        nodes = [{"node": n, "state": _is_active(e["unit"], _ssh_for(n))} for n in e["nodes"]]
+        if e["kind"] == "vllm":
+            api_ok, api_model = _vllm_api(e.get("api_url", ""))
+            model = e.get("served_as") or e.get("model") or "—"
+        else:
+            api_ok, _ = _ollama_api(e.get("api_url", ""))
+            model = api_model = ", ".join(e.get("models", [])) or "—"
+        engines.append({"name": e["name"], "kind": e["kind"], "port": e.get("port"),
+                        "nodes": nodes, "model": model,
+                        "api_ok": api_ok, "api_model": api_model})
+    return {"has_topology": True, "profile": topo.get("profile"),
+            "deployed_at": topo.get("deployed_at"), "engines": engines,
+            "services": services, "ok_states": _OK_STATES}
+
+
+def _engine_restart_cmd(engine):
+    """Restart one engine's unit across its nodes, worker(s) first, API node last,
+    so the API endpoint returns last. `engine` comes from the trusted state file
+    (Ansible-written), so its unit/node names are safe to interpolate."""
+    unit = engine["unit"]
+    api_node = engine.get("api_node", engine["nodes"][0])
+    ordered = sorted(engine["nodes"], key=lambda n: n == api_node)  # api node last
+    parts = []
+    for node in ordered:
+        if _ssh_for(node) is None:
+            parts.append(f"sudo systemctl restart {shlex.quote(unit)}")
+        else:
+            parts.append(f"{_SSH} {shlex.quote(_ssh_for(node))} 'sudo systemctl restart {unit}'")
+    return " && ".join(parts)
 
 
 # --- action runner ---------------------------------------------------------
@@ -192,20 +242,19 @@ def current_run():
     return {**meta, "status": status, "code": code, "log": _tail(d / "output.log")}
 
 
-def start_run(name):
+def start_run(name, label, cmd):
     state = current_run()
     if state and state["status"] == "running":
         raise HTTPException(409, "A run is already in progress.")
-    action = ACTIONS[name]
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     d = RUNS_DIR / run_id
     shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True)
     (d / "meta.json").write_text(json.dumps(
-        {"id": run_id, "name": name, "label": action["label"],
+        {"id": run_id, "name": name, "label": label,
          "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}))
     log, rc = d / "output.log", d / "done.rc"
-    wrapped = f"({action['cmd']}) > {shlex.quote(str(log))} 2>&1; echo $? > {shlex.quote(str(rc))}"
+    wrapped = f"({cmd}) > {shlex.quote(str(log))} 2>&1; echo $? > {shlex.quote(str(rc))}"
     proc = subprocess.Popen(["bash", "-c", wrapped], start_new_session=True)
     (d / "pid").write_text(str(proc.pid))
     (RUNS_DIR / "current").write_text(run_id)
@@ -218,10 +267,15 @@ def _ctx(request, **extra):
     return {"root": request.scope.get("root_path", ""), **extra}
 
 
+def _actions_ctx(request):
+    return _ctx(request, actions=ACTION_LIST, engines=topology_engines(), profile=PROFILE)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     return templates.TemplateResponse(request, "index.html", _ctx(
-        request, s=gather(), actions=ACTION_LIST, profile=PROFILE, run=current_run()))
+        request, s=gather(), actions=ACTION_LIST, engines=topology_engines(),
+        profile=PROFILE, run=current_run()))
 
 
 @app.get("/status", response_class=HTMLResponse)
@@ -234,15 +288,24 @@ def actions(request: Request):
     run = current_run()
     if run and run["status"] == "running":
         return templates.TemplateResponse(request, "_run.html", _ctx(request, run=run))
-    return templates.TemplateResponse(request, "_actions.html", _ctx(
-        request, actions=ACTION_LIST, profile=PROFILE))
+    return templates.TemplateResponse(request, "_actions.html", _actions_ctx(request))
 
 
 @app.post("/run/{name}", response_class=HTMLResponse)
 def run_action(request: Request, name: str):
     if name not in ACTIONS:
         raise HTTPException(404, "Unknown action.")
-    run = start_run(name)
+    a = ACTIONS[name]
+    run = start_run(name, a["label"], a["cmd"])
+    return templates.TemplateResponse(request, "_run.html", _ctx(request, run=run))
+
+
+@app.post("/run/engine/{name}", response_class=HTMLResponse)
+def run_engine(request: Request, name: str):
+    engine = next((e for e in topology_engines() if e["name"] == name), None)
+    if engine is None:
+        raise HTTPException(404, "Unknown engine.")
+    run = start_run(f"restart-{name}", f"Restart {name}", _engine_restart_cmd(engine))
     return templates.TemplateResponse(request, "_run.html", _ctx(request, run=run))
 
 
@@ -250,6 +313,5 @@ def run_action(request: Request, name: str):
 def run_view(request: Request):
     run = current_run()
     if not run:
-        return templates.TemplateResponse(request, "_actions.html", _ctx(
-            request, actions=ACTION_LIST, profile=PROFILE))
+        return templates.TemplateResponse(request, "_actions.html", _actions_ctx(request))
     return templates.TemplateResponse(request, "_run.html", _ctx(request, run=run))

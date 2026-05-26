@@ -173,7 +173,7 @@ DGX-Spark-Setup/                # git repo (source of truth)
 │   │   └── step.yml     # CURRENT config: model, TP=2, serve flags, webui
 │   └── roles/
 │       ├── common/            # vllm user, /opt/vllm dirs, NCCL conf (files/)
-│       ├── model/             # idempotent install from staging (skips if present)
+│       ├── model/             # ingest inbox→canonical (head), mirror to all nodes
 │       ├── vllm/              # ONE template -> both unit files; restart-on-change
 │       ├── open-webui/        # compose template + `docker compose up -d`
 │       └── caddy/             # reverse proxy on :80 — landing page + service routes
@@ -223,12 +223,11 @@ git clone <remote> ~/Projects/DGX-Spark-Setup   # on a fresh control node
 bash ~/Projects/DGX-Spark-Setup/ansible/bootstrap-deploy.sh
 #    Then log out/in (or `newgrp cluster`) to pick up the cluster group.
 
-# 2. Stage model weights where the model role can find them.
-#    Control node staging: /opt/cluster/model-cache/<MODEL>
+# 2. Download model weights into the inbox on the control node. On deploy the
+#    model role moves them into the canonical store (/opt/vllm/models) on the head
+#    and rsync-mirrors that store to every node — no manual copy to snoopy.
 hf download stepfun-ai/Step-3.5-Flash-FP8 \
     --local-dir /opt/cluster/model-cache/Step-3.5-Flash-FP8
-#    (Worker still needs the weights at /opt/vllm/models too — cross-node
-#     distribution isn't automated yet; rsync to snoopy if doing a fresh build.)
 
 # 3. Deploy a profile — publishes the repo to /opt/cluster, then handles both
 #    nodes end to end (common, model install if staged, worker, head + API wait,
@@ -318,16 +317,21 @@ A profile (`profiles/<name>.yml`) captures everything that varies per deployment
 `max_model_len`, `gpu_memory_utilization`, the head/worker serve-flag lists, and
 `enable_open_webui`. To add a model:
 
-1. Stage weights at `/opt/cluster/model-cache/<MODEL>` on sparky (and ensure
-   they reach snoopy's `/opt/vllm/models` too — cross-node sync not yet automated).
+1. Download weights into the inbox `/opt/cluster/model-cache/<MODEL>` on sparky.
+   The deploy moves them into the canonical store and mirrors to all nodes.
 2. Copy `profiles/step.yml` to `profiles/<name>.yml` and edit the values.
 3. `make deploy PROFILE=<name>` — Ansible re-templates the units and restarts.
 
-The `model` role moves staged weights into `/opt/vllm/models` (idempotent) and
-chowns them to `vllm`.
+The `model` role moves inbox weights into the canonical `/opt/vllm/models` on the
+head (chowned to `vllm`), then mirrors that store to every node (rsync,
+`--size-only`, no `--delete`) — so any node can serve any model locally.
 
-Memory budget per node at TP=2: ~97.5 GiB for weights + ~11 GiB headroom.
-A new model must fit within ~108.9 GiB (0.90 × 121 GiB) per shard.
+Memory budgeting is **per-profile**: `gpu_memory_utilization` is a deliberate
+split between vLLM and what's left for OS + user work, not a safety margin. See
+**[`docs/profile-tuning.md`](docs/profile-tuning.md)** for the math, the
+GB10 unified-memory accounting quirk, workflow archetypes (fully-committed /
+big-shared-with-headroom / small-and-dev-friendly / bare), and concrete
+per-model tunings.
 
 **Do not use:** `Qwen3.5-122B-A10B-FP8` — froze sparky during load.
 

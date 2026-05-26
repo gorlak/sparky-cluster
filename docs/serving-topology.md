@@ -1,8 +1,15 @@
 # Serving topology — profile-driven, multi-model cluster (design)
 
-**Status:** Design — not yet built. Prerequisite for the multi-tenant configs we
-want (e.g. MiniMax TP=2 + Qwen3-30B single-node + talkie via Ollama, all at once)
-and for moving serving onto snoopy to free sparky for dev work.
+> **Companion doc:** [`profile-tuning.md`](profile-tuning.md) — how to pick
+> `gpu_memory_utilization` and `max_model_len` for a given workflow, with the
+> per-model math and the GB10 unified-memory accounting quirk.
+
+**Status:** T1–T5 built (the full design). T1–T4 deployed on the `step` profile;
+T5 (topology state file + topology-aware control panel + teardown clear) built and
+offline-validated, pending deploy. The Ollama role is GPU-verified on GB10 but not
+yet exercised by a live profile. Next: author the multi-tenant configs (e.g.
+MiniMax TP=2 + Qwen3-30B single-node + talkie via Ollama, all at once) and move
+serving onto snoopy to free sparky for dev work.
 
 ## The problem
 
@@ -44,7 +51,8 @@ control panel point at the wrong place.
 ## The core abstraction: `serving_topology`
 
 A profile carries a list of **engines**. Two kinds: `vllm` (tensor-parallel
-across 1+ nodes, one OpenAI API) and `ollama` (standalone per node, many models).
+across 1+ nodes, one OpenAI API) and `ollama` (standalone, single-node, many
+models — one server per engine; to run Ollama on both nodes, declare two engines).
 
 ```yaml
 serving_topology:
@@ -90,7 +98,7 @@ IP (today a global constant — becomes per-engine); unit/container name =
 | Service | Projection |
 |---|---|
 | **vllm role** | For each `kind: vllm` engine, for each node in `nodes`: template a `vllm-<name>.service` (rank = list index; API+`served_as` only on rank 0; `--headless` on ranks > 0). A host loops over every engine that lists it — so one host can run several units on distinct ports. |
-| **ollama role** (new) | For each `kind: ollama` engine, on each listed node: ensure the Ollama container is up (persistent) and `ollama pull` each model. |
+| **ollama role** | For each `kind: ollama` engine (single-node), on its node: prune stale `ollama-*` units, bring the `ollama-<name>` container up (persistent), wait for its API, and `ollama pull` each model (idempotent). |
 | **open-webui** | `OPENAI_API_BASE_URLS` = each vllm engine's `api_host_ip:port/v1`; `OPENAI_API_KEYS` matching; `OLLAMA_BASE_URLS` = each ollama engine's `node_ip:port`; `ENABLE_OLLAMA_API=true` if any. (PersistentConfig — see below.) |
 | **prometheus** | vLLM scrape targets = each vllm engine's `api_host_ip:port`. Prefer `file_sd` (Ansible writes a targets file) so adding/removing engines reloads without a Prometheus restart. Node/GPU exporter jobs are unchanged (per-host, topology-agnostic). |
 | **grafana** | Dashboard panels group by the `model_name` label vLLM already emits, so multiple engines render as separate series instead of aggregating. A removed model just leaves a gap (graceful). |
@@ -158,9 +166,10 @@ skill and run a memory-profiled bring-up before committing a dense profile.
 - **Port convention** — explicit `port:` per engine (chosen here) vs auto-assign.
   Explicit is safer; document the in-use set (8000/8001 vLLM, 11434 Ollama, plus
   8080/3000/9090/9100/9835/8088 already taken).
-- **Ollama metrics** — does the pinned Ollama version expose Prometheus `/metrics`?
-  If not, GPU/throughput visibility for Ollama models is a gap (a sidecar exporter
-  later, or rely on the GPU exporter for utilization).
+- **Ollama metrics (resolved 2026-05-25)** — Ollama exposes **no** Prometheus
+  `/metrics` (verified on GB10). GPU utilization is covered by the GPU exporter;
+  loaded models via `/api/ps`. A sidecar exporter is a later option if per-model
+  throughput visibility is wanted.
 - **Pruning blast radius** — keep the `vllm-*`/`ollama-*` namespace strict so the
   enumerate-and-remove step can never touch an unmanaged unit.
 
@@ -179,3 +188,16 @@ skill and run a memory-profiled bring-up before committing a dense profile.
   start) over the REST-API push, so each deploy re-asserts connections. Trade-off
   — Admin Panel becomes read-only for config; drive admin settings via their env
   vars instead — documented in README "Known Shortcomings".
+- **2026-05-25 (T4)** — Added the `ollama` role, mirroring the vllm role's
+  prune-and-bring-up pattern (strict `ollama-*` namespace). An Ollama engine is
+  **single-node** (no multinode/TP): one server = one Open WebUI URL, so "Ollama
+  on both nodes" is two engine entries. Models pulled from each engine's `models:`
+  list (idempotent). GPU offload verified on GB10/sm_121 (CUDA v13, 100% offload,
+  co-resident with vLLM). `OLLAMA_CONTEXT_LENGTH` capped because Ollama's
+  vram-based default is sized to TOTAL unified memory. No Prometheus metrics.
+- **2026-05-25 (T5)** — Added `current-topology.json` (written by the new
+  `topology-state` role at the end of a deploy; cleared by teardown) as the single
+  record of "which profile is live + its engines, with each engine's unit and API
+  URL". The control panel reads it for topology-driven status (per-engine, per-node
+  health + API check) and per-engine restart buttons (worker-first, API node last),
+  with a unit-discovery fallback when the file is absent (e.g. mid-deploy).

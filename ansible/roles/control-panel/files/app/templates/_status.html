@@ -1,20 +1,48 @@
 <div id="status" hx-get="{{ root }}/status" hx-trigger="every 5s" hx-swap="outerHTML">
-  <p class="api">
-    API:
-    {% if s.api_ok %}
-      <span class="ok">up</span> — serving <code>{{ s.model }}</code>
-    {% else %}
-      <span class="bad">down</span> — {{ s.model }}
-    {% endif %}
-  </p>
+{% if s.has_topology %}
+  <p>Profile: <code>{{ s.profile or 'none' }}</code>
+     {% if s.deployed_at %}<span class="ts">· deployed {{ s.deployed_at }}</span>{% endif %}</p>
+  {% if s.engines %}
+  <table>
+    <thead><tr><th>Engine</th><th>Kind</th><th>Model</th><th>API</th><th>Nodes</th></tr></thead>
+    <tbody>
+    {% for e in s.engines %}
+      <tr>
+        <td><code>{{ e.name }}</code></td>
+        <td>{{ e.kind }}</td>
+        <td>{{ e.model }}</td>
+        <td>
+          {% if e.api_ok %}<span class="ok">up</span>{% else %}<span class="bad">down</span>{% endif %}
+          {% if e.api_model %}<span class="ts">{{ e.api_model }}</span>{% endif %}
+        </td>
+        <td>
+          {% for n in e.nodes %}
+            {{ n.node }}:<span class="{{ 'ok' if n.state in s.ok_states else 'bad' }}">{{ n.state }}</span>{{ ", " if not loop.last }}
+          {% endfor %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No engines deployed.</p>
+  {% endif %}
+{% else %}
+  <p class="hint">No topology state recorded — showing discovered units.</p>
+  <table>
+    <thead><tr><th>Unit</th><th>State</th></tr></thead>
+    <tbody>
+    {% for name, state in s.units %}
+      <tr><td>{{ name }}</td><td><span class="{{ 'ok' if state in s.ok_states else 'bad' }}">{{ state }}</span></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
   <table>
     <thead><tr><th>Service</th><th>State</th></tr></thead>
     <tbody>
     {% for name, state in s.services %}
-      <tr>
-        <td>{{ name }}</td>
-        <td><span class="{{ 'ok' if state in s.ok_states else 'bad' }}">{{ state }}</span></td>
-      </tr>
+      <tr><td>{{ name }}</td><td><span class="{{ 'ok' if state in s.ok_states else 'bad' }}">{{ state }}</span></td></tr>
     {% endfor %}
     </tbody>
   </table>

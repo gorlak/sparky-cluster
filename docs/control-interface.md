@@ -1,9 +1,11 @@
 # Control interface (admin panel + metrics) — design
 
-**Status:** P1 (control panel — read-only status at `/admin`) and P2 (metrics:
-node + GPU exporters, Prometheus, Grafana at `metrics.{{ web_domain }}`) are
-**built and deployed**. P3 (control actions via `ansible-runner`) is the
-remaining phase.
+**Status:** P1 (read-only status at `/admin`) and P2 (metrics: node + GPU
+exporters, Prometheus, Grafana at `metrics.{{ web_domain }}`) are **built and
+deployed**. P3 (control actions — deploy / dry-run / teardown / per-engine
+restart) is **built** — implemented with detached subprocesses that write results
+to disk (not `ansible-runner`; simpler, same crash-survival). The panel is now
+topology-aware via `current-topology.json` (see serving-topology.md T5).
 
 This is the "Dashboard" item from the README's Future Work. It has two halves: a
 small custom **control panel** that drives Ansible, and a **Grafana metrics**

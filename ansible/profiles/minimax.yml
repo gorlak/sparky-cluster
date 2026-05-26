@@ -1,0 +1,40 @@
+---
+# Single big shared model — MiniMax-M2.7 TP=2 across both nodes (same shape as
+# `step`, just a different model). MiniMax has the cluster to itself.
+#
+# Memory math (gmu 0.75 — "big-shared with dev headroom"):
+#   gmu 0.75 × 121 GiB = 90.75 GiB vLLM budget per node.
+#   weights ~60.93 GiB + CUDA graphs ~0.65 GiB → ~29 GiB KV available per rank.
+#   At max_model_len 131072 (~16 GiB per sequence) that's room for 1–2 concurrent
+#   long-context requests — comfortable for single/few-user feel.
+# Outside headroom: 121 − 91 ≈ ~30 GiB per node free for system + dev work.
+# Rationale + alternatives in docs/profile-tuning.md (raise to 0.85 for more KV,
+# lower to 0.65 for more dev headroom).
+#
+# MiniMax quant is auto-detected compressed-tensors int4 → NO --quantization
+# (would double-quantize → garbage). Custom modeling_minimax_m2.py is handled by
+# the template's global --trust-remote-code. Tool-call parser deliberately not set
+# yet — the MiniMax parser name in vLLM 0.19 / image 26.04 hasn't been verified.
+
+profile_name: minimax
+serving_topology:
+  - name: minimax
+    kind: vllm
+    nodes: [sparky, snoopy]      # nodes[0]=sparky is rank 0 / the API host
+    port: 8000
+    model: MiniMax-M2.7-AWQ-4bit
+    served_as: minimax-m2
+    tensor_parallel_size: 2
+    gpu_memory_utilization: "0.75"
+    # 128k well inside model's 196608 trained max (no RoPE extrapolation); at this
+    # gmu/budget it uses ~16 GiB of ~29 GiB KV per rank, leaving room for batching.
+    max_model_len: 131072
+    head_extra_args:
+      - --enable-chunked-prefill
+    worker_extra_args:
+      - --enable-chunked-prefill
+
+enable_open_webui: true
+enable_reverse_proxy: true
+enable_control_panel: true
+enable_metrics: true

@@ -5,7 +5,8 @@
 #
 # Plays run in order so services come up cleanly: prerequisites + models on all
 # nodes, then every vLLM engine in the profile's serving_topology is brought up
-# across all nodes, then we wait for each engine's API, then the front-end.
+# across all nodes, then we wait for each engine's API, then Ollama engines (pull
+# their models), then the front-end (Open WebUI auto-wires to both via the spec).
 
 - name: Prerequisites and model (all nodes)
   hosts: all
@@ -28,6 +29,12 @@
         name: vllm
         tasks_from: wait
       tags: [vllm]
+
+- name: Ollama engines — configure, bring up, pull models (all nodes)
+  hosts: all
+  roles:
+    - role: ollama
+      tags: [ollama]
 
 - name: Open WebUI front-end (sparky)
   hosts: head
@@ -70,3 +77,11 @@
     - role: grafana
       tags: [metrics]
       when: enable_metrics | default(true)
+
+# Record what was just deployed so the control panel (and "which profile is live?")
+# can read it. Last, so it reflects a fully brought-up topology.
+- name: Record deployed topology (state file)
+  hosts: head
+  roles:
+    - role: topology-state
+      tags: [topology, control-panel]

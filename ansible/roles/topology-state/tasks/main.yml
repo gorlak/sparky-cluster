@@ -1,0 +1,36 @@
+---
+# Record the live serving topology to a JSON state file the control panel reads
+# (the deployed profile + a normalized engine list with each engine's unit name and
+# API URL). Written at the end of a successful deploy; teardown clears it. This is
+# the single answer to "which profile is live, with what engines, where?" — see
+# docs/serving-topology.md (T5).
+
+- name: Build the normalized engine list for the state file
+  ansible.builtin.set_fact:
+    topology_engines: "{{ topology_engines | default([]) + [_base | combine(_extra)] }}"
+  vars:
+    _base:
+      name: "{{ item.name }}"
+      kind: "{{ item.kind }}"
+      unit: "{{ item.kind }}-{{ item.name }}.service"
+      container: "{{ item.kind }}-{{ item.name }}"
+      nodes: "{{ item.nodes }}"
+      api_node: "{{ item.nodes[0] }}"
+      port: "{{ item.port }}"
+      api_url: "http://{{ hostvars[item.nodes[0]].vllm_host_ip }}:{{ item.port }}"
+    _extra: >-
+      {{ {'served_as': item.served_as | default(''), 'model': item.model | default('')}
+         if item.kind == 'vllm'
+         else {'models': item.models | default([])} }}
+  loop: "{{ serving_topology | default([]) }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.kind }})"
+
+- name: Record the deployed topology to the state file
+  ansible.builtin.copy:
+    content: "{{ {'profile': profile_name | default(cluster_profile), 'deployed_at': ansible_date_time.iso8601, 'engines': topology_engines | default([])} | to_nice_json }}\n"
+    dest: "{{ cluster_topology_file }}"
+    owner: deploy
+    group: cluster
+    mode: "0644"
+  become: true

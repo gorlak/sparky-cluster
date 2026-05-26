@@ -8,9 +8,11 @@ Wants=network-online.target
 Type=simple
 User=deploy
 WorkingDirectory={{ control_panel_dir }}
-# Config via env so the app hardcodes nothing. Worker host derived from inventory.
-Environment=VLLM_API=http://127.0.0.1:8000
+# Config via env so the app hardcodes nothing. Worker host + this node's name come
+# from inventory; the topology state file feeds the topology-aware status/actions.
 Environment=WORKER_SSH=deploy@{{ hostvars[groups['worker'][0]].vllm_host_ip }}
+Environment=PANEL_NODE={{ inventory_hostname }}
+Environment=CLUSTER_TOPOLOGY={{ cluster_topology_file }}
 Environment=DEPLOY_SSH_KEY=/home/deploy/.ssh/id_ed25519
 # Control actions (P3): the panel runs ansible-playbook from the published live
 # tree against this profile, and records runs here.

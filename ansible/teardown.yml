@@ -1,13 +1,14 @@
 ---
-# Stop the cluster and free GPU memory. Discovers every vLLM engine unit on each
-# node (vllm.service / vllm-*.service) and stops + disables + removes it — so it
-# works regardless of which engines a profile defined. Open WebUI is CPU-only and
-# is left running unless you explicitly ask for it:
+# Stop the cluster and free GPU memory. Discovers every vLLM and Ollama engine
+# unit on each node (vllm.service / vllm-*.service, ollama.service /
+# ollama-*.service) and stops + disables + removes it — so it works regardless of
+# which engines a profile defined. Open WebUI is CPU-only and is left running
+# unless you explicitly ask for it:
 #
-#   make teardown                 # stops all vLLM engines on both nodes
+#   make teardown                 # stops all vLLM + Ollama engines on both nodes
 #   ansible-playbook teardown.yml --tags webui   # also stops Open WebUI + Caddy
 
-- name: Stop all vLLM engines (all nodes)
+- name: Stop all vLLM + Ollama engines (all nodes)
   hosts: all
   tasks:
     - name: Find vLLM unit files
@@ -33,6 +34,42 @@
         label: "{{ item.path | basename }}"
       changed_when: false
       failed_when: false
+
+    - name: Find Ollama unit files
+      ansible.builtin.find:
+        paths: /etc/systemd/system
+        patterns: ['ollama.service', 'ollama-*.service']
+      register: ollama_units
+
+    - name: Stop and disable each Ollama unit
+      ansible.builtin.systemd:
+        name: "{{ item.path | basename }}"
+        state: stopped
+        enabled: false
+      loop: "{{ ollama_units.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      failed_when: false
+
+    - name: Remove each Ollama container
+      ansible.builtin.command: "docker rm -f {{ item.path | basename | regex_replace('\\.service$', '') }}"
+      loop: "{{ ollama_units.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      changed_when: false
+      failed_when: false
+
+- name: Clear the topology state file (nothing deployed)
+  hosts: head
+  tasks:
+    - name: Overwrite current-topology.json with an empty topology
+      ansible.builtin.copy:
+        content: "{{ {'profile': none, 'deployed_at': ansible_date_time.iso8601, 'engines': []} | to_nice_json }}\n"
+        dest: "{{ cluster_topology_file }}"
+        owner: deploy
+        group: cluster
+        mode: "0644"
+      become: true
 
 - name: Stop front-end — Open WebUI + Caddy (only with --tags webui)
   hosts: head

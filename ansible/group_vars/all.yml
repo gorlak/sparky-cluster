@@ -14,11 +14,11 @@ nccl_conf_path: /opt/vllm/nccl-env.conf
 vllm_user: vllm
 vllm_group: vllm
 
-# Staging dir for model weights before they're moved into vllm_models_dir.
-# Lives under the deploy-owned /opt/cluster on the control node. NOTE: the
-# worker (snoopy) has no /opt/cluster — cross-node model distribution is a
-# future enhancement; today both nodes already hold the weights so the model
-# role is a no-op there. See roles/model.
+# Download inbox for new model weights (head/control node only). `hf download`
+# into {{ model_cache_dir }}/<MODEL>; the model role MOVES it into the canonical
+# store ({{ vllm_models_dir }}) on the head, then rsync-mirrors the whole store to
+# every other node. The inbox is transient (emptied on deploy) and snoopy is a
+# pure mirror — no manual cross-node copy. See roles/model.
 model_cache_dir: /opt/cluster/model-cache
 
 # Multi-node rendezvous (vLLM 0.19 native multinode, no Ray) is per-engine:
@@ -30,6 +30,17 @@ model_cache_dir: /opt/cluster/model-cache
 vllm_shm_size: 32g
 vllm_container_memory: 120g
 vllm_systemd_memory_max: 124G
+
+# Ollama (per-node standalone engines — see roles/ollama + docs/serving-topology.md).
+# Verified on GB10/sm_121 with --gpus all --cgroupns=host (CUDA v13, 100% offload,
+# co-resides with vLLM). One ollama engine = one server on one node; multiple on
+# the same node need distinct ports.
+ollama_image: ollama/ollama:latest
+ollama_data_dir: /opt/ollama          # per-engine model cache: {{ ollama_data_dir }}/<engine>
+ollama_keep_alive: "5m"               # idle-unload models → frees the GPU
+# Cap the context: Ollama's vram-based default is computed from TOTAL unified
+# memory (huge) and would OOM a GPU shared with vLLM. Override per engine if needed.
+ollama_context_length: 8192
 
 # Metrics stack (P2) — see docs/control-interface.md. Exporters run on every node;
 # Prometheus + Grafana on the head. (GB10 reports no GPU memory via nvidia-smi —
@@ -87,6 +98,10 @@ control_panel_port: 8088
 # LIVE; cluster_profile is the panel's default — profile switching is future work.)
 cluster_ansible_dir: /opt/cluster/ansible
 cluster_profile: step
+# Live serving-topology state file: the topology-state role writes it at the end of
+# a deploy (and teardown clears it); the control panel reads it for topology-aware
+# status + per-engine actions. See docs/serving-topology.md (T5).
+cluster_topology_file: /opt/cluster/current-topology.json
 
 # Links shown on the landing page (sparky.flummoxed.net/).
 landing_services:

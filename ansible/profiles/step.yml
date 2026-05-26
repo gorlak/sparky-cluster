@@ -16,7 +16,15 @@ serving_topology:
     model: Step-3.5-Flash-FP8    # dir under /opt/vllm/models
     served_as: step-3.5-flash
     tensor_parallel_size: 2
+    # gmu 0.90 — step is a "fully-committed" workflow (weights alone are ~97 GiB
+    # per shard, so there's no meaningful outside headroom to give back). Use
+    # other machines for dev while step is deployed. See docs/profile-tuning.md.
     gpu_memory_utilization: "0.90"
+    # 32k is step's *empirical* balanced value: at gmu 0.90 vLLM reported 11.7 GiB
+    # KV available, and 32k fit without complaint. Pushing higher would depend on
+    # sliding_window=512's KV-reduction kicking in inside vLLM's accounting, which
+    # we haven't measured — a real boundary unknown. Revisit with an empirical test
+    # (lower gmu probe, or kv-cache-dtype fp8 once the multi-turn bug is sorted).
     max_model_len: 32768
     # The API node gets the tool/reasoning parsers + auto tool choice; the
     # headless worker only needs the compute-side flag. --kv-cache-dtype fp8 /

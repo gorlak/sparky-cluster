@@ -8,6 +8,17 @@
     {% endfor %}
   </div>
 
+  {% if engines %}
+  <h3>Restart an engine</h3>
+  <p class="hint">Restarts one engine across its nodes (worker first, API node last).</p>
+  <div class="actions">
+    {% for e in engines %}
+      <button class="btn danger"
+              onclick="document.getElementById('dlg-eng-{{ e.name }}').showModal()">{{ e.name }}</button>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {% for a in actions %}
     <dialog id="dlg-{{ a.name }}">
       <h3>{{ a.label }}?</h3>
@@ -16,6 +27,20 @@
         <button class="btn" onclick="this.closest('dialog').close()">Cancel</button>
         <button class="btn {{ 'danger' if a.danger }}"
                 hx-post="{{ root }}/run/{{ a.name }}"
+                hx-target="#actionarea" hx-swap="outerHTML"
+                onclick="this.closest('dialog').close()">Confirm</button>
+      </menu>
+    </dialog>
+  {% endfor %}
+
+  {% for e in engines %}
+    <dialog id="dlg-eng-{{ e.name }}">
+      <h3>Restart {{ e.name }}?</h3>
+      <p>Restart <code>{{ e.unit }}</code> on {{ e.nodes | join(', ') }} (worker first, API node last). Briefly interrupts serving.</p>
+      <menu class="modal-actions">
+        <button class="btn" onclick="this.closest('dialog').close()">Cancel</button>
+        <button class="btn danger"
+                hx-post="{{ root }}/run/engine/{{ e.name }}"
                 hx-target="#actionarea" hx-swap="outerHTML"
                 onclick="this.closest('dialog').close()">Confirm</button>
       </menu>

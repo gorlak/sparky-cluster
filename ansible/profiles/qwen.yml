@@ -1,0 +1,35 @@
+---
+# Sparky-free profile (state c) — sparky runs only the light CPU services (Open
+# WebUI, Caddy, control panel, Prometheus, Grafana); snoopy serves Qwen3-30B
+# single-node. ~100+ GiB of sparky's GPU/RAM is yours for day-job work.
+#
+# The engine here intentionally MATCHES `qwen-dual.yml`'s qwen-snoopy entry
+# byte-for-byte (same name, same served_as, same flags). Effect: switching between
+# `qwen` and `qwen-dual` only adds/removes `qwen-sparky` — qwen-snoopy keeps
+# serving without a restart (the vllm role only restarts a unit when its template
+# content actually changes).
+#
+# vLLM auto-detects Qwen's block-FP8 quant — no --quantization. Hermes tool-call
+# parser enabled (Qwen3 Instruct supports it).
+
+profile_name: qwen
+serving_topology:
+  - name: qwen-snoopy
+    kind: vllm
+    nodes: [snoopy]
+    port: 8000
+    model: Qwen3-30B-A3B-Instruct-2507-FP8
+    served_as: qwen3-30b-snoopy
+    tensor_parallel_size: 1
+    gpu_memory_utilization: "0.50"
+    max_model_len: 131072        # balanced; matches qwen-dual's qwen-snoopy byte-for-byte
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --enable-auto-tool-choice
+      - --tool-call-parser hermes
+    worker_extra_args: []
+
+enable_open_webui: true
+enable_reverse_proxy: true
+enable_control_panel: true
+enable_metrics: true

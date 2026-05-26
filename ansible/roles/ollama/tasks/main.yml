@@ -1,0 +1,69 @@
+---
+# Topology-driven Ollama engines. Mirrors the vllm role: templates one
+# ollama-<name>.service per ollama engine that includes this host, prunes any
+# ollama-* unit no longer desired, then brings each up and pulls its models.
+# Ollama is per-node standalone (no multinode/TP); each engine is one server on
+# one node. Verified on GB10/sm_121. See docs/serving-topology.md.
+
+- name: Select the Ollama engines that run on this host
+  ansible.builtin.set_fact:
+    host_ollama_engines: "{{ host_ollama_engines | default([]) + [item] }}"
+  loop: "{{ serving_topology | default([]) | selectattr('kind', 'equalto', 'ollama') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: inventory_hostname in item.nodes
+
+- name: Compute the desired unit names for this host
+  ansible.builtin.set_fact:
+    desired_ollama_units: >-
+      {{ host_ollama_engines | default([]) | map(attribute='name')
+         | map('regex_replace', '^', 'ollama-') | map('regex_replace', '$', '.service')
+         | list }}
+
+# --- prune: drop Ollama units this host should no longer run -----------------
+- name: Find existing Ollama unit files
+  ansible.builtin.find:
+    paths: /etc/systemd/system
+    patterns: ['ollama.service', 'ollama-*.service']
+  register: ollama_unit_files
+
+- name: Stop and disable pruned Ollama units
+  ansible.builtin.systemd:
+    name: "{{ item.path | basename }}"
+    state: stopped
+    enabled: false
+  loop: "{{ ollama_unit_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in desired_ollama_units
+  failed_when: false
+
+- name: Remove pruned Ollama containers
+  ansible.builtin.command: "docker rm -f {{ item.path | basename | regex_replace('\\.service$', '') }}"
+  loop: "{{ ollama_unit_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in desired_ollama_units
+  changed_when: false
+  failed_when: false
+
+- name: Remove pruned Ollama unit files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ ollama_unit_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in desired_ollama_units
+
+- name: Reload systemd after pruning
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# --- bring up the desired engines + pull their models -----------------------
+- name: Configure, start, and populate each Ollama engine on this host
+  ansible.builtin.include_tasks: engine.yml
+  loop: "{{ host_ollama_engines | default([]) }}"
+  loop_control:
+    loop_var: engine
+    label: "{{ engine.name }} on {{ inventory_hostname }}"
