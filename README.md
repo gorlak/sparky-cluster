@@ -2,44 +2,69 @@
 
 ---
 
-## Current State (2026-05-24)
+## Current state
 
-**This project lives on sparky (the control node) at `~/Projects/DGX-Spark-Setup/`.**
+The cluster is managed by Ansible and switches between **profiles** —
+declarative YAML configs under `ansible/profiles/` describing what serves
+where. Today's profile family:
 
-The cluster is running and serving **`stepfun-ai/Step-3.5-Flash-FP8`** via
-vLLM 0.19 native multinode (TP=2, no Ray) across sparky + snoopy. Open WebUI
-is up at http://sparky (port 80).
+| Profile | Shape |
+|---|---|
+| `step` | Step-3.5-Flash TP=2 across both nodes (fully-committed big-shared) |
+| `minimax` | MiniMax-M2.7 TP=2 across both nodes (big-shared, ~30 GiB/node dev headroom) |
+| `qwen-dual` | Qwen3-30B single-node on each node (~60 GiB/node dev headroom) |
+| `qwen` | Qwen3-30B single-node on snoopy only (sparky free for dev) |
+| `empty` | nothing serving; full hardware available |
 
-**The cluster is managed by Ansible.** The source of truth is this git repo at
-`ansible/`; `make deploy` publishes it to `/opt/cluster/ansible` (the runtime copy
-the `deploy` user reads) and applies it. The current deployment is the `step`
-profile. Day-to-day ops: `cd ~/Projects/DGX-Spark-Setup/ansible && make <target>`
-— see Cluster Operations. The old per-step shell scripts + root Makefile are
-preserved in git history (the initial "archive of prior scripts" commit), not in
-the working tree.
+Apply with `make deploy PROFILE=<name>` from `ansible/`. See
+[`docs/profiles.md`](docs/profiles.md) for what each one serves and how to
+switch; [`docs/profile-tuning.md`](docs/profile-tuning.md) for the *why* —
+picking `gpu_memory_utilization` as a deliberate split between vLLM and
+system/dev memory, plus the GB10 unified-memory accounting quirk.
 
-### Active services
+For the **live** state of the cluster (which profile is deployed, which
+engines are up):
 
-| Service | Node | State |
+- `http://sparky.flummoxed.net/admin` — control panel (status + per-engine actions)
+- `/opt/cluster/current-topology.json` — written at the end of every deploy
+- `make status` — systemd state of vLLM units on both nodes
+
+**Repo layout:** this project lives on sparky (the control node) at
+`~/Projects/DGX-Spark-Setup/`. The source of truth is this git repo's `ansible/`
+dir; `make deploy` publishes it to `/opt/cluster/ansible` (the runtime copy the
+`deploy` user reads) and applies it. The old per-step shell scripts + root
+Makefile are preserved in git history (the initial "archive of prior scripts"
+commit), not in the working tree.
+
+### Services
+
+**Always running** (independent of which profile is deployed):
+
+| Service | Node | Role |
 |---|---|---|
-| `vllm.service` | sparky | enabled, running — head (rank 0), API on :8000 |
-| `vllm-worker.service` | snoopy | enabled, running — headless worker (rank 1) |
-| `caddy` | sparky | Docker Compose, restart: always — reverse proxy on :80 |
-| `open-webui` | sparky | Docker Compose, restart: always — internal :8080, behind Caddy |
-| `control-panel.service` | sparky | systemd (User=deploy) — status panel on 127.0.0.1:8088, behind Caddy `/admin` |
-| `prometheus` | sparky | Docker Compose — metrics TSDB on :9090 |
-| `grafana` | sparky | Docker Compose — dashboards on :3000, behind Caddy `metrics.` |
-| `node-exporter` + `nvidia-gpu-exporter` | both | Docker Compose — system + GPU metrics (:9100 / :9835) |
+| `caddy` (Docker) | sparky | reverse proxy on `:80`; routes by hostname/path |
+| `open-webui` (Docker) | sparky | chat UI on `:8080`, fronted at `chat.{web_domain}` |
+| `control-panel.service` (systemd, `User=deploy`) | sparky | FastAPI status + actions on `127.0.0.1:8088`, fronted at `/admin` |
+| `prometheus` (Docker) | sparky | metrics TSDB on `:9090` |
+| `grafana` (Docker) | sparky | dashboards on `:3000`, fronted at `metrics.{web_domain}` |
+| `node-exporter` + `nvidia-gpu-exporter` (Docker) | both | system + GPU metrics on `:9100` / `:9835` |
+
+**Per-profile** (dynamic — the active `serving_topology` decides which exist):
+
+| Unit name pattern | Role |
+|---|---|
+| `vllm-<engine>.service` (systemd) | one per vLLM engine the active profile declares |
+| `ollama-<engine>.service` (systemd) | one per Ollama engine (role exists; no profile uses it today) |
 
 ### Web access
 
 Caddy fronts `:80` and routes by hostname/path:
 - `http://sparky.flummoxed.net/` — landing page (links to services)
-- `http://sparky.flummoxed.net/admin` — cluster control panel (read-only status)
+- `http://sparky.flummoxed.net/admin` — cluster control panel (status + actions)
 - `http://chat.sparky.flummoxed.net/` — Open WebUI (login required)
 - `http://metrics.sparky.flummoxed.net/` — Grafana dashboards (anonymous view)
 
-This needs a **wildcard DNS record** `*.sparky.flummoxed.net → sparky's IP` (one
+Needs a **wildcard DNS record** `*.sparky.flummoxed.net → sparky's IP` (one
 record; every future service is then just a new route in the Caddyfile, no DNS
 change). Open WebUI runs at the root of its own hostname because it doesn't
 support being served under a sub-path. The landing page is templated from
@@ -51,21 +76,12 @@ Users**. Auth knobs are the `webui_*` vars in `group_vars/all.yml`. (Note: a
 from-scratch install must briefly re-enable sign-up to create that first admin —
 see the comment on `webui_enable_signup`.)
 
-### Known working configuration
-
-- Image: `nvcr.io/nvidia/vllm:26.04-py3` (SM12.1 CUTLASS fix; required for GB10)
-- Model: `Step-3.5-Flash-FP8` at `/opt/vllm/models/Step-3.5-Flash-FP8` on both nodes
-- TP=2 multinode via `--nnodes 2 / --node-rank 0|1 / --master-addr 10.0.200.12`
-- `--gpu-memory-utilization 0.90` — weights are ~97.5 GiB/node, leaves ~11 GiB
-- `--max-model-len 32768`
-- `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1` — accurate CUDA graph memory accounting
-
 ### Pending investigation
 
-`--kv-cache-dtype fp8` and `--enable-prefix-caching` were disabled to achieve
-stable multi-turn operation. The failure mode was: Nth inference in a
-conversation would produce garbage/nonstop thinking tokens. Hypothesis:
-FP8 KV cache + prefix caching interact badly in vLLM 0.19 on this model.
+`--kv-cache-dtype fp8` and `--enable-prefix-caching` were disabled on `step` to
+achieve stable multi-turn operation. The failure mode was: Nth inference in a
+conversation would produce garbage/nonstop thinking tokens. Hypothesis: FP8 KV
+cache + prefix caching interact badly in vLLM 0.19 on this model.
 
 Re-enable one at a time and run multi-turn conversations to narrow it down:
 1. `--kv-cache-dtype fp8` alone
@@ -312,14 +328,17 @@ No manual intervention needed after a reboot.
 
 ## Adding New Models / Profiles
 
-A profile (`profiles/<name>.yml`) captures everything that varies per deployment:
-`model_name`, `served_model_name`, `tensor_parallel_size`, `num_nodes`,
-`max_model_len`, `gpu_memory_utilization`, the head/worker serve-flag lists, and
-`enable_open_webui`. To add a model:
+Profiles live at `ansible/profiles/<name>.yml` — each captures the full
+`serving_topology` (engines, models, nodes, ports, `gmu`, `max_model_len`) plus
+front-end toggles. The catalog of current profiles is in
+**[`docs/profiles.md`](docs/profiles.md)**; the schema is in
+[`docs/serving-topology.md`](docs/serving-topology.md). To stage a new model:
 
 1. Download weights into the inbox `/opt/cluster/model-cache/<MODEL>` on sparky.
    The deploy moves them into the canonical store and mirrors to all nodes.
-2. Copy `profiles/step.yml` to `profiles/<name>.yml` and edit the values.
+2. Copy an existing profile that matches your shape (`step.yml` / `minimax.yml`
+   for big-shared TP; `qwen-dual.yml` / `qwen.yml` for per-node small) to
+   `profiles/<name>.yml` and edit.
 3. `make deploy PROFILE=<name>` — Ansible re-templates the units and restarts.
 
 The `model` role moves inbox weights into the canonical `/opt/vllm/models` on the

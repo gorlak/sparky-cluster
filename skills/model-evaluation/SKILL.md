@@ -50,21 +50,30 @@ sudo docker run --rm nvcr.io/nvidia/vllm:26.04-py3 python3 -c "import ray" 2>&1
 Lesson: vLLM 0.19 dropped Ray entirely. A 30-second container check would
 have caught this before writing Ray unit files.
 
-### 4. Memory math — use 0.90 utilization as the baseline
+### 4. Memory math — `gpu_memory_utilization` is a split, not a baseline
 
-```
-Budget per node = 0.90 × usable_VRAM
-               = 0.90 × 121 GiB = 108.9 GiB on GB10
+`gmu` is **per-profile** — a deliberate split between vLLM and what's left for
+OS + your dev/build work. Not a universal "safety margin to set as high as
+possible." Procedure:
 
-Headroom = Budget − weights_per_node
-         = 108.9 − (disk_size / num_nodes)
-```
+1. Pick your outside-headroom target — what needs to run concurrently with the
+   model? (e.g. *30 GiB for dev sessions*, *0 GiB for fully-committed*.)
+2. **vLLM budget = `121 GiB − outside_headroom`**.
+3. Subtract the weights shard and CUDA graphs to find KV available.
+4. Verify KV fits your chosen `max_model_len` with reasonable batching headroom.
+5. **`gmu = vLLM_budget / 121`**.
 
-If headroom < ~8 GiB, KV cache will be severely constrained.
-If headroom < 0, the model does not fit — do not proceed.
+See [`docs/profile-tuning.md`](../../docs/profile-tuning.md) for the math, the
+GB10 unified-memory accounting quirk, workflow archetypes, and the per-model
+tunings already in use.
 
-`--gpu-memory-utilization 0.70` (old default) is too low for large models.
-Use 0.90 unless there is a specific reason not to.
+Footguns:
+- There is no global default `gmu` — each profile declares it per engine.
+- vLLM refuses to start if KV doesn't fit max_model_len; trust its
+  `estimated maximum model length is N` diagnostic over back-of-envelope math.
+- **Co-residency** of vLLM engines on the same node distorts KV asymmetrically
+  (rank-asymmetric CUDA graphs under MoE+TP). See operational-gotcha #8 — the
+  current strategy avoids co-residency entirely.
 
 ### 5. Start with the minimal flag set
 

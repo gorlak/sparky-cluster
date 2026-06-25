@@ -4,16 +4,18 @@
 > `gpu_memory_utilization` and `max_model_len` for a given workflow, with the
 > per-model math and the GB10 unified-memory accounting quirk.
 
-**Status:** T1–T5 built (the full design). T1–T4 deployed on the `step` profile;
-T5 (topology state file + topology-aware control panel + teardown clear) built and
-offline-validated, pending deploy. The Ollama role is GPU-verified on GB10 but not
-yet exercised by a live profile. Next: author the multi-tenant configs (e.g.
-MiniMax TP=2 + Qwen3-30B single-node + talkie via Ollama, all at once) and move
-serving onto snoopy to free sparky for dev work.
+**Status:** T1–T5 built and deployed. The full profile family
+([`profiles.md`](profiles.md)) lives on this design: `step` and `minimax` are
+big-shared TP=2; `qwen-dual` and `qwen` are per-node single-engine; `empty` takes
+the cluster down to bare. Co-residency of vLLM engines on one node was attempted
+(retired `multi` profile) and abandoned — see decisions log + operational
+gotcha #8 (rank-asymmetric CUDA graphs under co-residency). The Ollama role is
+GPU-verified on GB10 but unused by any current profile. Talkie is deferred to
+a custom-runtime follow-on (see TODO.md).
 
-## The problem
+## Motivation (the pre-T1 problem this design solved)
 
-Today the cluster serves exactly **one** vLLM engine with node identity baked in:
+Before T1 the cluster served exactly **one** vLLM engine with node identity baked in:
 
 - `inventory.yml` + `group_vars/{head,worker}.yml` hardwire `head`=sparky (rank 0,
   API on `:8000`) and `worker`=snoopy (rank 1, headless). The `vllm` role
@@ -158,8 +160,14 @@ skill and run a memory-profiled bring-up before committing a dense profile.
    wired into Open WebUI + (best-effort) metrics.
 5. **T5 — state file + control panel + teardown.** Write `current-topology.json`;
    control panel reads it for status and per-engine P3 actions; teardown prunes.
-6. **Then:** author the multi-tenant profile (MiniMax + Qwen30 + talkie) and do
-   the memory-profiled bring-up to confirm the snoopy budget empirically.
+6. **Then (done differently):** authored a profile *family* instead of a single
+   multi-tenant config — `step`, `minimax`, `qwen-dual`, `qwen`, `empty` (see
+   [`profiles.md`](profiles.md)). The original `multi` (MiniMax TP=2 + Qwen30
+   single-node co-resident on snoopy + talkie via Ollama) was attempted, hit a
+   rank-asymmetric CUDA-graph KV squeeze under co-residency, and was retired in
+   favor of "TP for big, per-node for small, **no co-residency**" — see
+   operational-gotchas #8 and `profile-tuning.md`. Talkie deferred to its own
+   custom-runtime follow-on (TODO.md).
 
 ## Open questions
 
