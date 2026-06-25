@@ -40,6 +40,52 @@ similar hardware but different hostnames/IPs.
 
 ---
 
+## Privatize repo for public Codeberg publishing
+
+Remove personal identifiers so the repo is safe to publish publicly. Approach:
+`.example` files for anything gitignored; generic placeholders in docs.
+
+**What to extract into gitignored files:**
+
+- `ansible/inventory.yml` → gitignore it; commit `ansible/inventory.yml.example`
+  with `<head-node>` / `<worker-node>` / `<head-ip>` / `<worker-ip>` placeholders.
+- New `ansible/group_vars/local.yml` (gitignored) + `local.yml.example` — moves
+  these out of the committed `all.yml`:
+  - `web_domain` (currently `sparky.flummoxed.net`)
+  - `master_addr` (currently `10.0.200.12` — also tracked by the "inventory-driven"
+    item below; can be derived instead: `hostvars[groups['head'][0]].vllm_host_ip`)
+  - `admin_user` (currently hardcoded as `geoff` in `bootstrap-deploy.sh`)
+
+**What to update in committed files:**
+
+- `bootstrap-deploy.sh` — replace hardcoded `ADMIN_USER=geoff`,
+  `SNOOPY=geoff@10.0.200.13`, SSH key path with variables sourced from a
+  local config or with clear top-of-file "edit these" comments.
+- `ansible/Makefile` — replace `SNOOPY := deploy@10.0.200.13` similarly.
+- Hostname guard `[[ "$(hostname)" == "sparky" ]]` in bootstrap — replace with
+  a configurable `HEAD_HOSTNAME` var or remove the guard entirely (it's just a
+  safety check).
+- Docs/comments — replace `sparky`/`snoopy`/`geoff`/`flummoxed.net` with
+  `<head-node>`/`<worker-node>`/`<admin>`/`<your-domain>` throughout README,
+  docs/, and script comments.
+
+**Nice-to-have:** rename the Ansible inventory hosts from `sparky`/`snoopy` to
+`head`/`worker` so profile YAMLs (`nodes: [sparky, snoopy]`) don't leak
+hostnames either. More invasive — do last or separately.
+
+**Test approach:**
+1. `ansible-playbook --syntax-check site.yml` with example files in place —
+   catches missing variable references before touching the cluster.
+2. `shellcheck ansible/bootstrap-deploy.sh` — catches shell regressions.
+3. `make check PROFILE=step` (dry run) — confirms templates render correctly.
+4. Full `make deploy` on the actual cluster to confirm end-to-end.
+
+> Cross-reference: the "Make node identity fully inventory-driven" item below
+> overlaps on `master_addr` and the shell leaks — this item supersedes the
+> shell parts of that one.
+
+---
+
 ## Talkie — its own profile via `algal/talkie-server` (fun lane)
 
 Talkie-lm uses a custom `TalkieForCausalLM` arch that **neither vLLM nor stock

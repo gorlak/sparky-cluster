@@ -1,6 +1,6 @@
 # Cluster automation — thin wrapper over ansible-playbook.
 #
-# Source of truth: this repo (~/Projects/DGX-Spark-Setup/ansible), under git.
+# Source of truth: this repo's ansible/ dir, under git.
 # deploy/check/teardown first PUBLISH this source to the live location
 # (/opt/cluster/ansible — what the deploy user reads), then run Ansible there as
 # deploy. Publishing is automatic; it's not a step you run separately.

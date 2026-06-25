@@ -11,7 +11,7 @@ Failures here are cheap. Failures after a full deploy are expensive.
 ### 1. Verify actual disk size first
 
 ```bash
-du -sh ~/Projects/DGX-Spark-Setup/model-cache/<model>/
+du -sh <repo>/model-cache/<model>/
 ```
 
 **Disk size ≈ VRAM footprint** for quantized models. Do not trust model cards

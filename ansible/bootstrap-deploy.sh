@@ -7,7 +7,7 @@
 #
 # Run it ONCE, by geoff, from sparky, AFTER the ansible project is complete:
 #
-#     bash ~/Projects/DGX-Spark-Setup/ansible/bootstrap-deploy.sh
+#     bash ansible/bootstrap-deploy.sh
 #
 # Do NOT pre-sudo it. It escalates per-step with `sudo` locally (you'll be
 # prompted for your password) and reaches snoopy over your existing SSH
@@ -142,6 +142,22 @@ else
     die "deploy SSH hop failed — check /home/deploy/.ssh on both nodes"
 fi
 
+# --- geoff's SSH config: scope id_ed25519_shared to cluster machines only --
+log "scoping id_ed25519_shared to cluster machines in ~/.ssh/config"
+SSH_CONFIG="$HOME/.ssh/config"
+CLUSTER_SSH_BLOCK="Host sparky snoopy 10.0.200.12 10.0.200.13 192.168.100.2 192.168.100.3
+    IdentityFile ~/.ssh/id_ed25519_shared"
+if grep -q "id_ed25519_shared" "$SSH_CONFIG" 2>/dev/null; then
+    log "  ~/.ssh/config already references id_ed25519_shared — skipping (verify it is scoped, not wildcarded)"
+else
+    mkdir -p "$HOME/.ssh"
+    printf '\n%s\n' "$CLUSTER_SSH_BLOCK" >> "$SSH_CONFIG"
+    chmod 600 "$SSH_CONFIG"
+    log "  added cluster SSH config block to ~/.ssh/config"
+fi
+log "copying ~/.ssh/config to snoopy"
+scp -i "$SSH_KEY" "$SSH_CONFIG" "$SNOOPY:.ssh/config"
+
 # --- initial publish of the ansible project into /opt/cluster --------------
 # The repo is the source of truth; this is the first publish of it to the live
 # runtime location. Thereafter `make deploy` re-publishes (rsync) automatically.
@@ -149,8 +165,8 @@ log "publishing ansible project to $CLUSTER_DIR/ansible"
 sudo rsync -a --chown="$DEPLOY_USER:$CLUSTER_GROUP" "$SCRIPT_DIR"/ "$CLUSTER_DIR/ansible/"
 
 log "bootstrap complete."
-log "  • Source of truth: the git repo (~/Projects/DGX-Spark-Setup/ansible)."
+log "  • Source of truth: the git repo at $SCRIPT_DIR."
 log "  • $CLUSTER_DIR/ansible is the published runtime copy deploy runs from."
 log "  • Log out and back in (or run: newgrp $CLUSTER_GROUP) to pick up the"
 log "    '$CLUSTER_GROUP' group so 'make deploy' can publish to $CLUSTER_DIR."
-log "  • Then: cd ~/Projects/DGX-Spark-Setup/ansible && make deploy"
+log "  • Then: cd $SCRIPT_DIR && make deploy"

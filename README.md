@@ -29,8 +29,7 @@ engines are up):
 - `/opt/cluster/current-topology.json` — written at the end of every deploy
 - `make status` — systemd state of vLLM units on both nodes
 
-**Repo layout:** this project lives on sparky (the control node) at
-`~/Projects/DGX-Spark-Setup/`. The source of truth is this git repo's `ansible/`
+**Repo layout:** this project lives on sparky (the control node) wherever you cloned it. The source of truth is this git repo's `ansible/`
 dir; `make deploy` publishes it to `/opt/cluster/ansible` (the runtime copy the
 `deploy` user reads) and applies it. The old per-step shell scripts + root
 Makefile are preserved in git history (the initial "archive of prior scripts"
@@ -172,7 +171,7 @@ can't read your `0750` home). You edit in the repo; the live copy only changes w
 you deploy. Publishing needs the `cluster` group (log in once after bootstrap).
 
 ```
-DGX-Spark-Setup/                # git repo (source of truth)
+<repo>/                          # git repo (source of truth)
 ├── README.md                  # canonical project docs (vendor-neutral)
 ├── CLAUDE.md                  # thin Claude Code entry point — imports README + skills
 ├── .gitignore                 # excludes model-cache/, .claude/, caches
@@ -232,11 +231,11 @@ Ansible diffs current vs desired state: it tears down/reconfigures/brings up as 
 
 ```bash
 # 0. Get the repo (rebuild/new machine): clone it, or it's already here.
-git clone <remote> ~/Projects/DGX-Spark-Setup   # on a fresh control node
+git clone <remote> <repo>   # on a fresh control node; clone wherever you like
 
 # 1. (Once per cluster) create the deploy identity + /opt/cluster. Run as geoff
 #    on sparky; prompts for sudo on both nodes.
-bash ~/Projects/DGX-Spark-Setup/ansible/bootstrap-deploy.sh
+bash <repo>/ansible/bootstrap-deploy.sh
 #    Then log out/in (or `newgrp cluster`) to pick up the cluster group.
 
 # 2. Download model weights into the inbox on the control node. On deploy the
@@ -248,7 +247,7 @@ hf download stepfun-ai/Step-3.5-Flash-FP8 \
 # 3. Deploy a profile — publishes the repo to /opt/cluster, then handles both
 #    nodes end to end (common, model install if staged, worker, head + API wait,
 #    Open WebUI).
-cd ~/Projects/DGX-Spark-Setup/ansible && make deploy PROFILE=step
+cd <repo>/ansible && make deploy PROFILE=step
 ```
 
 The `model` role is idempotent: if the weights are already at
