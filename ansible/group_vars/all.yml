@@ -5,13 +5,14 @@
 # Container runtime. Pinned to NVIDIA's image built for GB10 / SM12.1 (see
 # CLAUDE.md). Update on both nodes, digests must match.
 #
-# ⚠️ 26.06 (vLLM 0.22.1, CUDA 13.3, forward-compat driver 610.43.02) HARD-HANGS
-# both nodes during the 2-node TP=2 bring-up — SSH-unresponsive, required a hard
-# reset (2026-07-02). Rendezvous NCCL-hard-failed on the parallel restart, then
-# memory pressure loading the 121 GiB checkpoint over the new CUDA-13.3
-# forward-compat driver locked the machines up (same class as the Qwen3.5-122B
-# freeze). Do NOT re-pin 26.06 without a safer bring-up path. NVFP4 needs 26.05+,
-# so this must be revisited — see models/step-3.7-flash.md blockers.
+# ⚠️ Upgrade to 26.06 (needed for NVFP4) is IN PROGRESS but blocked upstream —
+# see docs/upgrades/nvidia-vllm-26.06-py3.md. 26.06 (vLLM 0.22.1, NCCL 2.30.5) HARD-HANGS
+# both nodes at 2-node TP=2 bring-up (SSH-dead, hard-reset both, 2026-07-02).
+# Root cause: NCCL 2.30.4+ NVLS regression on GB10-without-NVLink (NVIDIA/nccl#2167;
+# 26.04's NCCL 2.29.7 is unaffected). The `NCCL_NVLS_ENABLE=0` killswitch is now
+# staged in roles/common/files/nccl-env.conf as the likely fix — but do NOT re-pin
+# 26.06 until the upgrade doc's completion criteria are met (and only behind the
+# ADR-0011 fail-safe boot net).
 vllm_image: nvcr.io/nvidia/vllm:26.04-py3
 
 # Host paths

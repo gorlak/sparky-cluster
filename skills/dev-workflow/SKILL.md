@@ -41,7 +41,7 @@ commit as the implementation it documents.
 ## ADRs
 
 Every significant architectural or operational decision shipped to the cluster
-gets an ADR in `adr/`. See `adr/README.md` for the index and format. When
+gets an ADR in `docs/adr/`. See `docs/adr/README.md` for the index and format. When
 implementing something new, write the ADR alongside the implementation and
 commit both together.
 

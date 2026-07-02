@@ -27,12 +27,12 @@ as slash commands). When a task matches one, read its `SKILL.md` and follow it:
 - **`skills/adr/SKILL.md`** — when to write an ADR vs. update documentation,
   the status lifecycle (Proposed → Accepted → Implemented → Superseded), and
   the immutability rule for Implemented ADRs. Read before touching any file in
-  `adr/` or before deciding whether a new decision needs one.
+  `docs/adr/` or before deciding whether a new decision needs one.
 
 ---
 
 ## Architecture Decision Records
 
-Significant decisions shipped to this cluster are documented in `adr/`. See
-`adr/README.md` for the index. When implementing something new, write the ADR
+Significant decisions shipped to this cluster are documented in `docs/adr/`. See
+`docs/adr/README.md` for the index. When implementing something new, write the ADR
 alongside the implementation and commit both together.

@@ -1,5 +1,24 @@
 # DGX Spark Cluster — vLLM + Open WebUI
 
+A two-node NVIDIA DGX Spark (GB10) cluster serving LLMs with vLLM + Open WebUI,
+managed by Ansible. One node is the head (`sparky`), the other a worker
+(`snoopy`); profiles decide what serves where.
+
+## Node naming — a Peanuts theme
+
+**Sparky** was the lifelong nickname of
+[Charles M. Schulz](https://en.wikipedia.org/wiki/Charles_M._Schulz), the creator
+of *Peanuts* — so the head node bears his name (and, fittingly, `sparky` is always
+the "head" 🥁). Every **worker** node is therefore named after a *Peanuts*
+character, starting with `snoopy`.
+
+If the cluster ever scales past two nodes, take the next worker name from this
+fixed roster, in order, so hostnames stay deterministic:
+
+`snoopy`, `woodstock`, `charlie`, `linus`, `lucy`, `schroeder`, `sally`
+
+**Invariant:** `sparky` is always the head; workers are always *Peanuts* characters.
+
 ---
 
 ## Current state
@@ -150,7 +169,11 @@ aarch64 torch wheel is CPU-only — a pip/venv install cannot serve models on
 this hardware. NVIDIA's image ships matching torch + vLLM compiled for sm_121.
 
 **Why 26.04:** SM12.1 CUTLASS kernels were broken in 26.03 (fixed in vLLM PR
-#38126). 26.03 causes ~40 CUDA traps during warmup on GB10.
+#38126). 26.03 causes ~40 CUDA traps during warmup on GB10. And **do not move to
+26.06 yet** — it ships NCCL 2.30.5, whose NVLS regression hard-hangs dual GB10 at
+multinode bring-up. The 26.06 upgrade (needed for NVFP4) is an in-progress,
+upstream-blocked migration tracked in
+[`docs/upgrades/nvidia-vllm-26.06-py3.md`](docs/upgrades/nvidia-vllm-26.06-py3.md).
 
 **Multi-node:** vLLM 0.19 dropped Ray entirely. Native multinode uses
 `--nnodes / --node-rank / --master-addr / --headless` with torch.distributed
@@ -175,8 +198,15 @@ you deploy. Publishing needs the `cluster` group (log in once after bootstrap).
 ├── README.md                  # canonical project docs (vendor-neutral)
 ├── CLAUDE.md                  # thin Claude Code entry point — imports README + skills
 ├── .gitignore                 # excludes .claude/, caches
-├── adr/                       # Architecture Decision Records (one per shipped decision)
 ├── skills/                    # agent skills (model-scout, model-evaluation, dev-workflow)
+├── docs/                      # all project documentation
+│   ├── adr/                   # Architecture Decision Records (one per shipped decision)
+│   ├── models/                # per-model status notes (memory fit, serve flags)
+│   ├── upgrades/              # versioned upgrade trackers (e.g. nvidia-vllm-26.06-py3.md)
+│   ├── profiles.md            # profile catalog + switching
+│   ├── profile-tuning.md      # gmu math, workflow archetypes
+│   ├── serving-topology.md    # profile schema
+│   └── control-interface.md   # control-panel design
 ├── ansible/                   # THE Ansible project (git-tracked)
 │   ├── ansible.cfg            # runs as deploy; become via sudo (NOPASSWD)
 │   ├── inventory.yml          # sparky (head, local) + snoopy (worker, ssh)
@@ -193,8 +223,7 @@ you deploy. Publishing needs the `cluster` group (log in once after bootstrap).
 │       ├── vllm/              # ONE template -> both unit files; restart-on-change
 │       ├── open-webui/        # compose template + `docker compose up -d`
 │       └── caddy/             # reverse proxy on :80 — landing page + service routes
-├── benchmark/                 # vllm bench serve wrapper + compare tool
-└── models/                    # model status notes
+└── benchmark/                 # vllm bench serve wrapper + compare tool
                                # (prior scripts live in git history, not the tree)
 
 /opt/cluster/ansible/          # PUBLISHED runtime copy (deploy-owned; `make deploy`

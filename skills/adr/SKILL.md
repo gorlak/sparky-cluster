@@ -1,6 +1,6 @@
 ---
 name: adr
-description: When to write an ADR, what belongs in one vs. in documentation, and the immutability rules for completed ADRs. Read before creating or modifying any file in adr/ or before deciding whether a change needs an ADR.
+description: When to write an ADR, what belongs in one vs. in documentation, and the immutability rules for completed ADRs. Read before creating or modifying any file in docs/adr/ or before deciding whether a change needs an ADR.
 ---
 
 ## What an ADR is
@@ -71,15 +71,15 @@ Do **not** write one for:
 
 ## How to write one
 
-1. Copy the structure from any existing `adr/NNNN-*.md`.
-2. Number sequentially from the last entry in `adr/README.md`.
+1. Copy the structure from any existing `docs/adr/NNNN-*.md`.
+2. Number sequentially from the last entry in `docs/adr/README.md`.
 3. Status starts at `Proposed` or `Accepted` depending on whether the decision
    is final.
 4. Sections: **Context** (what problem, what constraints), **Options
    considered** (each with pros/cons), **Decision** (what was chosen and the
    one-line reason), **Consequences** (what becomes easier, what becomes harder,
    what constraints are now in place).
-5. Add a row to `adr/README.md`.
+5. Add a row to `docs/adr/README.md`.
 6. Commit the ADR **in the same commit** as the implementation it documents.
    See [[dev-workflow]] for commit conventions.
 
