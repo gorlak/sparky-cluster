@@ -48,7 +48,7 @@ other) see the model sheets: `docs/models/step-3.5-flash.md` and
 
 1. **Container upgrade to 26.06** — NVFP4 needs the b12x SM12.1 FP4 kernels that 26.04
    lacks. That upgrade is itself in-progress and upstream-blocked — see
-   `docs/upgrades/nvidia-vllm-26.06-py3.md`.
+   `docs/upgrades/container-nvidia-vllm-26.06-py3.md`.
 2. **fp8 KV cache multi-turn investigation** — NVFP4 requires `--kv-cache-dtype fp8`, the
    same knob implicated in the `step` multi-turn corruption (README "Pending
    investigation"). Must be cleared before NVFP4 can be trusted.
@@ -69,5 +69,5 @@ it into the inbox first (`/opt/cluster/model-cache/Step-3.7-Flash-<QUANT>`), the
 ## References
 
 - `docs/models/step-3.5-flash.md`, `docs/models/step-3.7-flash.md` — per-model fact sheets
-- `docs/upgrades/nvidia-vllm-26.06-py3.md` — the container upgrade the NVFP4 path depends on
+- `docs/upgrades/container-nvidia-vllm-26.06-py3.md` — the container upgrade the NVFP4 path depends on
 - ADR-0011 (fail-safe boot); README "Pending investigation" (fp8 KV cache)

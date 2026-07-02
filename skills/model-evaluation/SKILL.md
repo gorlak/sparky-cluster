@@ -1,6 +1,6 @@
 ---
 name: model-evaluation
-description: Pre-deployment checklist for evaluating a new model for this cluster. Use when considering a new model, estimating memory fit, or writing vllm serve flags for the first time.
+description: Evaluating models for this cluster — the pre-deployment fit checklist for one model (memory math, config.json, vllm serve flags), plus the fleet-wide sourcing sweep that reviews the deployed models for worthwhile upgrades. Use before deploying a new model, when estimating fit, or when asked to "assess upgrading our models".
 ---
 
 ## Model Evaluation Checklist
@@ -8,14 +8,22 @@ description: Pre-deployment checklist for evaluating a new model for this cluste
 Work through these in order before writing any service files or configs.
 Failures here are cheap. Failures after a full deploy are expensive.
 
-### 1. Verify actual disk size first
+### 1. Verify actual size first — before downloading if you can
+
+Size the repo straight from the Hub, no download needed (see [[model-discovery]]):
+
+```bash
+hf models ls <org/repo> --tree -h      # per-file sizes; sum the *.safetensors
+```
+
+Once it's staged locally, confirm with `du`:
 
 ```bash
 du -sh /opt/cluster/model-cache/<model>/
 ```
 
 **Disk size ≈ VRAM footprint** for quantized models. Do not trust model cards
-or pre-download estimates — verify with `du` before any memory math.
+or "active parameter" estimates — get the real byte count before any memory math.
 
 Lesson: Step-3.5-Flash-FP8 was estimated at ~50 GiB/node based on "active
 parameter" count. Actual size was 195 GiB / ~97.5 GiB per node. The model
@@ -90,3 +98,43 @@ Known footguns on this cluster:
 When output is wrong or the service fails to start, change exactly one
 variable per restart. With a 10+ minute restart cycle, shotgun changes make
 root cause analysis nearly impossible.
+
+---
+
+## Fleet sourcing sweep
+
+The checklist above evaluates *one* model you're about to deploy. This sweep is the
+periodic, fleet-wide review that decides whether the models we already run are worth
+upgrading — "keeping the cluster's models current." Use it when asked to **"assess
+upgrading our models"**, after a notable release, or when a blocking dependency clears
+(e.g. a container upgrade lands — check `docs/upgrades/`).
+
+**Assessment only — never change a profile or deploy as part of the sweep.**
+
+1. **Enumerate the fleet.** List each Ansible profile and the model it serves
+   (`ansible/profiles/*.yml` → `model:`), grouped by shape: big-shared TP=2 (`step`,
+   `minimax`) vs per-node single (`qwen`, `qwen-dual`). Note the current quant and its
+   fact sheet under `docs/models/`.
+
+2. **Find upgrades for each served model** ([[model-discovery]]): a newer generation of the
+   family (Step-3.5 → 3.7; MiniMax-M2.7 → M3; a newer Qwen3-30B) or a better/newer quant
+   (NVFP4 availability; official vs community; calibrated vs RTN). Record release date,
+   HF repo, quant method.
+
+3. **Assess each candidate's fit** with the checklist above — size it
+   (`hf models ls <repo> --tree -h`, no download), do the per-node memory math at the
+   profile's TP, and cross-check container/tooling needs against the blockers in
+   `docs/upgrades/` (e.g. the 26.06/NVFP4 gate) and README "Pending investigation".
+
+4. **Write it up** ([[documentation]]): a new candidate → fact sheet
+   `docs/models/<model>.md`; a viable profile upgrade → tracker
+   `docs/upgrades/profile-<profile>-<target>.md` (delta + implications + dependencies +
+   completion criteria + recommendation). A candidate gated on a blocked dependency is
+   **blocked**, not recommended — link the tracker that must clear first.
+
+5. **Summarize** with a prioritized table, one row per profile:
+   `profile | current model | best candidate | memory/quality delta | blockers |
+   recommendation` (upgrade now / interim / hold / blocked-until-X).
+
+Honor the **"Do not use"** list (README "Adding New Models / Profiles"). Committing the
+produced docs: see [[development]] (stage, don't commit).

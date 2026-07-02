@@ -6,7 +6,7 @@
 # CLAUDE.md). Update on both nodes, digests must match.
 #
 # ⚠️ Upgrade to 26.06 (needed for NVFP4) is IN PROGRESS but blocked upstream —
-# see docs/upgrades/nvidia-vllm-26.06-py3.md. 26.06 (vLLM 0.22.1, NCCL 2.30.5) HARD-HANGS
+# see docs/upgrades/container-nvidia-vllm-26.06-py3.md. 26.06 (vLLM 0.22.1, NCCL 2.30.5) HARD-HANGS
 # both nodes at 2-node TP=2 bring-up (SSH-dead, hard-reset both, 2026-07-02).
 # Root cause: NCCL 2.30.4+ NVLS regression on GB10-without-NVLink (NVIDIA/nccl#2167;
 # 26.04's NCCL 2.29.7 is unaffected). The `NCCL_NVLS_ENABLE=0` killswitch is now

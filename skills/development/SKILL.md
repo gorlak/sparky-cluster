@@ -1,5 +1,5 @@
 ---
-name: dev-workflow
+name: development
 description: Development workflow conventions for this repository. Read before making changes, committing, or pushing. Covers git commit ownership, staging, and collaboration style.
 ---
 
@@ -41,9 +41,9 @@ commit as the implementation it documents.
 ## ADRs
 
 Every significant architectural or operational decision shipped to the cluster
-gets an ADR in `docs/adr/`. See `docs/adr/README.md` for the index and format. When
-implementing something new, write the ADR alongside the implementation and
-commit both together.
+gets an ADR in `docs/adr/` — see [[documentation]] for when and how to write one
+(and the index at `docs/adr/README.md`). Write the ADR alongside the
+implementation and commit both together.
 
 ## No Cleanup Commits
 

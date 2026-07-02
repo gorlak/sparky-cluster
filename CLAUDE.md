@@ -14,20 +14,23 @@ Agent skills live in `skills/` (kept here rather than the default
 `.claude/skills/` to keep the repo vendor-neutral, so they are NOT auto-registered
 as slash commands). When a task matches one, read its `SKILL.md` and follow it:
 
-- **`skills/model-scout/SKILL.md`** — search HuggingFace for new models /
-  quantizations that fit this cluster's hardware. Use when asked to check for
-  better models, newer quantizations, or what's new that fits.
-- **`skills/model-evaluation/SKILL.md`** — pre-deployment checklist for a new
-  model (memory-fit estimate, writing `vllm serve` flags). Use before deploying
-  a new model or estimating whether one fits.
-- **`skills/dev-workflow/SKILL.md`** — development workflow conventions: git
-  commit ownership, staging, ADR requirements. Read before making changes or
+- **`skills/model-discovery/SKILL.md`** — search HuggingFace (via the `hf` CLI)
+  for new models / quantizations that fit this cluster's hardware. Use when asked
+  to check for better models, newer quantizations, or what's new that fits.
+- **`skills/model-evaluation/SKILL.md`** — evaluating models: the pre-deployment
+  fit checklist for one model (memory math, `config.json`, `vllm serve` flags),
+  plus the **fleet sourcing sweep** that reviews the deployed models for worthwhile
+  upgrades. Use before deploying a model, when estimating fit, or when asked to
+  "assess upgrading our models".
+- **`skills/documentation/SKILL.md`** — conventions for the `docs/` tree: model
+  fact sheets (`docs/models/`), upgrade trackers (`docs/upgrades/`, named
+  `container-…` / `profile-…`), and **decision records** (`docs/adr/` — ADR
+  lifecycle, immutability, when to write one). Read when documenting a model,
+  planning/tracking an upgrade, or writing/deciding on an ADR.
+- **`skills/development/SKILL.md`** — development workflow conventions: git
+  commit ownership, staging, ADR-in-same-commit. Read before making changes or
   preparing commits. **Geoff runs all git commits** — never run `git commit`
   unless explicitly asked.
-- **`skills/adr/SKILL.md`** — when to write an ADR vs. update documentation,
-  the status lifecycle (Proposed → Accepted → Implemented → Superseded), and
-  the immutability rule for Implemented ADRs. Read before touching any file in
-  `docs/adr/` or before deciding whether a new decision needs one.
 
 ---
 

@@ -173,7 +173,7 @@ this hardware. NVIDIA's image ships matching torch + vLLM compiled for sm_121.
 26.06 yet** — it ships NCCL 2.30.5, whose NVLS regression hard-hangs dual GB10 at
 multinode bring-up. The 26.06 upgrade (needed for NVFP4) is an in-progress,
 upstream-blocked migration tracked in
-[`docs/upgrades/nvidia-vllm-26.06-py3.md`](docs/upgrades/nvidia-vllm-26.06-py3.md).
+[`docs/upgrades/container-nvidia-vllm-26.06-py3.md`](docs/upgrades/container-nvidia-vllm-26.06-py3.md).
 
 **Multi-node:** vLLM 0.19 dropped Ray entirely. Native multinode uses
 `--nnodes / --node-rank / --master-addr / --headless` with torch.distributed
@@ -198,11 +198,12 @@ you deploy. Publishing needs the `cluster` group (log in once after bootstrap).
 ├── README.md                  # canonical project docs (vendor-neutral)
 ├── CLAUDE.md                  # thin Claude Code entry point — imports README + skills
 ├── .gitignore                 # excludes .claude/, caches
-├── skills/                    # agent skills (model-scout, model-evaluation, dev-workflow)
+├── skills/                    # agent skills (model-discovery, model-evaluation, documentation, development)
 ├── docs/                      # all project documentation
 │   ├── adr/                   # Architecture Decision Records (one per shipped decision)
 │   ├── models/                # per-model status notes (memory fit, serve flags)
-│   ├── upgrades/              # versioned upgrade trackers (e.g. nvidia-vllm-26.06-py3.md)
+│   ├── upgrades/              # versioned upgrade trackers, prefixed by kind:
+│   │                          #   container-nvidia-vllm-26.06-py3, profile-step-3.7-flash
 │   ├── profiles.md            # profile catalog + switching
 │   ├── profile-tuning.md      # gmu math, workflow archetypes
 │   ├── serving-topology.md    # profile schema
