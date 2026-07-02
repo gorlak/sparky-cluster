@@ -1,6 +1,16 @@
 <div id="actionarea">
   <h2>Actions</h2>
-  <p class="hint">Profile: <code>{{ profile }}</code> · actions run as the <code>deploy</code> user</p>
+  <p class="hint">Deployed: <code>{{ profile }}</code> · runs as <code>deploy</code></p>
+
+  <div style="display:flex; align-items:center; gap:.6rem; margin:.6rem 0 1rem">
+    <label for="profile-select" style="font-size:.9rem; opacity:.7; white-space:nowrap">Target profile</label>
+    <select id="profile-select" name="profile" class="btn" style="padding:.35rem .6rem">
+      {% for p in profiles %}
+        <option value="{{ p }}"{% if p == profile %} selected{% endif %}>{{ p }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
   <div class="actions">
     {% for a in actions %}
       <button class="btn {{ 'danger' if a.danger }}"
@@ -27,6 +37,7 @@
         <button class="btn" onclick="this.closest('dialog').close()">Cancel</button>
         <button class="btn {{ 'danger' if a.danger }}"
                 hx-post="{{ root }}/run/{{ a.name }}"
+                hx-include="#profile-select"
                 hx-target="#actionarea" hx-swap="outerHTML"
                 onclick="this.closest('dialog').close()">Confirm</button>
       </menu>

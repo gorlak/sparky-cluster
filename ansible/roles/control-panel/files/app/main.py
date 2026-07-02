@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -55,37 +55,57 @@ _SSH = (
     f"ssh -i {shlex.quote(DEPLOY_SSH_KEY)} -o BatchMode=yes "
     f"-o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new"
 )
-_PROFILE_ARG = f"-e @profiles/{shlex.quote(PROFILE)}.yml"
 
-# Global actions — fixed commands built from server-side constants only (no request
-# data is interpolated), so there's no injection surface. Per-engine restarts are
-# built from the topology state file (see _engine_restart_cmd).
+# Action metadata — commands are built dynamically at request time so that the
+# profile can be chosen per-action from the UI (not baked in at startup).
 ACTIONS = {
     "deploy": {
         "label": "Deploy",
         "danger": False,
-        "desc": (
-            f"Apply the {PROFILE} profile to the cluster. Idempotent — restarts "
-            "services only if a unit actually changed."
-        ),
-        "cmd": f"cd {shlex.quote(ANSIBLE_DIR)} && ansible-playbook site.yml {_PROFILE_ARG}",
+        "desc": "Apply the selected profile to the cluster. Idempotent — restarts services only if a unit changed.",
     },
     "check": {
         "label": "Dry run",
         "danger": False,
-        "desc": "Show what a deploy would change (--check --diff). Makes no changes.",
-        "cmd": f"cd {shlex.quote(ANSIBLE_DIR)} && ansible-playbook site.yml {_PROFILE_ARG} --check --diff",
+        "desc": "Show what deploying the selected profile would change (--check --diff). Makes no changes.",
     },
     "teardown": {
         "label": "Teardown",
         "danger": True,
-        "desc": "Stop and disable all vLLM + Ollama engines on both nodes (frees the GPUs). Open WebUI stays up.",
-        "cmd": f"cd {shlex.quote(ANSIBLE_DIR)} && ansible-playbook teardown.yml {_PROFILE_ARG}",
+        "desc": "Stop and disable all vLLM + Ollama engines on both nodes (frees the GPUs). Open WebUI stays up. Profile-agnostic — stops whatever is running.",
     },
 }
 
 ACTION_LIST = [{"name": k, **{f: v[f] for f in ("label", "danger", "desc")}}
                for k, v in ACTIONS.items()]
+
+
+def available_profiles():
+    """Names of profiles present in the ansible dir, sorted."""
+    p = Path(ANSIBLE_DIR) / "profiles"
+    try:
+        return sorted(f.stem for f in p.glob("*.yml"))
+    except OSError:
+        return [PROFILE]
+
+
+def current_profile():
+    """Profile name from the live topology, fallback to env default."""
+    topo = load_topology()
+    if topo and topo.get("profile"):
+        return topo["profile"]
+    return PROFILE
+
+
+def _build_cmd(name, profile):
+    base = f"cd {shlex.quote(ANSIBLE_DIR)} && ansible-playbook"
+    if name == "deploy":
+        return f"{base} site.yml -e @profiles/{shlex.quote(profile)}.yml"
+    if name == "check":
+        return f"{base} site.yml -e @profiles/{shlex.quote(profile)}.yml --check --diff"
+    if name == "teardown":
+        return f"{base} teardown.yml"
+    return None
 
 
 def _run(cmd, timeout=6):
@@ -268,14 +288,17 @@ def _ctx(request, **extra):
 
 
 def _actions_ctx(request):
-    return _ctx(request, actions=ACTION_LIST, engines=topology_engines(), profile=PROFILE)
+    deployed = current_profile()
+    return _ctx(request, actions=ACTION_LIST, engines=topology_engines(),
+                profile=deployed, profiles=available_profiles())
 
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    deployed = current_profile()
     return templates.TemplateResponse(request, "index.html", _ctx(
         request, s=gather(), actions=ACTION_LIST, engines=topology_engines(),
-        profile=PROFILE, run=current_run()))
+        profile=deployed, profiles=available_profiles(), run=current_run()))
 
 
 @app.get("/status", response_class=HTMLResponse)
@@ -292,11 +315,19 @@ def actions(request: Request):
 
 
 @app.post("/run/{name}", response_class=HTMLResponse)
-def run_action(request: Request, name: str):
+async def run_action(request: Request, name: str, profile: str = Form("")):
     if name not in ACTIONS:
         raise HTTPException(404, "Unknown action.")
+    profiles = available_profiles()
+    # Validate profile against known list — prevents path traversal / injection.
+    if profile not in profiles:
+        profile = current_profile()
+    if profile not in profiles:
+        raise HTTPException(400, f"Unknown profile: {profile!r}")
+    cmd = _build_cmd(name, profile)
     a = ACTIONS[name]
-    run = start_run(name, a["label"], a["cmd"])
+    label = a["label"] if name == "teardown" else f"{a['label']} ({profile})"
+    run = start_run(name, label, cmd)
     return templates.TemplateResponse(request, "_run.html", _ctx(request, run=run))
 
 
