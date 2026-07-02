@@ -1,4 +1,28 @@
 <div id="status" hx-get="{{ root }}/status" hx-trigger="every 5s" hx-swap="outerHTML">
+{% if s.failsafe %}
+  <div class="failsafe-banner">
+    <strong>⚠ Fail-safe recovery</strong>
+    <p>An engine was skipped at boot — the last shutdown was unclean (hang / hard-reset),
+       so the node came up empty and reachable instead of re-running the risky load
+       (ADR-0011). Recover to the deployed configuration:</p>
+    <div class="actions">
+      {% if s.profile and s.profile != 'empty' %}
+      <button class="btn"
+              hx-post="{{ root }}/run/deploy" hx-vals='{"profile": "{{ s.profile }}"}'
+              hx-target="#actionarea" hx-swap="outerHTML"
+              hx-confirm="Retry the deployed profile '{{ s.profile }}'? Clears the fail-safe markers and brings the topology back up.">
+        Retry PROFILE={{ s.profile }}
+      </button>
+      {% endif %}
+      <button class="btn danger"
+              hx-post="{{ root }}/run/deploy" hx-vals='{"profile": "empty"}'
+              hx-target="#actionarea" hx-swap="outerHTML"
+              hx-confirm="Deploy PROFILE=empty? Brings the cluster to the safe empty state (nothing serving).">
+        Deploy PROFILE=empty
+      </button>
+    </div>
+  </div>
+{% endif %}
 {% if s.has_topology %}
   <p>Profile: <code>{{ s.profile or 'none' }}</code>
      {% if s.deployed_at %}<span class="ts">· deployed {{ s.deployed_at }}</span>{% endif %}</p>

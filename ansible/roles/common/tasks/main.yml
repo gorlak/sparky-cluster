@@ -28,6 +28,7 @@
   loop:
     - /opt/vllm
     - "{{ vllm_models_dir }}"
+    - "{{ vllm_state_dir }}"
 
 - name: Install NCCL env config (byte-identical on both nodes)
   ansible.builtin.copy:

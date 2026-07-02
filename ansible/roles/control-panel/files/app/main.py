@@ -132,6 +132,20 @@ def _is_active(unit, ssh=None):
     return _run(_ssh_cmd(ssh, *cmd) if ssh else cmd)
 
 
+def _marker_present(path, ssh=None):
+    """True if the fail-safe boot marker (ADR-0011) exists on the node. Present
+    while the unit is *down* means an unclean shutdown tripped ConditionPathExists
+    and the node came up empty on purpose — the recovery state."""
+    check = f"test -f {shlex.quote(path)} && echo yes || echo no"
+    if ssh:
+        out = _run(["ssh", "-i", DEPLOY_SSH_KEY, "-o", "BatchMode=yes",
+                    "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=accept-new",
+                    ssh, check])
+    else:
+        out = _run(["sh", "-c", check])
+    return out.strip() == "yes"
+
+
 def _vllm_units(ssh=None):
     """Discover vllm-*.service units and their state on a node (fallback only)."""
     cmd = ["systemctl", "list-units", "--type=service", "--all",
@@ -189,11 +203,25 @@ def gather():
         if WORKER_SSH:
             units += [(f"{u} (snoopy)", st) for u, st in _vllm_units(WORKER_SSH)]
         return {"has_topology": False, "profile": None, "engines": [],
-                "units": units, "services": services, "ok_states": _OK_STATES}
+                "units": units, "services": services, "ok_states": _OK_STATES,
+                "failsafe": False}
 
     engines = []
+    any_failsafe = False
     for e in topo.get("engines", []):
-        nodes = [{"node": n, "state": _is_active(e["unit"], _ssh_for(n))} for n in e["nodes"]]
+        marker = e.get("marker")
+        nodes = []
+        e_failsafe = False
+        for n in e["nodes"]:
+            ssh = _ssh_for(n)
+            state = _is_active(e["unit"], ssh)
+            # Only the marker-present-while-down combination is the fail-safe
+            # state; skip the (remote) marker check entirely when the unit is up.
+            tripped = (bool(marker) and state not in _OK_STATES
+                       and _marker_present(marker, ssh))
+            e_failsafe = e_failsafe or tripped
+            nodes.append({"node": n, "state": state, "failsafe": tripped})
+        any_failsafe = any_failsafe or e_failsafe
         if e["kind"] == "vllm":
             api_ok, api_model = _vllm_api(e.get("api_url", ""))
             model = e.get("served_as") or e.get("model") or "—"
@@ -201,10 +229,11 @@ def gather():
             api_ok, _ = _ollama_api(e.get("api_url", ""))
             model = api_model = ", ".join(e.get("models", [])) or "—"
         engines.append({"name": e["name"], "kind": e["kind"], "port": e.get("port"),
-                        "nodes": nodes, "model": model,
+                        "nodes": nodes, "model": model, "failsafe": e_failsafe,
                         "api_ok": api_ok, "api_model": api_model})
     return {"has_topology": True, "profile": topo.get("profile"),
             "deployed_at": topo.get("deployed_at"), "engines": engines,
+            "failsafe": any_failsafe,
             "services": services, "ok_states": _OK_STATES}
 
 
@@ -304,6 +333,15 @@ def index(request: Request):
 @app.get("/status", response_class=HTMLResponse)
 def status(request: Request):
     return templates.TemplateResponse(request, "_status.html", _ctx(request, s=gather()))
+
+
+@app.get("/health.json")
+def health_json():
+    """Lightweight JSON for the landing page to detect the fail-safe recovery
+    state (ADR-0011) without rendering the whole panel. Served at /admin/health.json."""
+    s = gather()
+    return {"failsafe": s.get("failsafe", False), "profile": s.get("profile"),
+            "has_topology": s.get("has_topology", False)}
 
 
 @app.get("/actions", response_class=HTMLResponse)

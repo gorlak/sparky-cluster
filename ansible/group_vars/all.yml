@@ -18,6 +18,15 @@ vllm_image: nvcr.io/nvidia/vllm:26.04-py3
 vllm_models_dir: /opt/vllm/models
 nccl_conf_path: /opt/vllm/nccl-env.conf
 
+# Persistent per-engine boot sentinel dir (ADR-0011 fail-safe boot). A marker
+# {{ vllm_state_dir }}/vllm-<engine>.running is touched at start and removed on
+# any CLEAN stop (systemd ExecStopPost). If it survives to the next boot — the
+# only way that happens is an unclean shutdown: a hang / hard-reset / power cut —
+# the unit's ConditionPathExists skips auto-start, so the node boots empty and
+# reachable instead of re-attempting the risky load unattended. Must be on
+# persistent disk (NOT /run or /tmp, which are cleared on boot).
+vllm_state_dir: /opt/vllm/state
+
 # Service identity that owns the weights (not the deploy automation user)
 vllm_user: vllm
 vllm_group: vllm

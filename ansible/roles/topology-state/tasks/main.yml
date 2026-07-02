@@ -19,7 +19,8 @@
       port: "{{ item.port }}"
       api_url: "http://{{ hostvars[item.nodes[0]].vllm_host_ip }}:{{ item.port }}"
     _extra: >-
-      {{ {'served_as': item.served_as | default(''), 'model': item.model | default('')}
+      {{ {'served_as': item.served_as | default(''), 'model': item.model | default(''),
+          'marker': vllm_state_dir ~ '/' ~ item.kind ~ '-' ~ item.name ~ '.running'}
          if item.kind == 'vllm'
          else {'models': item.models | default([])} }}
   loop: "{{ serving_topology | default([]) }}"

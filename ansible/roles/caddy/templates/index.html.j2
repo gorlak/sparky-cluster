@@ -17,11 +17,19 @@
     li { margin: 0.75rem 0; padding: 0.9rem 1.1rem; border: 1px solid; border-radius: 0.6rem; }
     a { font-size: 1.1rem; font-weight: 600; text-decoration: none; }
     .blurb { display: block; opacity: 0.7; font-size: 0.9rem; margin-top: 0.2rem; }
+    #failsafe-banner { display: none; margin: 0 0 1.5rem; padding: 0.9rem 1.1rem;
+      border: 1px solid #c62828; border-radius: 0.6rem; background: #c6282814; }
+    #failsafe-banner strong { color: #c62828; }
   </style>
 </head>
 <body>
   <h1>DGX Spark Cluster</h1>
   <p class="sub">{{ web_domain }}</p>
+  <div id="failsafe-banner">
+    <strong>⚠ Cluster in fail-safe recovery</strong>
+    <span class="blurb">A node booted empty after an unclean shutdown (ADR-0011).
+      <a href="/admin">Open the control panel</a> to recover to the deployed configuration.</span>
+  </div>
   <ul>
   {% for svc in landing_services %}
     <li>
@@ -30,5 +38,15 @@
     </li>
   {% endfor %}
   </ul>
+  <script>
+    // Reveal the banner if the control panel reports the fail-safe recovery
+    // state (ADR-0011). Same-origin via Caddy's /admin route; fails silently.
+    fetch('/admin/health.json')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (d && d.failsafe) document.getElementById('failsafe-banner').style.display = 'block';
+      })
+      .catch(function () {});
+  </script>
 </body>
 </html>

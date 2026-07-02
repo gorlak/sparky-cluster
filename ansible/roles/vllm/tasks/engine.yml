@@ -13,6 +13,17 @@
     mode: "0644"
   register: engine_unit
 
+# Clear the fail-safe boot marker (ADR-0011). A deploy is operator-initiated, so
+# it must always proceed — even after a prior run left the marker behind by
+# hanging the host. Without this, the unit's ConditionPathExists would make the
+# `started` step below silently no-op on a post-hang recovery deploy. (A restart
+# clears the marker itself via ExecStopPost; this covers the start-from-stopped
+# recovery case.)
+- name: Clear the fail-safe marker so this deploy can (re)start the engine
+  ansible.builtin.file:
+    path: "{{ vllm_state_dir }}/vllm-{{ engine.name }}.running"
+    state: absent
+
 - name: Enable vllm-{{ engine.name }}.service (reload unit definitions)
   ansible.builtin.systemd:
     name: "vllm-{{ engine.name }}.service"

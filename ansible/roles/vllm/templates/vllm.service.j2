@@ -18,11 +18,32 @@ After=docker.service network-online.target
 Requires=docker.service
 Wants=network-online.target
 
+# Fail-safe boot (ADR-0011). The marker below is touched at start and removed on
+# any CLEAN stop (ExecStopPost). It therefore only survives to a subsequent boot
+# after an UNCLEAN shutdown — a hang / hard-reset / power cut mid-run. When it
+# survives, this condition skips auto-start so the node boots EMPTY and reachable
+# rather than re-attempting the risky 121 GiB / multi-node load unattended.
+# A deploy clears the marker before (re)starting, so operator-driven bring-up
+# always proceeds; note a bare `systemctl start/restart` is skipped while the
+# marker exists — clear it (or run a deploy) to restart outside Ansible.
+ConditionPathExists=!{{ vllm_state_dir }}/{{ container_name }}.running
+
+# Crash-loop breaker (idiomatic, complements the marker): if the unit fails more
+# than 5 times in 15 min, stop retrying and stay failed+reachable instead of
+# restarting forever. Does NOT cover a host hang (a wedged process is never
+# counted as a failed start) — that's what the marker above is for.
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
 [Service]
 Type=simple
 EnvironmentFile={{ nccl_conf_path }}
 
 ExecStartPre=-/usr/bin/docker rm -f {{ container_name }}
+# Arm the fail-safe marker (see [Unit] ConditionPathExists). mkdir is defensive;
+# the common role already creates {{ vllm_state_dir }}.
+ExecStartPre=/usr/bin/mkdir -p {{ vllm_state_dir }}
+ExecStartPre=/usr/bin/touch {{ vllm_state_dir }}/{{ container_name }}.running
 
 {% set serve_args = [] %}
 {% if is_api %}
@@ -58,6 +79,9 @@ ExecStart=/usr/bin/docker run --rm --name {{ container_name }} \
         {{ serve_args | join(' \\\n        ') }}
 
 ExecStop=/usr/bin/docker stop --time=120 {{ container_name }}
+# Disarm the fail-safe marker on any clean stop (deploy, teardown, clean reboot).
+# Runs for a crash-exit too — so only an UNCLEAN shutdown leaves it behind.
+ExecStopPost=/usr/bin/rm -f {{ vllm_state_dir }}/{{ container_name }}.running
 
 MemoryMax={{ vllm_systemd_memory_max }}
 OOMPolicy=stop
