@@ -94,18 +94,35 @@ CREATE TABLE benchmark_runs (
 );
 ```
 
+## Runtime location of the db (writer and reader must share a path)
+
+The db has two accessors that are not the same identity: the weekly timer /
+benchmark script **writes** it, and the Grafana container (user uid 472) **reads**
+it via a bind-mount. Neither can use the repo working tree — that is
+geoff-owned (`0750` home), not readable by the deploy user or the container.
+
+The db therefore lives at a published runtime path, the same pattern as
+`/opt/cluster/ansible` and the model store: **`/opt/cluster/benchmark/benchmark.db`**,
+owned `deploy:cluster` (group-writable) so the timer can write it and the
+Grafana container can read it. The `benchmark/results/*.json` files stay in the
+repo tree for `compare.py`; only the trend db is published. SQLite is opened in
+WAL mode so Grafana's reads never block the writer.
+
 ## Consequences
 
 - Grafana gets a `benchmark` datasource (SQLite) alongside the existing
-  `prometheus` datasource. Benchmark trend panels live on a separate Grafana
+  `prometheus` datasource. Adding it means a second entry in the `grafana`
+  role's `datasource.yml.j2` (which today provisions only Prometheus), pointing
+  at the mounted db path. Benchmark trend panels live on a separate Grafana
   dashboard from operational metrics — acceptable given the different cadence
   (weekly vs continuous).
 - The `frser-sqlite-datasource` plugin is installed via `GF_INSTALL_PLUGINS`
-  in the Grafana compose template and the db file is bind-mounted into the
-  Grafana container. Both are managed by the existing `open-webui` (or
-  monitoring) Ansible role.
-- The JSON results files in `benchmark/results/` are kept alongside the db
-  as a raw record and for use by `compare.py`. The db is the authoritative
+  in the Grafana compose template, and `/opt/cluster/benchmark/benchmark.db` is
+  bind-mounted read-only into the Grafana container. Both changes belong to the
+  **`grafana`** role (the role that owns Grafana's compose file and
+  provisioning), not `open-webui`.
+- The JSON results files in `benchmark/results/` are kept in the repo tree as a
+  raw record and for use by `compare.py`. The published db is the authoritative
   trend store.
 - No stale-metric risk: a missed run produces a `skipped=1` row or no row,
   both of which appear as a gap in Grafana rather than a misleading flat line.
