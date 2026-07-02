@@ -220,7 +220,7 @@ password; it's the gate into the automation context). `PROFILE` defaults to
 | `make status` | vLLM service status on both nodes |
 | `make ping` | Connectivity + privilege-escalation check on both nodes |
 | `make logs-head` | Follow sparky's vllm journal |
-| `make logs-worker` | Follow snoopy's vllm-worker journal |
+| `make logs-worker` | Follow snoopy's vLLM worker journal |
 
 Switch profiles by passing `PROFILE=<name>` (e.g. `make deploy PROFILE=single-node`).
 Ansible diffs current vs desired state: it tears down/reconfigures/brings up as needed.
@@ -294,11 +294,26 @@ set, vLLM advertises the wrong IP and torch.distributed rendezvous fails.
 - sparky: `VLLM_HOST_IP=10.0.200.12`
 - snoopy: `VLLM_HOST_IP=10.0.200.13`
 
-### Boot order doesn't matter
+### Unit naming
 
-`vllm-worker.service` on snoopy has `Restart=on-failure` with `RestartSec=10`
-and retries until sparky's rendezvous is reachable. sparky's `vllm.service`
-has `TimeoutStartSec=1200` — 20 minutes for snoopy to join.
+Every vLLM engine runs under one unit name, `vllm-<engine>.service`, **identical
+on every node it spans** (e.g. the `minimax` profile's engine is
+`vllm-minimax.service` on both sparky and snoopy). Head vs. worker is *not* in
+the name — `rank` is computed from the node's position in the engine's
+`nodes` list, so the same file renders as `head (rank 0, API on :port)` on
+`nodes[0]` and `headless worker (rank N)` elsewhere. (The pre-profile scheme used
+separate `vllm.service` / `vllm-worker.service` names; that's gone — see
+ADR-0003.)
+
+### Boot order doesn't matter (within a bring-up)
+
+On snoopy the worker `vllm-<engine>.service` has `Restart=on-failure` with
+`RestartSec=10` and retries until sparky's rendezvous is reachable; sparky's head
+unit has `TimeoutStartSec=1200` — 20 minutes for snoopy to join. **Across a
+reboot**, boot is fail-safe rather than automatic: a clean reboot auto-restores
+serving, but a hang / hard-reset leaves a per-engine marker that makes the unit
+skip auto-start (`ConditionPathExists`), so the node comes up empty and reachable
+instead of re-attempting the risky load unattended — see ADR-0011.
 
 ### Open WebUI restarts automatically
 

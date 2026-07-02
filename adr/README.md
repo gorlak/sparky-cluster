@@ -15,3 +15,5 @@ ADRs are append-only: superseded decisions get a `Superseded by` line; nothing i
 | [0008](0008-control-panel-architecture.md) | Control panel: FastAPI/HTMX on-host as deploy user | Implemented | 2026-05-24 |
 | [0009](0009-benchmark-regiment.md) | Benchmark regiment design | Accepted | 2026-07-02 |
 | [0010](0010-benchmark-sqlite-storage.md) | SQLite for benchmark trend storage | Accepted | 2026-07-02 |
+| [0011](0011-fail-safe-boot.md) | Fail-safe boot (sentinel-guarded auto-start) | Accepted | 2026-07-02 |
+| [0012](0012-test-strategy.md) | Test strategy (layered regiment) | Accepted | 2026-07-02 |
