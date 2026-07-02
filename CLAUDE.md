@@ -20,3 +20,19 @@ as slash commands). When a task matches one, read its `SKILL.md` and follow it:
 - **`skills/model-evaluation/SKILL.md`** — pre-deployment checklist for a new
   model (memory-fit estimate, writing `vllm serve` flags). Use before deploying
   a new model or estimating whether one fits.
+- **`skills/dev-workflow/SKILL.md`** — development workflow conventions: git
+  commit ownership, staging, ADR requirements. Read before making changes or
+  preparing commits. **Geoff runs all git commits** — never run `git commit`
+  unless explicitly asked.
+- **`skills/adr/SKILL.md`** — when to write an ADR vs. update documentation,
+  the status lifecycle (Proposed → Accepted → Implemented → Superseded), and
+  the immutability rule for Implemented ADRs. Read before touching any file in
+  `adr/` or before deciding whether a new decision needs one.
+
+---
+
+## Architecture Decision Records
+
+Significant decisions shipped to this cluster are documented in `adr/`. See
+`adr/README.md` for the index. When implementing something new, write the ADR
+alongside the implementation and commit both together.

@@ -174,8 +174,9 @@ you deploy. Publishing needs the `cluster` group (log in once after bootstrap).
 <repo>/                          # git repo (source of truth)
 ├── README.md                  # canonical project docs (vendor-neutral)
 ├── CLAUDE.md                  # thin Claude Code entry point — imports README + skills
-├── .gitignore                 # excludes model-cache/, .claude/, caches
-├── skills/                    # agent skills (model-scout, model-evaluation)
+├── .gitignore                 # excludes .claude/, caches
+├── adr/                       # Architecture Decision Records (one per shipped decision)
+├── skills/                    # agent skills (model-scout, model-evaluation, dev-workflow)
 ├── ansible/                   # THE Ansible project (git-tracked)
 │   ├── ansible.cfg            # runs as deploy; become via sudo (NOPASSWD)
 │   ├── inventory.yml          # sparky (head, local) + snoopy (worker, ssh)
@@ -193,8 +194,7 @@ you deploy. Publishing needs the `cluster` group (log in once after bootstrap).
 │       ├── open-webui/        # compose template + `docker compose up -d`
 │       └── caddy/             # reverse proxy on :80 — landing page + service routes
 ├── benchmark/                 # vllm bench serve wrapper + compare tool
-├── models/                    # model status notes
-└── model-cache/               # model weights staging (GITIGNORED — 100s of GB)
+└── models/                    # model status notes
                                # (prior scripts live in git history, not the tree)
 
 /opt/cluster/ansible/          # PUBLISHED runtime copy (deploy-owned; `make deploy`

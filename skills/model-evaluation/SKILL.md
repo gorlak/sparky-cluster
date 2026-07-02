@@ -11,7 +11,7 @@ Failures here are cheap. Failures after a full deploy are expensive.
 ### 1. Verify actual disk size first
 
 ```bash
-du -sh <repo>/model-cache/<model>/
+du -sh /opt/cluster/model-cache/<model>/
 ```
 
 **Disk size ≈ VRAM footprint** for quantized models. Do not trust model cards

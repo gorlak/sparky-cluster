@@ -9,13 +9,23 @@
 
 - **Architecture:** 284B total parameters, **13B active per token** (Mixture-of-Experts)
 - **Attention:** Compressed Sparse Attention (CSA) + Heavily Compressed Attention (HCA) hybrid — dramatically smaller KV cache than standard GQA
-- **Official quantization:** FP4+FP8 mixed — FP4 for routed experts (e2m1fn packed), FP8 E4M3 for attention/norm/router layers
-- **Disk footprint:** ~149 GiB (46 shards)
 - **HuggingFace:** https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash
 
 ---
 
-## Memory Fit on This Hardware (TP=2)
+## Quantization Formats & Footprint
+
+| Format | Source | Disk | Per node at TP=2 | Fit |
+|---|---|---|---|---|
+| BF16 | deepseek-ai/DeepSeek-V4-Flash | ~568 GiB | ~284 GiB | ❌ Does not fit |
+| **FP4+FP8 mixed** | **deepseek-ai/DeepSeek-V4-Flash** | **~149 GiB** | **~73.85 GiB** | **⚠️ Fits — blocked on custom tooling** |
+
+Only one quantized checkpoint is available; the mixed FP4+FP8 format is the official release.
+FP4 covers routed experts (e2m1fn packed); FP8 E4M3 covers attention, norms, and router layers.
+
+---
+
+## FP4+FP8 Mixed — deepseek-ai/DeepSeek-V4-Flash
 
 | | Per node |
 |---|---|

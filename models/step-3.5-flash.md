@@ -2,6 +2,7 @@
 
 **Last updated:** 2026-05-24
 **Hardware:** sparky + snoopy — GB10 Blackwell (SM 12.1), 128 GiB unified memory each, ConnectX-7 200Gbit RoCE
+**Installed quant:** FP8 — `stepfun-ai/Step-3.5-Flash-FP8` (~195 GiB, ~97.5 GiB/node at TP=2)
 
 ---
 
@@ -35,7 +36,7 @@ wrong — see correction below.
 
 ---
 
-## Memory Fit on This Hardware (TP=2, FP8) — Corrected
+## FP8 — stepfun-ai/Step-3.5-Flash-FP8
 
 > ⚠️ **Pre-deployment estimates were significantly off.** The model card and
 > early references quoted ~100 GiB total / ~50 GiB per node. The actual
