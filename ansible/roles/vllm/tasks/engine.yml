@@ -25,6 +25,23 @@
     state: restarted
   when: engine_unit.changed
 
+# When the head unit restarts it opens a new TCPStore endpoint. Workers that
+# didn't restart hold stale connections and won't reconnect on their own
+# (the heartbeat monitor logs broken-pipe warnings but doesn't exit, so
+# Restart=on-failure never fires). Force-restart every worker node here,
+# after the head has already restarted, so they rejoin the new rendezvous.
+- name: Restart worker vllm-{{ engine.name }}.service after head restarted
+  ansible.builtin.systemd:
+    name: "vllm-{{ engine.name }}.service"
+    state: restarted
+  delegate_to: "{{ item }}"
+  loop: "{{ engine.nodes[1:] }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - engine_unit.changed
+    - inventory_hostname == engine.nodes[0]
+
 - name: Ensure vllm-{{ engine.name }}.service is running
   ansible.builtin.systemd:
     name: "vllm-{{ engine.name }}.service"

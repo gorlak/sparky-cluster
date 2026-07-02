@@ -31,6 +31,7 @@ serving_topology:
     max_model_len: 131072
     head_extra_args:
       - --enable-chunked-prefill
+      - --reasoning-parser deepseek_r1
     worker_extra_args:
       - --enable-chunked-prefill
 
