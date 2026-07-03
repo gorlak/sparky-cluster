@@ -2,17 +2,16 @@
 # Infrastructure constants — the same across every profile. Profile files
 # (profiles/*.yml) layer the per-deployment choices (model, TP, flags) on top.
 
-# Container runtime. Pinned to NVIDIA's image built for GB10 / SM12.1 (see
-# CLAUDE.md). Update on both nodes, digests must match.
+# Container runtime — the cluster DEFAULT image, overridable per profile. Built for
+# GB10 / SM12.1 (see CLAUDE.md). A profile may set its own `vllm_image` in the profile
+# YAML (extra-vars outrank group_vars), so different models can run different containers
+# on the same cluster. Update on both nodes, digests must match.
 #
-# ⚠️ Upgrade to 26.06 (needed for NVFP4) is IN PROGRESS but blocked upstream —
-# see docs/upgrades/container-nvidia-vllm-26.06-py3.md. 26.06 (vLLM 0.22.1, NCCL 2.30.5) HARD-HANGS
-# both nodes at 2-node TP=2 bring-up (SSH-dead, hard-reset both, 2026-07-02).
-# Root cause: NCCL 2.30.4+ NVLS regression on GB10-without-NVLink (NVIDIA/nccl#2167;
-# 26.04's NCCL 2.29.7 is unaffected). The `NCCL_NVLS_ENABLE=0` killswitch is now
-# staged in roles/common/files/nccl-env.conf as the likely fix — but do NOT re-pin
-# 26.06 until the upgrade doc's completion criteria are met (and only behind the
-# ADR-0011 fail-safe boot net).
+# Default 26.04 (vLLM 0.19, NCCL 2.29.7) is the stable, known-good image. AWQ /
+# compressed-tensors MoE models (minimax, step-3.5) MUST stay here — 26.06 hangs loading
+# them (Marlin-MoE load bug on sm_121). 26.06 (needed for NVFP4) is opt-in per profile:
+# profiles/step-3.7-nvfp4.yml pins it. Full story + WAR register + fail-safe boot (ADR-0011):
+# docs/upgrades/container-nvidia-vllm-26.06-py3.md.
 vllm_image: nvcr.io/nvidia/vllm:26.04-py3
 
 # Host paths
@@ -32,8 +31,8 @@ vllm_state_dir: /opt/vllm/state
 vllm_user: vllm
 vllm_group: vllm
 
-# Download inbox for new model weights (head/control node only). `hf download`
-# into {{ model_cache_dir }}/<MODEL>; the model role MOVES it into the canonical
+# Download inbox for new model weights (head/control node only). `make download`
+# (scripts/download.py) stages into {{ model_cache_dir }}/<MODEL>; the model role MOVES it into the canonical
 # store ({{ vllm_models_dir }}) on the head, then rsync-mirrors the whole store to
 # every other node. The inbox is transient (emptied on deploy) and snoopy is a
 # pure mirror — no manual cross-node copy. See roles/model.
@@ -115,7 +114,7 @@ control_panel_port: 8088
 # its deploy/teardown actions target. (cluster_ansible_dir mirrors the Makefile's
 # LIVE; cluster_profile is the panel's default — profile switching is future work.)
 cluster_ansible_dir: /opt/cluster/ansible
-cluster_profile: step
+cluster_profile: step-3.5-fp8
 # Live serving-topology state file: the topology-state role writes it at the end of
 # a deploy (and teardown clears it); the control panel reads it for topology-aware
 # status + per-engine actions. See docs/serving-topology.md (T5).

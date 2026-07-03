@@ -1,0 +1,47 @@
+---
+# MiniMax-M2.7, NVFP4 quant — TP=2 across both nodes. A/B candidate against the
+# known-good `minimax-m2.7-awq` profile (the AWQ-4bit quant). Same model, same
+# topology; only the weights (and container) change. Once NVFP4 proves out on 26.06
+# it can become the default MiniMax profile.
+#
+# Memory math (gmu 0.80 — NVFP4 weights are BIGGER than the AWQ):
+#   NVFP4 disk ~140 GiB → ~70 GiB/node at TP=2 (vs AWQ ~61 GiB/node).
+#   gmu 0.80 × 121 = 96.8 GiB vLLM budget/node − ~70 weights − ~0.65 graphs
+#     → ~26 GiB KV/rank (~AWQ profile's 29 GiB; ~1–2 long-context seqs at 128k).
+#   Outside headroom: 121 − 96.8 ≈ ~24 GiB/node free for system + dev.
+#   (Drop gmu to 0.75 for more dev room and ~20 GiB KV; raise toward 0.85 for more KV.)
+#
+# NVFP4 is a ModelOpt (modelopt) checkpoint — auto-detected, so NO --quantization
+# (would double-quantize → garbage, same trap as the AWQ/FP8 checkpoints). Custom
+# modeling_minimax_m2.py handled by the template's global --trust-remote-code.
+#
+# Requires the 26.06 container (NVFP4). Verify before first deploy that vllm_image
+# in group_vars/all.yml is the 26.06 tag.
+
+profile_name: minimax-m2.7-nvfp4
+# NVFP4 (modelopt FP4) needs 26.06; the modelopt path is distinct from 26.06's
+# hanging Marlin/AWQ MoE loader, so this checkpoint is fine here. 26.04 default
+# stays for AWQ/FP8 profiles. Build the patched image on both nodes (docker/vllm-26.06-fastapi-fix — see WAR register).
+vllm_image: dgx-spark/vllm:26.06-fastapi-fix
+serving_topology:
+  - name: minimax-m2.7-nvfp4
+    kind: vllm
+    nodes: [sparky, snoopy]      # nodes[0]=sparky is rank 0 / the API host
+    port: 8000
+    model: MiniMax-M2.7-NVFP4
+    served_as: minimax-m2
+    tensor_parallel_size: 2
+    gpu_memory_utilization: "0.80"
+    max_model_len: 131072
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --reasoning-parser deepseek_r1
+      - --enable-auto-tool-choice
+      - --tool-call-parser minimax_m2
+    worker_extra_args:
+      - --enable-chunked-prefill
+
+enable_open_webui: true
+enable_reverse_proxy: true
+enable_control_panel: true
+enable_metrics: true

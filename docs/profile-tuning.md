@@ -63,19 +63,19 @@ headroom), or accept lower concurrent capacity.
 
 ## Workflow archetypes
 
-### Fully-committed (e.g. `step`)
+### Fully-committed (e.g. `step-3.5-fp8`)
 Model is so large that even at max gmu, outside headroom is ~5 GiB — just
 enough for the service stack + OS. **No meaningful capacity left for user
 work.** Honest constraint, not a problem: use other machines for dev that day.
 
-### Big-shared with dev headroom (e.g. `minimax` at gmu 0.75)
+### Big-shared with dev headroom (e.g. `minimax-m2.7-awq` at gmu 0.75)
 Big model TP'd across both nodes, but gmu deliberately set below max so each
 node keeps **~30 GiB free**. Single/few-user serving still gets ample KV for
 long context with some batching. You can dev on sparky concurrently, or run
 snoopy as a distcc backend, etc.
 
-### Small-and-dev-friendly (e.g. `qwen-dual`, `qwen` at gmu 0.50)
-Small models that comfortably fit in ~half their node's memory. **~60 GiB
+### Small-and-dev-friendly (e.g. `qwen3-coder-nvfp4-dual`, `qwen3.6-35b-nvfp4-single` at gmu 0.55)
+Small models that comfortably fit in well under half their node's memory. **~55 GiB
 free per node** for user work; serving still gets plenty of KV for several
 concurrent long-context sequences.
 
@@ -87,7 +87,7 @@ cloud AI (Claude etc.) or for cluster-as-build-farm time.
 
 Numbers from measured deploys, 2026-05.
 
-### Step-3.5-Flash-FP8 — `step`, TP=2
+### Step-3.5-Flash-FP8 — `step-3.5-fp8`, TP=2
 | | value |
 |---|---|
 | Weights per shard | **~97.5 GiB** |
@@ -97,7 +97,7 @@ Numbers from measured deploys, 2026-05.
 | **Workflow fit** | Fully-committed; no realistic dev-headroom variant |
 | `max_model_len` | `32768` empirically confirmed; sliding_window=512 may allow more but hasn't been measured |
 
-### MiniMax-M2.7-AWQ-4bit — `minimax`, TP=2
+### MiniMax-M2.7-AWQ-4bit — `minimax-m2.7-awq`, TP=2
 | | value |
 |---|---|
 | Weights per shard | **~60.93 GiB** |
@@ -107,14 +107,23 @@ Numbers from measured deploys, 2026-05.
 | **At gmu 0.75 (current)**: KV ~28 GiB, headroom **~30 GiB** | 128k = ~16 GiB/seq → 1–2 concurrent |
 | At gmu 0.65: KV ~16 GiB, headroom ~42 GiB | 1 concurrent 128k sequence; more dev margin |
 
-### Qwen3-30B-A3B-Instruct-2507-FP8 — `qwen`, `qwen-dual`, TP=1
+### Qwen3-Coder-Next-NVFP4 — `qwen3-coder-nvfp4-single`/`-dual`, TP=1 per node
 | | value |
 |---|---|
-| Weights | **~30 GiB** |
-| CUDA graphs (estimate) | ~1 GiB |
-| KV per token | ~48 KiB (48 layers MoE, 4 kv heads) |
-| At gmu 0.85: KV ~70 GiB, headroom ~17 GiB | Wasteful |
-| **At gmu 0.50 (current)**: KV ~29 GiB, headroom **~60 GiB** | 128k = ~6 GiB/seq → 4–5 concurrent |
+| Weights | **~45 GiB** (80B-A3B, compressed-tensors NVFP4) |
+| Attention | hybrid `qwen3_next` — only 12/48 layers full attention → tiny KV |
+| **At gmu 0.55 (current)**: budget ~66 GiB − ~45 weights → **~20 GiB KV**, headroom **~55 GiB** | KV is cheap; many concurrent 32–64k sessions |
+
+### Qwen3.6-35B-A3B-NVFP4 — `qwen3.6-35b-nvfp4-single`/`-dual`, TP=1 per node
+| | value |
+|---|---|
+| Weights | **~22 GiB** (35B-A3B, nvidia modelopt NVFP4, FP8 KV baked in) |
+| Attention | hybrid `qwen3_5_moe` — 10/40 full attention → cheap KV |
+| **At gmu 0.55**: budget ~66 GiB − ~22 weights → **~43 GiB KV** (ample), headroom **~55 GiB** | drop to ~0.45 for more dev room |
+
+**Why both are per-node (TP=1), never TP=2:** each fits one node with room to spare, and the
+two Sparks have no NVLink — cross-node TP=2 for a ~3B-active model is bandwidth/latency-bound
+and only *costs* decode throughput. TP=2 is reserved for models too big for one node.
 
 ### Co-residency note
 Two vLLM engines on the same node interact badly even when the gmu math adds.

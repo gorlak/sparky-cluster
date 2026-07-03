@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-02
 **Hardware:** sparky + snoopy — GB10 Blackwell (SM 12.1), 128 GiB unified memory each, ConnectX-7 200Gbit RoCE
-**Status:** ✅ Deployed and serving (`minimax` profile)
+**Status:** ✅ Deployed and serving (`minimax-m2.7-awq` profile)
 **Installed quant:** AWQ 4-bit compressed-tensors — `cyankiwi/MiniMax-M2.7-AWQ-4bit` (122 GiB measured, ~61 GiB/node at TP=2)
 
 ---
@@ -101,7 +101,7 @@ keeps ~30 GiB free for OS, dev work, and other containers.
 
 ## Production Serve Flags
 
-From the active `minimax` profile. Worker node uses the same flags minus
+From the active `minimax-m2.7-awq` profile. Worker node uses the same flags minus
 `--master-addr` and with `--node-rank 1`.
 
 ```

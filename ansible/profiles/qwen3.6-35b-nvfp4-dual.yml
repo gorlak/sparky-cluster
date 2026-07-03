@@ -1,0 +1,72 @@
+---
+# Profile: qwen3.6-35b-nvfp4-dual — Qwen3.6-35B-A3B (NVFP4) per-node, one
+# independent engine on each node. Two endpoints: qwen3.6-35b-sparky and
+# qwen3.6-35b-snoopy. The reasoning-generalist A/B partner to the coding-tuned
+# qwen3-coder-nvfp4-* family (both are 3B-active MoEs; compare feel + tok/s).
+#
+# Why per-node and NOT TP=2: 35B/A3B, NVFP4 weights ~22 GiB — fits one node with
+# huge headroom. Same argument as the coder family: cross-node TP=2 over
+# ConnectX-7 (no NVLink) is bandwidth/latency-bound for a 3B-active model and
+# would only cost throughput. Per-node gives a master (sparky) + worker (snoopy)
+# pair for an agentic setup.
+#
+# Memory math (gmu 0.55): 66.55 GiB budget/node - ~22 weights - ~1 graphs
+#   -> ~43 GiB KV (ample; hybrid attn = 10/40 full layers = cheap KV). Leaves
+#   ~55 GiB/node for dev. KV is already overkill here — drop gmu to ~0.45 for
+#   even more dev headroom if you don't need the concurrency.
+#
+# QUANT: nvidia modelopt NVFP4 (mixed NVFP4/FP8 weights, FP8 KV baked in) —
+# the PROVEN-loads path on 26.06 (same path step-3.7 + minimax-nvfp4 use).
+# Auto-detected from hf_quant_config.json, so NO --quantization (add
+# `--quantization modelopt` only if auto-detect ever fails).
+#
+# ARCH: Qwen3_5MoeForConditionalGeneration (qwen3_5_moe) — registry-confirmed on
+# 26.06's vLLM 0.22.1 / transformers 5.6.0. It is multimodal (text+image+video);
+# we run it TEXT-FIRST. Tool-call (`qwen3_xml`) + reasoning (`qwen3`) parsers are
+# enabled — verified from the chat template's `<tool_call><function=…>` XML format
+# (not hermes JSON). MTP (Qwen3_5MoeMTP) is still OFF: community reports it's the
+# ~3x single-stream lever on GB10 (~28-30 → ~97 tok/s) but also causes image
+# number-misreads — enable it as a text-only A/B pass later. Fail-safe net armed.
+
+profile_name: qwen3.6-35b-nvfp4-dual
+# NVFP4 needs the 26.06 container. Build the patched image on both nodes (docker/vllm-26.06-fastapi-fix — see WAR register).
+vllm_image: dgx-spark/vllm:26.06-fastapi-fix
+serving_topology:
+  - name: qwen3.6-35b-sparky
+    kind: vllm
+    nodes: [sparky]
+    port: 8000
+    model: Qwen3.6-35B-A3B-NVFP4
+    served_as: qwen3.6-35b-sparky
+    tensor_parallel_size: 1
+    gpu_memory_utilization: "0.55"
+    max_model_len: 262144
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --kv-cache-dtype fp8
+      - --enable-auto-tool-choice
+      - --tool-call-parser qwen3_xml
+      - --reasoning-parser qwen3
+    worker_extra_args: []
+
+  - name: qwen3.6-35b-snoopy
+    kind: vllm
+    nodes: [snoopy]
+    port: 8000                   # different node, so reusing :8000 is fine
+    model: Qwen3.6-35B-A3B-NVFP4
+    served_as: qwen3.6-35b-snoopy
+    tensor_parallel_size: 1
+    gpu_memory_utilization: "0.55"
+    max_model_len: 262144
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --kv-cache-dtype fp8
+      - --enable-auto-tool-choice
+      - --tool-call-parser qwen3_xml
+      - --reasoning-parser qwen3
+    worker_extra_args: []
+
+enable_open_webui: true
+enable_reverse_proxy: true
+enable_control_panel: true
+enable_metrics: true

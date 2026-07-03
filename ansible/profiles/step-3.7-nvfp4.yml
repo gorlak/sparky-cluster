@@ -1,0 +1,68 @@
+---
+# Profile: step-3.7-nvfp4 — Step-3.7-Flash-NVFP4, big-shared TP=2 across sparky + snoopy.
+# The successor candidate to `step-3.5-fp8` (deploy each in turn to A/B; both are
+# full-cluster TP=2, so the comparison is sequential).
+#
+# ⛔ BLOCKED — DO NOT DEPLOY (parked, `blocked: true` below). It is hidden from the
+# control-panel deploy UI. A deliberate CLI `make deploy PROFILE=step-3.7-nvfp4` still
+# works for re-testing when the fix lands.
+#
+#   What we proved (2026-07-02): the hard part WORKS — **NVFP4 loads + runs on 26.06
+#   with no hang** (per-profile 26.06 pin; the Marlin/AWQ load hang was model-specific).
+#   The remaining blocker is an upstream vLLM bug, NOT NVFP4 or the container: Step-3.7's
+#   vision-language processor crash-loops on startup —
+#     AttributeError: 'Step3VLProcessor' object has no attribute '_get_num_multimodal_tokens'
+#     (vllm/model_executor/models/transformers/multimodal.py, in max-image-token profiling).
+#
+#   UNBLOCK WHEN: vLLM ships a Step3VLProcessor with `_get_num_multimodal_tokens`
+#   (and/or a container that carries it — bump THIS profile's vllm_image to it).
+#   Full story: docs/upgrades/container-nvidia-vllm-26.06-py3.md and
+#   docs/upgrades/profile-step-3.7-flash.md. Weights already staged on both nodes.
+
+profile_name: step-3.7-nvfp4
+
+# Parked candidate: hidden from the control-panel deploy dropdown. Ansible ignores
+# this field; only the panel reads it (see roles/control-panel main.py).
+blocked: true
+
+# Per-profile container override: 26.06 is needed for the NVFP4 (modelopt) FP4
+# kernels and applies to THIS profile only (extra-vars outrank group_vars, which
+# stays the stable 26.04 default for everything else). Pull 26.06 on both nodes
+# and verify digests match before deploying.
+vllm_image: dgx-spark/vllm:26.06-fastapi-fix
+
+serving_topology:
+  - name: step-3.7-nvfp4
+    kind: vllm
+    nodes: [sparky, snoopy]      # order = ranks; nodes[0] is rank 0 / the API host
+    port: 8000
+    model: Step-3.7-Flash-NVFP4  # dir under /opt/vllm/models (stage first — see PREREQ)
+    served_as: step-3.7-flash
+    tensor_parallel_size: 2
+    # NVFP4 is ~62 GiB/shard → "big-shared with headroom": gmu 0.75 leaves ~30 GiB/node
+    # free. See docs/models/step-3.7-flash.md.
+    gpu_memory_utilization: "0.75"
+    # Conservative for the first bring-up; raise toward 131072 once it loads and
+    # vLLM confirms the estimated max model length.
+    max_model_len: 32768
+    # Minimal NVFP4 flag set (model-level flags on BOTH ranks). --quantization
+    # modelopt + --kv-cache-dtype fp8 are REQUIRED for NVFP4. Parsers / MTP added
+    # after a clean bring-up.
+    head_extra_args:
+      - --quantization modelopt
+      - --kv-cache-dtype fp8
+      - --enable-expert-parallel
+      - --enable-chunked-prefill
+    worker_extra_args:
+      - --quantization modelopt
+      - --kv-cache-dtype fp8
+      - --enable-expert-parallel
+      - --enable-chunked-prefill
+
+# Front-end
+enable_open_webui: true
+enable_reverse_proxy: true
+enable_control_panel: true
+
+# Observability
+enable_metrics: true

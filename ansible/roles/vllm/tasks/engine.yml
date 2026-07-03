@@ -36,22 +36,15 @@
     state: restarted
   when: engine_unit.changed
 
-# When the head unit restarts it opens a new TCPStore endpoint. Workers that
-# didn't restart hold stale connections and won't reconnect on their own
-# (the heartbeat monitor logs broken-pipe warnings but doesn't exit, so
-# Restart=on-failure never fires). Force-restart every worker node here,
-# after the head has already restarted, so they rejoin the new rendezvous.
-- name: Restart worker vllm-{{ engine.name }}.service after head restarted
-  ansible.builtin.systemd:
-    name: "vllm-{{ engine.name }}.service"
-    state: restarted
-  delegate_to: "{{ item }}"
-  loop: "{{ engine.nodes[1:] }}"
-  loop_control:
-    label: "{{ item }}"
-  when:
-    - engine_unit.changed
-    - inventory_hostname == engine.nodes[0]
+# NOTE: worker reconnect-on-head-restart is handled in the unit TEMPLATE, not here.
+# When the head restarts it opens a new torch.distributed TCPStore; a worker that
+# didn't also restart holds a stale connection and won't reconnect on its own (its
+# heartbeat monitor logs broken-pipe but never exits). vllm.service.j2 embeds a hash
+# of the engine spec in the WORKER unit, so any head-side change re-renders (⇒ the
+# "restart if changed" task above restarts) the worker too — head + workers restart
+# as a matched pair. This replaces an earlier cross-host "reconnect stale worker"
+# task whose hostvars[worker].engine_unit read was unreliable inside this looped
+# include_tasks (undefined ⇒ crash; guarding it ⇒ silent skip ⇒ orphaned worker).
 
 - name: Ensure vllm-{{ engine.name }}.service is running
   ansible.builtin.systemd:

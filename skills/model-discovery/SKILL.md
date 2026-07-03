@@ -95,14 +95,24 @@ APIs (`hf`, `gh`) already handle the basics (proper user-agent, one request per 
 
 ## What to Look For
 
+**Model-first, quant-to-fit — we compare *models*, not quantizations.** For each candidate
+model, pick the single **best quant that fits** our RAM at the target profile shape (the
+highest quality that loads with acceptable headroom) and present *that* as the candidate. A
+model's quants are not competing options to A/B — the quant is chosen to fit the hardware
+(e.g. for a big-shared TP=2 slot, take NVFP4 over FP8 when NVFP4 fits with headroom and FP8 is
+fully-committed). Profiles are named with the `<model>-<version>-<quant>` triple — the chosen
+quant *is* in the name (`step-3.5-fp8`, `minimax-m2.7-nvfp4`), plus a `-single`/`-dual` topology
+suffix for the per-node shapes. Quant-to-fit still governs *which* quant you pick; the name
+just records it.
+
 Using the searches above (and vLLM release notes / leaderboards for context), look for:
 
-1. **Better headroom:** Models with FP8 footprint well under 108.9 GiB/node — ideally
-   under 80 GiB/node so KV cache and prefix caching have room to breathe.
-   Disk size ≈ VRAM footprint for FP8/quantized models.
+1. **Better headroom:** Models whose best-fitting quant lands well under 108.9 GiB/node —
+   ideally under 80 GiB/node so KV cache and prefix caching have room to breathe.
+   Disk size ≈ VRAM footprint for quantized models.
 
-2. **Newer quantizations of current model:** Any new FP8, AWQ, or GPTQ releases
-   of Step-3.5-Flash, or successor models from StepFun AI.
+2. **Newer generations of what we run:** successor models from the same family (Step-3.5 →
+   3.7; MiniMax-M2.7 → M3; a newer Qwen), each taken at its best-fitting quant.
 
 3. **Strong reasoning models with standard vLLM support:** Prioritize models that
    work with the stock NVIDIA vLLM image — no custom forks, no special patches.

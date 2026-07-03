@@ -17,3 +17,5 @@ ADRs are append-only: superseded decisions get a `Superseded by` line; nothing i
 | [0010](0010-benchmark-sqlite-storage.md) | SQLite for benchmark trend storage | Accepted | 2026-07-02 |
 | [0011](0011-fail-safe-boot.md) | Fail-safe boot (sentinel-guarded auto-start) | Accepted | 2026-07-02 |
 | [0012](0012-test-strategy.md) | Test strategy (layered regiment) | Accepted | 2026-07-02 |
+| [0013](0013-container-image-sourcing.md) | Container images as sourced artifacts (`images` role) | Accepted | 2026-07-03 |
+| [0014](0014-optimization-register.md) | Optimization register (re-enable tabled perf options) | Accepted | 2026-07-03 |

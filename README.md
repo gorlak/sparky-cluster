@@ -27,12 +27,20 @@ The cluster is managed by Ansible and switches between **profiles** —
 declarative YAML configs under `ansible/profiles/` describing what serves
 where. Today's profile family:
 
+Profile names are the `<model>-<version>-<quant>` triple; a `-single`/`-dual`
+topology suffix marks the per-node (TP=1) shapes, while the bare (suffixless)
+big-shared profiles are TP=2 across both nodes.
+
 | Profile | Shape |
 |---|---|
-| `step` | Step-3.5-Flash TP=2 across both nodes (fully-committed big-shared) |
-| `minimax` | MiniMax-M2.7 TP=2 across both nodes (big-shared, ~30 GiB/node dev headroom) |
-| `qwen-dual` | Qwen3-30B single-node on each node (~60 GiB/node dev headroom) |
-| `qwen` | Qwen3-30B single-node on snoopy only (sparky free for dev) |
+| `step-3.5-fp8` | Step-3.5-Flash-FP8 TP=2 across both nodes (fully-committed big-shared) — stable |
+| `step-3.7-nvfp4` | Step-3.7-Flash-NVFP4 TP=2 on 26.06 — successor candidate, **⛔ blocked** (upstream vLLM VL bug; hidden from deploy UI) |
+| `minimax-m2.7-awq` | MiniMax-M2.7-AWQ TP=2 across both nodes (big-shared, ~30 GiB/node dev headroom) |
+| `minimax-m2.7-nvfp4` | MiniMax-M2.7-NVFP4 TP=2 on 26.06 — NVFP4 A/B candidate vs the AWQ profile |
+| `qwen3-coder-nvfp4-dual` | Qwen3-Coder-Next (NVFP4) single-node on each node (~55 GiB/node dev headroom) |
+| `qwen3-coder-nvfp4-single` | Qwen3-Coder-Next (NVFP4) on snoopy only (sparky free for dev) |
+| `qwen3.6-35b-nvfp4-dual` | Qwen3.6-35B-A3B (NVFP4) single-node on each node — reasoning-generalist A/B vs coder |
+| `qwen3.6-35b-nvfp4-single` | Qwen3.6-35B-A3B (NVFP4) on snoopy only (sparky free for dev) |
 | `empty` | nothing serving; full hardware available |
 
 Apply with `make deploy PROFILE=<name>` from `ansible/`. See
@@ -96,7 +104,7 @@ see the comment on `webui_enable_signup`.)
 
 ### Pending investigation
 
-`--kv-cache-dtype fp8` and `--enable-prefix-caching` were disabled on `step` to
+`--kv-cache-dtype fp8` and `--enable-prefix-caching` were disabled on `step-3.5-fp8` to
 achieve stable multi-turn operation. The failure mode was: Nth inference in a
 conversation would produce garbage/nonstop thinking tokens. Hypothesis: FP8 KV
 cache + prefix caching interact badly in vLLM 0.19 on this model.
@@ -198,6 +206,9 @@ you deploy. Publishing needs the `cluster` group (log in once after bootstrap).
 ├── README.md                  # canonical project docs (vendor-neutral)
 ├── CLAUDE.md                  # thin Claude Code entry point — imports README + skills
 ├── .gitignore                 # excludes .claude/, caches
+├── Makefile                   # `make download`; delegates everything else to ansible/
+├── scripts/                   # repo-root helpers
+│   └── download.py            # `make download` — stage a HF model via uv (self-provisions hf)
 ├── skills/                    # agent skills (model-discovery, model-evaluation, documentation, development)
 ├── docs/                      # all project documentation
 │   ├── adr/                   # Architecture Decision Records (one per shipped decision)
@@ -216,8 +227,8 @@ you deploy. Publishing needs the `cluster` group (log in once after bootstrap).
 │   ├── site.yml               # deploy a profile (common→worker→head→webui)
 │   ├── teardown.yml           # stop vLLM (head then worker); webui via --tags
 │   ├── group_vars/            # all.yml (constants) + head.yml / worker.yml
-│   ├── profiles/
-│   │   └── step.yml     # CURRENT config: model, TP=2, serve flags, webui
+│   ├── profiles/          # one file per profile: step-3.5, step-3.7, minimax, qwen*, empty
+│   │   └── step-3.5.yml   # e.g. model, TP=2, serve flags, webui toggles
 │   └── roles/
 │       ├── common/            # vllm user, /opt/vllm dirs, NCCL conf (files/)
 │       ├── model/             # ingest inbox→canonical (head), mirror to all nodes
@@ -239,11 +250,11 @@ Run from the repo's `ansible/` directory. `make deploy`/`check`/`teardown` first
 **publish** your edits (rsync repo → `/opt/cluster/ansible`), then run
 `ansible-playbook` there as `deploy` (via `sudo -u deploy` — prompts for your
 password; it's the gate into the automation context). `PROFILE` defaults to
-`step`. Publishing needs the `cluster` group (log in once after bootstrap).
+`step-3.5-fp8`. Publishing needs the `cluster` group (log in once after bootstrap).
 
 | Target | What it does |
 |---|---|
-| `make deploy` | Bring the cluster to a profile's state (`PROFILE=step`). Restarts services only if a unit changed. |
+| `make deploy` | Bring the cluster to a profile's state (`PROFILE=step-3.5-fp8`). Restarts services only if a unit changed. |
 | `make check` | Dry run (`--check --diff`) — shows what would change, makes none |
 | `make teardown` | Stop + disable vLLM on both nodes (head first, then worker; frees GPU) |
 | `make teardown-all` | Also stops Open WebUI |
@@ -268,16 +279,17 @@ git clone <remote> <repo>   # on a fresh control node; clone wherever you like
 bash <repo>/ansible/bootstrap-deploy.sh
 #    Then log out/in (or `newgrp cluster`) to pick up the cluster group.
 
-# 2. Download model weights into the inbox on the control node. On deploy the
-#    model role moves them into the canonical store (/opt/vllm/models) on the head
-#    and rsync-mirrors that store to every node — no manual copy to snoopy.
-hf download stepfun-ai/Step-3.5-Flash-FP8 \
-    --local-dir /opt/cluster/model-cache/Step-3.5-Flash-FP8
+# 2. Download model weights into the inbox on the control node. `make download`
+#    runs scripts/download.py via uv (provisions huggingface_hub itself — no local
+#    install needed) and stages a flat copy into the inbox. On deploy the model role
+#    moves it into the canonical store (/opt/vllm/models) on the head and rsync-mirrors
+#    that store to every node — no manual copy to snoopy.
+make download REPO=stepfun-ai/Step-3.5-Flash-FP8
 
 # 3. Deploy a profile — publishes the repo to /opt/cluster, then handles both
 #    nodes end to end (common, model install if staged, worker, head + API wait,
 #    Open WebUI).
-cd <repo>/ansible && make deploy PROFILE=step
+cd <repo>/ansible && make deploy PROFILE=step-3.5
 ```
 
 The `model` role is idempotent: if the weights are already at
@@ -327,8 +339,8 @@ set, vLLM advertises the wrong IP and torch.distributed rendezvous fails.
 ### Unit naming
 
 Every vLLM engine runs under one unit name, `vllm-<engine>.service`, **identical
-on every node it spans** (e.g. the `minimax` profile's engine is
-`vllm-minimax.service` on both sparky and snoopy). Head vs. worker is *not* in
+on every node it spans** (e.g. the `minimax-m2.7-awq` profile's engine is
+`vllm-minimax-m2.7-awq.service` on both sparky and snoopy). Head vs. worker is *not* in
 the name — `rank` is computed from the node's position in the engine's
 `nodes` list, so the same file renders as `head (rank 0, API on :port)` on
 `nodes[0]` and `headless worker (rank N)` elsewhere. (The pre-profile scheme used
@@ -378,9 +390,10 @@ front-end toggles. The catalog of current profiles is in
 **[`docs/profiles.md`](docs/profiles.md)**; the schema is in
 [`docs/serving-topology.md`](docs/serving-topology.md). To stage a new model:
 
-1. Download weights into the inbox `/opt/cluster/model-cache/<MODEL>` on sparky.
+1. Stage weights into the inbox on sparky: `make download REPO=<hf-repo>` (runs
+   `scripts/download.py` via uv — self-provisions `huggingface_hub`, no local install).
    The deploy moves them into the canonical store and mirrors to all nodes.
-2. Copy an existing profile that matches your shape (`step.yml` / `minimax.yml`
+2. Copy an existing profile that matches your shape (`step-3.5.yml` / `minimax.yml`
    for big-shared TP; `qwen-dual.yml` / `qwen.yml` for per-node small) to
    `profiles/<name>.yml` and edit.
 3. `make deploy PROFILE=<name>` — Ansible re-templates the units and restarts.

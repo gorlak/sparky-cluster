@@ -77,7 +77,7 @@ hostnames either. More invasive — do last or separately.
 1. `ansible-playbook --syntax-check site.yml` with example files in place —
    catches missing variable references before touching the cluster.
 2. `shellcheck ansible/bootstrap-deploy.sh` — catches shell regressions.
-3. `make check PROFILE=step` (dry run) — confirms templates render correctly.
+3. `make check PROFILE=step-3.5-fp8` (dry run) — confirms templates render correctly.
 4. Full `make deploy` on the actual cluster to confirm end-to-end.
 
 > Cross-reference: the "Make node identity fully inventory-driven" item below
@@ -107,9 +107,9 @@ It's already tested on DGX Spark / Grace+GB10 / sm_121.
    Extend T3's compose template to include `kind: talkie` engines in
    `OPENAI_API_BASE_URLS` (they serve `/v1`).
 5. Ship a **`fun` profile** with just talkie on sparky to evaluate it in isolation.
-6. If it earns its keep (more than a novelty), fold talkie into `minimax`'s
+6. If it earns its keep (more than a novelty), fold talkie into `minimax-m2.7-awq`'s
    sparky-side headroom while minimax lends TP — note talkie's ~26 GiB BF16
-   weights would eat most of `minimax`'s ~30 GiB outside-vLLM budget at the
+   weights would eat most of `minimax-m2.7-awq`'s ~30 GiB outside-vLLM budget at the
    current `gmu 0.75`, so the gmu may need adjusting.
 
 **Cost to plan around:** talkie-server loads BF16 (~26 GiB resident on GPU; no

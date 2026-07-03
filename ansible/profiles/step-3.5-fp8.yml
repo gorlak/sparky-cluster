@@ -1,15 +1,17 @@
 ---
-# Profile: step — the current production deployment.
-# Step-3.5-Flash-FP8 served at TP=2 across sparky + snoopy, Open WebUI on :80.
+# Profile: step-3.5-fp8 — Step-3.5-Flash-FP8, big-shared TP=2 across sparky + snoopy.
+# The stable, known-good "step" slot (26.04 default container). Its successor
+# candidate is `step-3.7-nvfp4` (Step-3.7-Flash-NVFP4 on 26.06) — A/B them by
+# deploying each in turn. Profile names are the <model>-<version>-<quant> triple.
 #
-# Apply with:  make deploy PROFILE=step
-profile_name: step
+# Apply with:  make deploy PROFILE=step-3.5-fp8
+profile_name: step-3.5-fp8
 
 # Serving topology — the single source of truth for what runs where. Every
 # model-dependent service (vLLM units, Open WebUI, Prometheus, the control panel)
 # is a projection of this list. See docs/serving-topology.md.
 serving_topology:
-  - name: step
+  - name: step-3.5-fp8
     kind: vllm
     nodes: [sparky, snoopy]      # order = ranks; nodes[0] is rank 0 / the API host
     port: 8000

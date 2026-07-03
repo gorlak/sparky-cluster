@@ -29,7 +29,7 @@ The boundary matters and is enforced:
 **Target version only** — the source is "wherever we are," and history covers it. Prefix by kind:
 
 - `container-<image-coordinate>-<target-tag>.md` — e.g. `container-nvidia-vllm-26.06-py3.md` (mirrors `nvcr.io/nvidia/vllm:26.06-py3`; NGC images are calendar-versioned `YY.MM`).
-- `profile-<profile>-<target-model>.md` — e.g. `profile-step-3.7-flash.md` (the `step` Ansible profile adopting a new model).
+- `profile-<profile>-<target-model>.md` — e.g. `profile-step-3.7-flash.md` (the step profile family adopting a new model).
 
 Fact sheets are just `<model>.md`.
 
@@ -54,6 +54,12 @@ Copy an existing one (`container-nvidia-vllm-26.06-py3.md` or `profile-step-3.7-
 - **Options / what changes** — a table comparing current vs target(s).
 - **Implications for the cluster** — memory/headroom/profile-archetype/dev-availability effects.
 - **Dependencies** — what must land first; cross-link other trackers it waits on.
+- **Workarounds (WARs) register** — every workaround the target requires, as a table
+  (`WAR | fixes | upstream issue | cost | applied in | remove when | status`). Workarounds
+  are **debt**: each is tied to an upstream bug and an explicit **removal condition**
+  (issue closed / fixed in version N). On a later bump, review the register, drop any whose
+  condition holds, and **re-test one at a time** to confirm it's no longer load-bearing —
+  removing several at once hides which still mattered.
 - **Completion criteria** — the concrete conditions under which we re-attempt or finish. This is what makes it *gated* rather than a wish.
 - **Retry / deploy plan** — how we'll attempt it safely (behind the fail-safe net, solo-before-multinode, soak, etc.).
 - **Re-assessment log** — dated entries; append, don't rewrite history.

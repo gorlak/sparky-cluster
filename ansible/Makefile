@@ -9,12 +9,12 @@
 # write /opt/cluster. Ansible runs as deploy via sudo (your password is the gate);
 # a dashboard running as User=deploy invokes the same targets with no prompt.
 #
-#   make deploy   PROFILE=step
-#   make check    PROFILE=step    # dry run (--check --diff)
+#   make deploy   PROFILE=step-3.5-fp8
+#   make check    PROFILE=step-3.5-fp8    # dry run (--check --diff)
 #   make teardown                       # stop vLLM on both nodes
 #   make status / make logs-head / make logs-worker
 
-PROFILE       ?= step
+PROFILE       ?= step-3.5-fp8
 EXTRA         := -e @profiles/$(PROFILE).yml
 LIVE          := /opt/cluster/ansible
 DEPLOY_KEY    := /home/deploy/.ssh/id_ed25519

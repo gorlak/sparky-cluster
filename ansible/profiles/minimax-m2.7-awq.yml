@@ -1,6 +1,7 @@
 ---
-# Single big shared model — MiniMax-M2.7 TP=2 across both nodes (same shape as
-# `step`, just a different model). MiniMax has the cluster to itself.
+# Single big shared model — MiniMax-M2.7 (AWQ-4bit) TP=2 across both nodes (same
+# shape as `step-3.5-fp8`, just a different model). MiniMax has the cluster to
+# itself. A/B partner: `minimax-m2.7-nvfp4` (same model, NVFP4 quant, on 26.06).
 #
 # Memory math (gmu 0.75 — "big-shared with dev headroom"):
 #   gmu 0.75 × 121 GiB = 90.75 GiB vLLM budget per node.
@@ -13,12 +14,13 @@
 #
 # MiniMax quant is auto-detected compressed-tensors int4 → NO --quantization
 # (would double-quantize → garbage). Custom modeling_minimax_m2.py is handled by
-# the template's global --trust-remote-code. Tool-call parser deliberately not set
-# yet — the MiniMax parser name in vLLM 0.19 / image 26.04 hasn't been verified.
+# the template's global --trust-remote-code. Tool calling enabled: MiniMax-M2 uses
+# the `minimax_m2` parser (verified registered in vLLM 0.19 / image 26.04) — Open
+# WebUI sends tool_choice=auto, which needs both flags below on the API node.
 
-profile_name: minimax
+profile_name: minimax-m2.7-awq
 serving_topology:
-  - name: minimax
+  - name: minimax-m2.7-awq
     kind: vllm
     nodes: [sparky, snoopy]      # nodes[0]=sparky is rank 0 / the API host
     port: 8000
@@ -32,6 +34,8 @@ serving_topology:
     head_extra_args:
       - --enable-chunked-prefill
       - --reasoning-parser deepseek_r1
+      - --enable-auto-tool-choice
+      - --tool-call-parser minimax_m2
     worker_extra_args:
       - --enable-chunked-prefill
 

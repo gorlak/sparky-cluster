@@ -13,6 +13,14 @@
 Description=vLLM {{ engine.name }} head (rank {{ rank }}, API on :{{ engine.port }}) — TP={{ tp }}, no Ray
 {% else %}
 Description=vLLM {{ engine.name }} headless worker (rank {{ rank }}) — TP={{ tp }}, no Ray
+# Rendezvous coupling: a worker MUST restart whenever the head (rank 0) restarts —
+# the head's new torch.distributed TCPStore invalidates the worker's connection and
+# the worker won't reconnect on its own (its heartbeat monitor logs broken-pipe but
+# never exits). Embedding a hash of the full engine spec makes ANY head-side change
+# re-render (⇒ restart) this worker unit too, so head + workers always restart as a
+# matched pair. This replaces the old cross-host "reconnect stale worker" task, whose
+# hostvars[worker].engine_unit read was unreliable inside a looped include_tasks.
+# engine-spec-hash: {{ engine | to_json | hash('sha1') }}
 {% endif %}
 After=docker.service network-online.target
 Requires=docker.service

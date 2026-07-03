@@ -1,7 +1,7 @@
 ---
 # Bring the cluster to a profile's desired state.
-#   make deploy PROFILE=step
-#   (or: ansible-playbook site.yml -e @profiles/step.yml)
+#   make deploy PROFILE=step-3.5-fp8
+#   (or: ansible-playbook site.yml -e @profiles/step-3.5-fp8.yml)
 #
 # Plays run in order so services come up cleanly: prerequisites + models on all
 # nodes, then every vLLM engine in the profile's serving_topology is brought up

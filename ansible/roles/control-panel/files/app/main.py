@@ -23,6 +23,7 @@ See docs/control-interface.md and docs/serving-topology.md.
 """
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -81,10 +82,20 @@ ACTION_LIST = [{"name": k, **{f: v[f] for f in ("label", "danger", "desc")}}
 
 
 def available_profiles():
-    """Names of profiles present in the ansible dir, sorted."""
+    """Deployable profile names, sorted. Profiles that declare a top-level
+    `blocked: true` are parked candidates (e.g. waiting on upstream support) and are
+    hidden from the deploy UI — a deliberate CLI `make deploy PROFILE=<x>` still works."""
     p = Path(ANSIBLE_DIR) / "profiles"
     try:
-        return sorted(f.stem for f in p.glob("*.yml"))
+        out = []
+        for f in sorted(p.glob("*.yml")):
+            try:
+                if re.search(r"(?m)^blocked:\s*true\b", f.read_text()):
+                    continue
+            except OSError:
+                pass
+            out.append(f.stem)
+        return out or [PROFILE]
     except OSError:
         return [PROFILE]
 
