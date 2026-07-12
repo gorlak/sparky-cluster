@@ -6,6 +6,11 @@
 __pycache__/
 *.py[cod]
 
+# uv / venv / pytest (the `sparky` harness — ADR-0010). uv.lock IS tracked.
+.venv/
+.pytest_cache/
+*.egg-info/
+
 # Benchmark run outputs (regenerable; the dir is kept via .gitkeep)
 benchmark/results/*.json
 
