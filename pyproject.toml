@@ -14,7 +14,13 @@ dependencies = [
 sparky = "sparky.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8", "jinja2>=3"]
+dev = ["pytest>=8", "jinja2>=3", "fastapi>=0.110", "python-multipart>=0.0.9"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # starlette's TestClient nudges toward a future httpx2; harmless, hide the noise.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [build-system]
 requires = ["hatchling"]
