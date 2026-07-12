@@ -12,6 +12,7 @@ from rich.table import Table
 
 from sparky import topology
 from sparky.api import VllmClient
+from sparky.multiturn import run_multiturn
 
 app = typer.Typer(
     help="Sparky Cluster test/bench harness (ADR-0010).",
@@ -54,10 +55,12 @@ def show_topology(
 
 @app.command("smoke")
 def smoke() -> None:
-    """Probe each live engine (from current-topology.json): readiness + tool-call shape.
+    """Post-deploy gate: probe each live engine (from current-topology.json) for
+    readiness, the tool-call shape Open WebUI sends, and multiturn output quality.
 
-    Fails (exit 1) if any engine is down or 400s the tool-call shape Open WebUI
-    sends — i.e. is up but can't serve the UI it's wired to (ADR-0012).
+    Fails (exit 1) if any engine is down, 400s the tool-call shape (up but can't
+    serve the UI it's wired to), or trips a corruption heuristic across the
+    conversation (ADR-0012). ~2 min per engine — that's the deploy-gate budget.
     """
     current = topology.load_current_topology()
     if current is None:
@@ -70,23 +73,32 @@ def smoke() -> None:
         raise typer.Exit()
 
     table = Table(title=f"smoke: {profile}", title_justify="left")
-    for col in ("engine", "api", "ready", "tool-shape"):
+    for col in ("engine", "api", "ready", "tool-shape", "quality"):
         table.add_column(col, overflow="fold")
+
     failed = False
     for e in engines:
-        with VllmClient(e["api_url"], timeout=30.0) as client:
+        tool, quality, ok = "—", "—", False
+        with VllmClient(e["api_url"], timeout=120.0) as client:
             ready = client.is_ready()
             if ready:
                 code = client.probe_tool_support(e["served_as"]).status_code
                 tool = "[green]200[/]" if code == 200 else f"[red]{code}[/]"
                 ok = code == 200
-            else:
-                tool, ok = "—", False
+                if ok:
+                    result = run_multiturn(client, e["served_as"])
+                    ok = result.ok
+                    if result.ok:
+                        quality = "[green]pass[/]"
+                    else:
+                        reasons = sorted({r for t in result.failures for r in t.verdict.reasons})
+                        quality = "[red]FAIL: " + ",".join(reasons) + "[/]"
         failed = failed or not ok
         table.add_row(
             e["name"], e["api_url"],
-            "[green]yes[/]" if ready else "[red]no[/]", tool,
+            "[green]yes[/]" if ready else "[red]no[/]", tool, quality,
         )
+
     console.print(table)
     if failed:
         raise typer.Exit(1)
