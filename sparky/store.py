@@ -65,6 +65,8 @@ class Run:
 class Store:
     def __init__(self, path: str | Path = DEFAULT_DB):
         self.path = str(path)
+        if self.path != ":memory:":
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")

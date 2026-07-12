@@ -10,9 +10,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from sparky import topology
+from sparky import report, topology
 from sparky.api import VllmClient
+from sparky.bench import run_all
 from sparky.multiturn import run_multiturn
+from sparky.store import Store
 
 app = typer.Typer(
     help="Sparky Cluster test/bench harness (ADR-0010).",
@@ -102,6 +104,43 @@ def smoke() -> None:
     console.print(table)
     if failed:
         raise typer.Exit(1)
+
+
+@app.command("bench")
+def bench(
+    label: str = typer.Argument(..., help="Label for this run (e.g. '26.04', 'nvfp4', 'prefix-on')."),
+) -> None:
+    """Run the vllm bench serve scenarios against the live engine(s); record to the trend store.
+
+    Several minutes per engine (latency + throughput + prefix_cache). Reads the
+    engine's container/served-name from current-topology.json (ADR-0012).
+    """
+    current = topology.load_current_topology()
+    if current is None:
+        console.print("[yellow]No current-topology.json — nothing is deployed.[/]")
+        raise typer.Exit(1)
+    engines = [e for e in current.get("engines", []) if e.get("api_url")]
+    if not engines:
+        console.print("[yellow]No API engines to benchmark.[/]")
+        raise typer.Exit(1)
+    profile = current.get("profile", "?")
+    with Store() as store:
+        for e in engines:
+            console.print(f"[bold]benchmarking {e['name']} as '{label}'[/] — 3 scenarios, several minutes…")
+            for run in run_all(label, e, store, profile):
+                console.print(f"  {run.scenario}: output {run.output_toks_s} tok/s, ttft p99 {run.ttft_p99_ms} ms")
+    console.print(f"[green]recorded '{label}'[/] — compare with:  sparky report {label} <other>")
+
+
+@app.command("report")
+def report_cmd(
+    label_a: str = typer.Argument(..., help="Baseline label."),
+    label_b: str = typer.Argument(..., help="Comparison label."),
+) -> None:
+    """Compare two benchmark labels from the trend store (direction-aware A/B)."""
+    with Store() as store:
+        comparison = report.compare(store, label_a, label_b)
+    report.render(console, label_a, label_b, comparison)
 
 
 if __name__ == "__main__":
