@@ -1,8 +1,9 @@
-# DGX Spark Cluster — vLLM + Open WebUI
+# Sparky Cluster — vLLM + Open WebUI
 
 A two-node NVIDIA DGX Spark (GB10) cluster serving LLMs with vLLM + Open WebUI,
 managed by Ansible. One node is the head (`sparky`), the other a worker
-(`snoopy`); profiles decide what serves where.
+(`snoopy`); profiles decide what serves where. The project takes its name from
+the head node — see the Peanuts theme below.
 
 ## Node naming — a Peanuts theme
 
@@ -355,7 +356,7 @@ unit has `TimeoutStartSec=1200` — 20 minutes for snoopy to join. **Across a
 reboot**, boot is fail-safe rather than automatic: a clean reboot auto-restores
 serving, but a hang / hard-reset leaves a per-engine marker that makes the unit
 skip auto-start (`ConditionPathExists`), so the node comes up empty and reachable
-instead of re-attempting the risky load unattended — see ADR-0011.
+instead of re-attempting the risky load unattended — see ADR-0009.
 
 ### Open WebUI restarts automatically
 

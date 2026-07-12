@@ -1,7 +1,7 @@
-# ADR-0011: Fail-safe boot (sentinel-guarded auto-start)
+# ADR-0009: Fail-safe boot (sentinel-guarded auto-start)
 
 **Date:** 2026-07-02
-**Status:** Accepted
+**Status:** Implemented
 
 ## Context
 

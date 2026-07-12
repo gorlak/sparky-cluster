@@ -36,7 +36,7 @@ prerequisite for the whole NVFP4 line of work.
    version boundary matches our own logs exactly: 26.04's NCCL 2.29.7 works;
    26.06's NCCL 2.30.5 hangs.
 4. Rolled back to 26.04 (stable; `minimax-m2.7-awq` running).
-5. Implemented **fail-safe boot (ADR-0011)** so a *future* failed retry lands both
+5. Implemented **fail-safe boot (ADR-0009)** so a *future* failed retry lands both
    nodes empty-and-reachable instead of re-hanging on every boot. This is what
    makes re-attempting 26.06 safe rather than reckless.
 6. Staged the **NVLS killswitch** (`NCCL_NVLS_ENABLE=0`, see
@@ -104,7 +104,7 @@ When a completion criterion is met:
 3. **Test solo first** if a small-enough NVFP4 model fits one node (no cross-node NCCL) — it
    isolates the FP4 kernels from the multinode path. (Step-3.7-NVFP4 is ~129 GiB and needs
    TP=2, so a smaller NVFP4 MoE would be the smoke-test candidate; else go to step 4 directly.)
-4. TP=2 bring-up behind the fail-safe net (ADR-0011): a hang → hard reset → empty+reachable.
+4. TP=2 bring-up behind the fail-safe net (ADR-0009): a hang → hard reset → empty+reachable.
 5. **Soak test**: multi-hour load to catch the #41725 inference-time deadlock (35–55 min).
    A clean bring-up is necessary but not sufficient.
 6. Only promote to a serving profile after a clean soak.
@@ -120,7 +120,7 @@ while the `step-3.7-nvfp4` profile runs 26.06 on the same cluster.
 
 - **2026-07-02** — Upgrade opened. 26.06 bump hard-hung both nodes at TP=2
   bring-up; root-caused to NCCL 2.30.4+ NVLS regression (nccl#2167). Rolled back to
-  26.04. Fail-safe boot (ADR-0011) and NVLS killswitch staged. All upstream issues
+  26.04. Fail-safe boot (ADR-0009) and NVLS killswitch staged. All upstream issues
   open/un-triaged.
 - **2026-07-02 (later)** — Re-attempted 26.06 with the NVLS killswitch + fail-safe boot
   deployed. **Killswitch worked** — got past the NCCL-init hang (nccl#2167 cleared for our
@@ -149,7 +149,7 @@ while the `step-3.7-nvfp4` profile runs 26.06 on the same cluster.
   NVFP4; the hang was never about NVFP4. (2) Step-3.7 *specifically* is blocked on the VL-processor
   bug; a **text-only NVFP4 MoE** would validate 26.06/NVFP4 end-to-end (and single-node first, per
   the retry plan). (3) Also hit a first-deploy playbook abort from the worker-reconnect task, now
-  fixed (regression noted in ADR-0012).
+  fixed (regression noted in ADR-0011).
 
 ## Appendix — Marlin-MoE load-hang repro (errata; follow-up deferred)
 
@@ -246,7 +246,7 @@ load-hang symptom + the regression boundary.
 
 ## References
 
-- ADR-0011 — fail-safe boot (the net that makes retrying safe)
+- ADR-0009 — fail-safe boot (the net that makes retrying safe)
 - `docs/models/step-3.7-flash.md` — NVFP4 target model + memory analysis
 - `ansible/group_vars/all.yml` — the `vllm_image` pin (with the hang note)
 - `ansible/roles/common/files/nccl-env.conf` — the NVLS killswitch

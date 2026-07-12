@@ -144,7 +144,7 @@ def _is_active(unit, ssh=None):
 
 
 def _marker_present(path, ssh=None):
-    """True if the fail-safe boot marker (ADR-0011) exists on the node. Present
+    """True if the fail-safe boot marker (ADR-0009) exists on the node. Present
     while the unit is *down* means an unclean shutdown tripped ConditionPathExists
     and the node came up empty on purpose — the recovery state."""
     check = f"test -f {shlex.quote(path)} && echo yes || echo no"
@@ -349,7 +349,7 @@ def status(request: Request):
 @app.get("/health.json")
 def health_json():
     """Lightweight JSON for the landing page to detect the fail-safe recovery
-    state (ADR-0011) without rendering the whole panel. Served at /admin/health.json."""
+    state (ADR-0009) without rendering the whole panel. Served at /admin/health.json."""
     s = gather()
     return {"failsafe": s.get("failsafe", False), "profile": s.get("profile"),
             "has_topology": s.get("has_topology", False)}

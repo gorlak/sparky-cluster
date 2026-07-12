@@ -1,5 +1,5 @@
 ---
-# Two-node DGX Spark cluster. Ansible runs as `deploy` (see bootstrap-deploy.sh).
+# Sparky Cluster — two-node NVIDIA DGX Spark (GB10). Ansible runs as `deploy` (see bootstrap-deploy.sh).
 #   sparky = control node — local connection (deploy invokes ansible here); also
 #            where head-only services live (Open WebUI, Caddy, control panel,
 #            Prometheus, Grafana).

@@ -41,9 +41,8 @@ commit as the implementation it documents.
 ## ADRs
 
 Every significant architectural or operational decision shipped to the cluster
-gets an ADR in `docs/adr/` — see [[documentation]] for when and how to write one
-(and the index at `docs/adr/README.md`). Write the ADR alongside the
-implementation and commit both together.
+gets an ADR in `docs/adr/` — see [[documentation]] for when and how to write one.
+Write the ADR alongside the implementation and commit both together.
 
 ## No Cleanup Commits
 

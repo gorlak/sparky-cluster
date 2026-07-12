@@ -43,11 +43,11 @@ throughput), keep or revert with the reason recorded. Each row is independent.
 ## Decision
 
 Option C. Maintain this **optimization register** and re-enable opportunistically as
-the fleet stabilizes, **one knob at a time**, behind the fail-safe net (ADR-0011),
+the fleet stabilizes, **one knob at a time**, behind the fail-safe net (ADR-0009),
 validated against the right test:
 - **corruption-class** knobs (FP8 KV, prefix caching) → a **multi-turn conversation**
   test, not a single shot (the bug appeared on the *Nth* turn);
-- **throughput** knobs (MTP, cudagraphs, backend) → a **benchmark A/B** (ADR-0009);
+- **throughput** knobs (MTP, cudagraphs, backend) → a **benchmark A/B** (ADR-0012);
 - **version-specific** disables → **re-test on the current container** first (the
   bug may already be fixed).
 
@@ -70,8 +70,8 @@ Keep a knob only if it's stable *and* wins; otherwise revert and record why.
   tied to a test result, so a regression points at exactly one knob.
 - **Subsumes** the README "Pending investigation" (FP8 KV + prefix caching) — that
   moves here as the first two register rows.
-- **Cross-references** ADR-0009 (benchmark A/B is how throughput knobs are judged),
-  ADR-0011 (every re-enable runs behind the fail-safe net), ADR-0012 (a multi-turn
+- **Cross-references** ADR-0012 (benchmark A/B is how throughput knobs are judged),
+  ADR-0009 (every re-enable runs behind the fail-safe net), ADR-0011 (a multi-turn
   smoke belongs in the regiment), and the 26.06 container tracker (the container-level
   WARs are the mirror image — *those* re-enable when the upstream bugs close).
 - **Highest-value first:** MTP-3 on qwen3.6-35b (~3×, and we're already on the

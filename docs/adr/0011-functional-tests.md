@@ -1,4 +1,4 @@
-# ADR-0012: Test strategy
+# ADR-0011: Functional test regiment
 
 **Date:** 2026-07-02
 **Status:** Accepted
@@ -8,7 +8,7 @@
 The project has **no automated tests**: no `tests/`, no pytest, no CI
 workflow, no `ansible-lint` / `yamllint`. The only thing under "testing" is
 `benchmark/` (performance measurement — and `run.sh` is currently broken, see
-ADR-0009). Everything shipped to date has been validated by hand or by watching
+ADR-0012). Everything shipped to date has been validated by hand or by watching
 a deploy.
 
 That gap has already cost us. Several recent changes could have been caught
@@ -16,12 +16,14 @@ before touching hardware: the `docker exec vllm` staleness in `run.sh` (the
 container is `vllm-<engine>` now), documentation drift on unit names, and the
 kind of Jinja/logic regressions that are cheap to catch by rendering a template
 and asserting on the output. The 26.06 hang wasn't a testable-in-CI failure, but
-the *recovery* machinery built to survive it (ADR-0011) very much is — and
+the *recovery* machinery built to survive it (ADR-0009) very much is — and
 should not be validated only by wedging a live node.
 
 This ADR records the decision to build a layered test regiment and the
 inventory of what to build. It does **not** implement the tests; they are
-erected incrementally as follow-up work.
+erected incrementally as follow-up work. All layers run on the shared harness
+(ADR-0010) — pytest, the vLLM API client, the SQLite store, and the durable
+breadcrumb machinery are provided there, not reinvented here.
 
 ## Options considered
 
@@ -41,7 +43,7 @@ more cheaply by static + render + unit layers. Rejected as the primary approach
 Static checks + template-render tests + control-panel unit tests as the fast
 core (seconds, no hardware), plus a small set of scripted synthetic infra tests
 for the stateful paths, plus the runtime quality regiment already designed in
-ADR-0009. Each layer is independent and adds value on its own.
+ADR-0012. Each layer is independent and adds value on its own.
 
 ## Decision
 
@@ -56,7 +58,7 @@ integration is explicitly **out of scope**.
 
 2. **Template render** — pytest that renders `roles/vllm/templates/vllm.service.j2`
    (and peers) over sample `serving_topology` inputs and asserts on the output:
-   the ADR-0011 marker directives are present, `rank` / head-vs-worker is
+   the ADR-0009 marker directives are present, `rank` / head-vs-worker is
    computed correctly per node, multi-node vs single-node arg assembly, the
    fail-safe `ConditionPathExists` / `ExecStartPre` / `ExecStopPost` triple.
    No hardware; catches the class of bug that has bitten us most.
@@ -68,7 +70,7 @@ integration is explicitly **out of scope**.
 
 4. **Synthetic infra** — scripted, run against a live cluster but without
    inducing real faults:
-   - **Fail-safe / recovery** (ADR-0011): stop an engine, re-create its marker,
+   - **Fail-safe / recovery** (ADR-0009): stop an engine, re-create its marker,
      assert the panel reports `failsafe`, assert `systemctl start` is skipped by
      the condition, then assert a Retry/empty deploy clears the marker and
      recovers. (A hard reset is *not* required — the marker is the signal.)
@@ -110,7 +112,7 @@ integration is explicitly **out of scope**.
      changes the *worker* unit's rendered content; a `worker_extra_args`-only change
      does *not* change the *head* unit.
 
-5. **Runtime quality** — the ADR-0009 smoke test (deploy gate) + full run
+5. **Runtime quality** — the ADR-0012 smoke test (deploy gate) + full run
    (weekly), storing to SQLite (ADR-0010). Catches model corruption and
    throughput regressions that only appear at inference time — e.g. an engine that
    *crash-loops* on startup (like `step-3.7`'s `Step3VLProcessor` bug, 2026-07-02)
@@ -172,7 +174,7 @@ integration is explicitly **out of scope**.
   2026-07-02). When that happens the test process dies *with* the node — no clean
   failure report — and naively re-running the suite re-runs the freezer in a loop.
   So Layers 4–5 write **write-ahead breadcrumbs to persistent disk** (same class as
-  ADR-0011's `vllm_state_dir` markers — NOT `/run` or `/tmp`): before each risky
+  ADR-0009's `vllm_state_dir` markers — NOT `/run` or `/tmp`): before each risky
   step (a deploy, an individual case) record intent `{test_id, phase, profile, cmd,
   started_at, host}` and advance/clear it on clean completion. On startup the
   harness reads any surviving breadcrumb: the step it names is a *suspected
@@ -180,13 +182,13 @@ integration is explicitly **out of scope**.
   `--retry-quarantined`) and continue the rest of the suite, so one node-killer
   doesn't wedge the whole regiment. Two granularities — **per-deploy and
   per-test-case** — because a case can hang outside a deploy too. Correlate the
-  breadcrumb with ADR-0011's surviving per-engine `.running` marker to localize the
+  breadcrumb with ADR-0009's surviving per-engine `.running` marker to localize the
   freeze ("test T deployed profile P, engine E's marker survived ⇒ E's weight load
   hung it"). An append-only trail (intent → result) also reconstructs the *sequence*
   that led to a freeze across reboots, not just the last step. This is the
-  test-harness analogue of ADR-0011: durable on-disk state so an *unclean* death
+  test-harness analogue of ADR-0009: durable on-disk state so an *unclean* death
   degrades to skip-and-continue instead of re-freeze.
-- The synthetic fail-safe test (4) means ADR-0011 can be validated without ever
+- The synthetic fail-safe test (4) means ADR-0009 can be validated without ever
   hanging a node — the marker file is the whole contract.
 - The layers are independent: `make lint` + the two pytest suites alone cover a
   large fraction of the drift/logic failure modes and can land before any of the

@@ -13,7 +13,7 @@
     mode: "0644"
   register: engine_unit
 
-# Clear the fail-safe boot marker (ADR-0011). A deploy is operator-initiated, so
+# Clear the fail-safe boot marker (ADR-0009). A deploy is operator-initiated, so
 # it must always proceed — even after a prior run left the marker behind by
 # hanging the host. Without this, the unit's ConditionPathExists would make the
 # `started` step below silently no-op on a post-hang recovery deploy. (A restart

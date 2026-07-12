@@ -1,4 +1,4 @@
-# ADR-0009: Benchmark regiment design
+# ADR-0012: Benchmark regiment
 
 **Date:** 2026-07-02
 **Status:** Accepted
@@ -56,7 +56,9 @@ records per-turn inter-token latency. It is a separate code path from the
 
 ## Decision
 
-Two-mode regiment (option C).
+Two-mode regiment (option C). The runner, vLLM API client, SQLite store, and
+breadcrumb machinery come from the shared harness (ADR-0010); this ADR is the
+scenarios, quality heuristics, and schedule.
 
 ## Quality check heuristics
 

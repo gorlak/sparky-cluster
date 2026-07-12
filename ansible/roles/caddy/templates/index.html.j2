@@ -27,7 +27,7 @@
   <p class="sub">{{ web_domain }}</p>
   <div id="failsafe-banner">
     <strong>⚠ Cluster in fail-safe recovery</strong>
-    <span class="blurb">A node booted empty after an unclean shutdown (ADR-0011).
+    <span class="blurb">A node booted empty after an unclean shutdown (ADR-0009).
       <a href="/admin">Open the control panel</a> to recover to the deployed configuration.</span>
   </div>
   <ul>
@@ -40,7 +40,7 @@
   </ul>
   <script>
     // Reveal the banner if the control panel reports the fail-safe recovery
-    // state (ADR-0011). Same-origin via Caddy's /admin route; fails silently.
+    // state (ADR-0009). Same-origin via Caddy's /admin route; fails silently.
     fetch('/admin/health.json')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {

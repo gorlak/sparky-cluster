@@ -26,7 +26,7 @@ After=docker.service network-online.target
 Requires=docker.service
 Wants=network-online.target
 
-# Fail-safe boot (ADR-0011). The marker below is touched at start and removed on
+# Fail-safe boot (ADR-0009). The marker below is touched at start and removed on
 # any CLEAN stop (ExecStopPost). It therefore only survives to a subsequent boot
 # after an UNCLEAN shutdown — a hang / hard-reset / power cut mid-run. When it
 # survives, this condition skips auto-start so the node boots EMPTY and reachable

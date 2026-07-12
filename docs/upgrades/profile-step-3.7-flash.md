@@ -80,4 +80,4 @@ it into the inbox first (`/opt/cluster/model-cache/Step-3.7-Flash-<QUANT>`), the
 
 - `docs/models/step-3.5-flash.md`, `docs/models/step-3.7-flash.md` — per-model fact sheets
 - `docs/upgrades/container-nvidia-vllm-26.06-py3.md` — the container upgrade the NVFP4 path depends on
-- ADR-0011 (fail-safe boot); README "Pending investigation" (fp8 KV cache)
+- ADR-0009 (fail-safe boot); README "Pending investigation" (fp8 KV cache)

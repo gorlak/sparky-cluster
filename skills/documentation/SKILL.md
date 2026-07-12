@@ -74,7 +74,8 @@ Copy an existing one (`container-nvidia-vllm-26.06-py3.md` or `profile-step-3.7-
 ## Decision records (ADRs)
 
 ADRs live in `docs/adr/` and are the immutable record of decisions — the **why**,
-distinct from the living docs above. Index + format: `docs/adr/README.md`.
+distinct from the living docs above. One file per decision; copy an existing
+`docs/adr/NNNN-*.md` for the format.
 
 ### What an ADR is
 It captures **why** a decision was made — the context at the time, the options
@@ -113,11 +114,10 @@ don't commit).
 
 ### How to write one
 1. Copy an existing `docs/adr/NNNN-*.md`.
-2. Number from the last row in `docs/adr/README.md`.
+2. Number from the highest existing `docs/adr/NNNN-*.md` filename.
 3. Start at `Proposed` or `Accepted`.
 4. Sections: **Context** · **Options considered** · **Decision** · **Consequences**.
-5. Add a row to `docs/adr/README.md`.
-6. Commit in the **same commit** as the implementation it documents ([[development]]).
+5. Commit in the **same commit** as the implementation it documents ([[development]]).
 
 ### Documentation drift beats a missing ADR
 When cluster behaviour changes, update the living doc in the same commit (`README.md`

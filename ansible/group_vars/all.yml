@@ -10,7 +10,7 @@
 # Default 26.04 (vLLM 0.19, NCCL 2.29.7) is the stable, known-good image. AWQ /
 # compressed-tensors MoE models (minimax, step-3.5) MUST stay here — 26.06 hangs loading
 # them (Marlin-MoE load bug on sm_121). 26.06 (needed for NVFP4) is opt-in per profile:
-# profiles/step-3.7-nvfp4.yml pins it. Full story + WAR register + fail-safe boot (ADR-0011):
+# profiles/step-3.7-nvfp4.yml pins it. Full story + WAR register + fail-safe boot (ADR-0009):
 # docs/upgrades/container-nvidia-vllm-26.06-py3.md.
 vllm_image: nvcr.io/nvidia/vllm:26.04-py3
 
@@ -18,7 +18,7 @@ vllm_image: nvcr.io/nvidia/vllm:26.04-py3
 vllm_models_dir: /opt/vllm/models
 nccl_conf_path: /opt/vllm/nccl-env.conf
 
-# Persistent per-engine boot sentinel dir (ADR-0011 fail-safe boot). A marker
+# Persistent per-engine boot sentinel dir (ADR-0009 fail-safe boot). A marker
 # {{ vllm_state_dir }}/vllm-<engine>.running is touched at start and removed on
 # any CLEAN stop (systemd ExecStopPost). If it survives to the next boot — the
 # only way that happens is an unclean shutdown: a hang / hard-reset / power cut —

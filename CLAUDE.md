@@ -36,6 +36,6 @@ as slash commands). When a task matches one, read its `SKILL.md` and follow it:
 
 ## Architecture Decision Records
 
-Significant decisions shipped to this cluster are documented in `docs/adr/`. See
-`docs/adr/README.md` for the index. When implementing something new, write the ADR
-alongside the implementation and commit both together.
+Significant decisions shipped to this cluster are documented in `docs/adr/` (one
+file per decision). When implementing something new, write the ADR alongside the
+implementation and commit both together.
