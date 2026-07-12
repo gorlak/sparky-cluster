@@ -69,7 +69,14 @@ The multiturn check detects the specific failure modes observed on this cluster:
 - **Runaway thinking:** >200 tokens emitted after an opening `<think>` with no
   closing `</think>` indicates the nonstop-thinking failure mode.
 - **TPOT spike:** inter-token latency in turn N is >10× the baseline from
-  turn 1 (indicates the model is spinning rather than generating).
+  turn 1 (indicates the model is spinning rather than generating). **Deferred to a
+  streaming implementation.** The multiturn client is non-streaming, so the only
+  available proxy is `total_time / tokens` — which is TTFT-dominated and reads a
+  short reply (e.g. the closing "reply with just the word: done") as a false 10×
+  spike; it flunked a *healthy* minimax on the deploy gate. A true per-turn ITL
+  needs streaming (SSE) to measure the inter-token gaps directly; until then the
+  gate relies on the two content-based checks above (which catch the actual
+  step-3.5 failure). `sparky.quality.tpot_spike()` remains for the streaming path.
 
 **Where to look for the thinking tokens depends on the engine config.** When a
 model runs with `--reasoning-parser` (e.g. `deepseek_r1` on minimax), vLLM

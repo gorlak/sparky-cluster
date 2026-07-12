@@ -6,6 +6,8 @@ Commands that touch the cluster live here; pure unit/render checks live in pytes
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -56,7 +58,13 @@ def show_topology(
 
 
 @app.command("smoke")
-def smoke() -> None:
+def smoke(
+    topology_file: str = typer.Option(
+        None, "--topology",
+        help="Topology JSON to probe (default: the live current-topology.json). The deploy "
+        "gate passes the in-flight topology so it's validated before being recorded.",
+    ),
+) -> None:
     """Post-deploy gate: probe each live engine (from current-topology.json) for
     readiness, the tool-call shape Open WebUI sends, and multiturn output quality.
 
@@ -64,9 +72,10 @@ def smoke() -> None:
     serve the UI it's wired to), or trips a corruption heuristic across the
     conversation (ADR-0012). ~2 min per engine — that's the deploy-gate budget.
     """
-    current = topology.load_current_topology()
+    path = Path(topology_file) if topology_file else topology.CURRENT_TOPOLOGY
+    current = topology.load_current_topology(path)
     if current is None:
-        console.print("[yellow]No current-topology.json — nothing is deployed.[/]")
+        console.print(f"[yellow]No topology at {path} — nothing to probe.[/]")
         raise typer.Exit(1)
     engines = current.get("engines", [])
     profile = current.get("profile", "?")

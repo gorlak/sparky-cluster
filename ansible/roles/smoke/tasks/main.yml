@@ -1,0 +1,36 @@
+---
+# Post-deploy quality gate (ADR-0012). Probes every engine of the in-flight deploy
+# for readiness, the tool-call shape Open WebUI sends, and multiturn output quality.
+# Runs on the head AFTER the API-readiness wait and BEFORE topology-state records the
+# deploy — so a corrupt engine fails the deploy before it's marked live. Skips an
+# empty profile (nothing to probe).
+#
+# The harness (sparky package) is published to {{ harness_dir }} by `make deploy`;
+# here we build a stdlib venv (deps are pure-Python — no uv, no torch) and run
+# `sparky smoke` against a topology rendered from serving_topology, since
+# current-topology.json isn't written until the end of the deploy.
+- name: Post-deploy smoke gate
+  when: serving_topology | default([]) | length > 0
+  block:
+    - name: Build the in-flight engine list
+      ansible.builtin.include_role:
+        name: topology-state
+        tasks_from: build
+
+    - name: Render the in-flight topology for the gate
+      ansible.builtin.copy:
+        content: "{{ {'profile': profile_name | default(cluster_profile), 'engines': topology_engines | default([])} | to_nice_json }}\n"
+        dest: "{{ smoke_topology_file }}"
+        mode: "0644"
+
+    - name: Ensure the harness venv exists and tracks the published source
+      ansible.builtin.pip:
+        name: "{{ harness_dir }}"
+        editable: true
+        virtualenv: "{{ harness_dir }}/.venv"
+        virtualenv_command: "python3 -m venv"
+
+    - name: Run the smoke gate (readiness + tool-shape + multiturn quality)
+      ansible.builtin.command:
+        cmd: "{{ harness_dir }}/.venv/bin/sparky smoke --topology {{ smoke_topology_file }}"
+      changed_when: false

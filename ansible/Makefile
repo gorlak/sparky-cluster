@@ -17,6 +17,7 @@
 PROFILE       ?= step-3.5-fp8
 EXTRA         := -e @profiles/$(PROFILE).yml
 LIVE          := /opt/cluster/ansible
+HARNESS_LIVE  := /opt/cluster/sparky
 DEPLOY_KEY    := /home/deploy/.ssh/id_ed25519
 SNOOPY        := deploy@10.0.200.13
 
@@ -33,6 +34,12 @@ publish:
 	rsync -rlc --delete --no-perms --no-owner --no-group \
 	    --exclude='.git' --exclude='__pycache__' --exclude='*.retry' --exclude='.ansible' \
 	    ./ $(LIVE)/
+	# Publish the sparky harness too — the smoke gate (roles/smoke) runs it from
+	# $(HARNESS_LIVE). No --delete: preserve the deploy-built .venv there.
+	mkdir -p $(HARNESS_LIVE)
+	rsync -rlc --no-perms --no-owner --no-group \
+	    --exclude='__pycache__' --exclude='.venv' --exclude='*.egg-info' \
+	    ../sparky ../pyproject.toml ../uv.lock $(HARNESS_LIVE)/
 
 deploy: publish
 	cd $(LIVE) && $(RUN_AS_DEPLOY) ansible-playbook site.yml $(EXTRA)

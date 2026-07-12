@@ -1,0 +1,32 @@
+---
+# Build the normalized engine list (topology_engines) from serving_topology: each
+# engine's unit/container names, nodes, and api_url (from the api node's
+# vllm_host_ip), plus kind-specific fields. Shared by topology-state (which writes
+# the authoritative current-topology.json, last in the deploy) and the smoke gate
+# (which renders an in-flight topology to probe the deploy before it's recorded).
+# Resets the accumulator first, so it's safe to include more than once in a run.
+- name: Reset the engine-list accumulator
+  ansible.builtin.set_fact:
+    topology_engines: []
+
+- name: Build the normalized engine list
+  ansible.builtin.set_fact:
+    topology_engines: "{{ topology_engines + [_base | combine(_extra)] }}"
+  vars:
+    _base:
+      name: "{{ item.name }}"
+      kind: "{{ item.kind }}"
+      unit: "{{ item.kind }}-{{ item.name }}.service"
+      container: "{{ item.kind }}-{{ item.name }}"
+      nodes: "{{ item.nodes }}"
+      api_node: "{{ item.nodes[0] }}"
+      port: "{{ item.port }}"
+      api_url: "http://{{ hostvars[item.nodes[0]].vllm_host_ip }}:{{ item.port }}"
+    _extra: >-
+      {{ {'served_as': item.served_as | default(''), 'model': item.model | default(''),
+          'marker': vllm_state_dir ~ '/' ~ item.kind ~ '-' ~ item.name ~ '.running'}
+         if item.kind == 'vllm'
+         else {'models': item.models | default([])} }}
+  loop: "{{ serving_topology | default([]) }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.kind }})"

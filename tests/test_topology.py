@@ -5,7 +5,21 @@ No hardware: they load the committed profile YAMLs and assert the parsed shape.
 schema fails here instead of at deploy time.
 """
 
+import json
+
 from sparky import topology
+
+
+def test_load_current_topology_reads_given_path(tmp_path):
+    f = tmp_path / "topo.json"
+    f.write_text(json.dumps({"profile": "p", "engines": [{"name": "e", "api_url": "http://x:8000"}]}))
+    t = topology.load_current_topology(f)
+    assert t["profile"] == "p"
+    assert t["engines"][0]["api_url"] == "http://x:8000"
+
+
+def test_load_current_topology_absent_returns_none(tmp_path):
+    assert topology.load_current_topology(tmp_path / "nope.json") is None
 
 
 def test_all_committed_profiles_load():

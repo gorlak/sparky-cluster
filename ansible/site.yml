@@ -78,6 +78,15 @@
       tags: [metrics]
       when: enable_metrics | default(true)
 
+# Quality gate (ADR-0012): probe the in-flight engines for readiness, the tool-call
+# shape Open WebUI sends, and multiturn output quality — BEFORE topology-state, so a
+# corrupt engine fails the deploy before it's recorded as the live topology.
+- name: Post-deploy smoke gate (sparky)
+  hosts: head
+  roles:
+    - role: smoke
+      tags: [smoke]
+
 # Record what was just deployed so the control panel (and "which profile is live?")
 # can read it. Last, so it reflects a fully brought-up topology.
 - name: Record deployed topology (state file)
