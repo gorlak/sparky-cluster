@@ -3,7 +3,7 @@
 A *profile* is a YAML file under `ansible/profiles/<name>.yml` that fully
 describes what the cluster serves: which model(s), on which node(s), at what
 TP and `gmu`, with what context length, plus which front-end services run.
-Deploy with `make deploy PROFILE=<name>` from `ansible/`.
+Deploy with `./sparky.sh deploy <name>` from the repo root.
 
 **Naming.** Profile names are the `<model>-<version>-<quant>` triple
 (e.g. `step-3.5-fp8`, `minimax-m2.7-nvfp4`). A `-single` / `-dual` **topology
@@ -47,7 +47,7 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
   (per-profile override — NVFP4/modelopt needs it).
 - **Serves as:** `step-3.7-flash` at `sparky:8000` (TP=2 across sparky + snoopy)
 - **Status:** ⛔ **BLOCKED / parked** (`blocked: true` in the profile → hidden from the
-  control-panel deploy UI; a deliberate CLI `make deploy PROFILE=step-3.7-nvfp4` still works to
+  control-panel deploy UI; a deliberate CLI `./sparky.sh deploy step-3.7-nvfp4` still works to
   re-test). **NVFP4 loaded + ran on 26.06 with no hang** (2026-07-02) — the hard part works
   and per-profile pinning is validated. The remaining blocker is an upstream vLLM bug, not
   NVFP4/the container: Step-3.7's `Step3VLProcessor` crash-loops on startup (missing
@@ -119,9 +119,9 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
 ## Switching profiles
 
 ```sh
-cd ansible && make deploy PROFILE=<name>     # apply
-make check  PROFILE=<name>                   # dry-run (--check --diff) to preview
-make teardown                                 # stop all engines (keeps front-end)
+./sparky.sh deploy <name>     # apply
+./sparky.sh check <name>      # dry-run (--check --diff) to preview
+./sparky.sh teardown          # stop all engines (keeps front-end)
 ```
 
 The deploy publishes the repo to `/opt/cluster/ansible`, runs
@@ -135,13 +135,13 @@ The deploy publishes the repo to `/opt/cluster/ansible`, runs
   (`/admin`) reflects the new state.
 
 For the **live** state: see `/admin`, or `cat /opt/cluster/current-topology.json`,
-or `make status`.
+or `./sparky.sh status`.
 
 ## Adding a new profile
 
 1. **Stage weights** in the inbox on sparky (from the repo root):
    ```sh
-   make download REPO=<hf-repo> [DEST=<dir-name>]
+   ./sparky.sh download <hf-repo>
    ```
    Runs `scripts/download.py` via `uv` (provisions `huggingface_hub` itself — no local
    `hf` install needed) and writes a flat copy into the inbox. The next deploy moves it
@@ -153,7 +153,7 @@ or `make status`.
 3. **Pick `gpu_memory_utilization` and `max_model_len`** per
    [`profile-tuning.md`](profile-tuning.md) — decide your *outside-headroom*
    target first, give vLLM the rest.
-4. **`make check PROFILE=<name>`** to dry-run, then **`make deploy PROFILE=<name>`**.
+4. **`./sparky.sh check <name>`** to dry-run, then **`./sparky.sh deploy <name>`**.
 
 See [`serving-topology.md`](serving-topology.md) for the full schema (every
 field an engine entry can take).

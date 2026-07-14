@@ -17,7 +17,7 @@ stack. Kept here for reference and the inevitable design iterations.
   browser anywhere on the LAN/VPN — the machines are headless.
 - See cluster metrics (GPU, throughput, latency, system).
 - Stay reproducible: everything is Ansible roles in this repo, deployed via
-  `make deploy`, like the rest of the cluster.
+  `./sparky.sh deploy`, like the rest of the cluster.
 
 ## Topology
 

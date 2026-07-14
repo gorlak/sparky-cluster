@@ -5,7 +5,7 @@
 # deploy — so a corrupt engine fails the deploy before it's marked live. Skips an
 # empty profile (nothing to probe).
 #
-# The harness (sparky package) is published to {{ harness_dir }} by `make deploy`;
+# The harness (sparky package) is published to {{ harness_dir }} by `./sparky.sh deploy`;
 # here we build a stdlib venv (deps are pure-Python — no uv, no torch) and run
 # `sparky smoke` against a topology rendered from serving_topology, since
 # current-topology.json isn't written until the end of the deploy.

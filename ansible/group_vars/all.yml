@@ -31,7 +31,7 @@ vllm_state_dir: /opt/vllm/state
 vllm_user: vllm
 vllm_group: vllm
 
-# Download inbox for new model weights (head/control node only). `make download`
+# Download inbox for new model weights (head/control node only). `./sparky.sh download`
 # (scripts/download.py) stages into {{ model_cache_dir }}/<MODEL>; the model role MOVES it into the canonical
 # store ({{ vllm_models_dir }}) on the head, then rsync-mirrors the whole store to
 # every other node. The inbox is transient (emptied on deploy) and snoopy is a

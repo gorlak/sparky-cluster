@@ -74,7 +74,7 @@ Revisit when the container upgrade clears.
 
 Step-3.7 weights are not downloaded (`Installed: None`). Whichever quant is chosen, stage
 it into the inbox first (`/opt/cluster/model-cache/Step-3.7-Flash-<QUANT>`), then point
-`ansible/profiles/step-3.7-nvfp4.yml` at it and `make deploy PROFILE=step-3.7-nvfp4`.
+`ansible/profiles/step-3.7-nvfp4.yml` at it and `./sparky.sh deploy step-3.7-nvfp4`.
 
 ## References
 

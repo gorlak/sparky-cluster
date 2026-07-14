@@ -1,17 +1,20 @@
-"""sparky CLI (Typer) — the operator-facing entrypoint (ADR-0010).
+"""sparky CLI (Typer) — the single operator entrypoint (ADR-0015).
 
-Commands that touch the cluster live here; pure unit/render checks live in pytest.
-`bench` / `smoke` / `test infra` join `topology` as ADR-0011 / ADR-0012 land.
+Cluster lifecycle (deploy / check / teardown / status / logs), the harness
+(topology / smoke / bench / report), and dev tasks (test / lint / download) — all
+here. sparky is the outer layer; ansible is the engine it drives (sparky/ansible.py).
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from sparky import ansible as ops
 from sparky import report, topology
 from sparky.api import VllmClient
 from sparky.bench import run_all
@@ -19,7 +22,7 @@ from sparky.multiturn import run_multiturn
 from sparky.store import Store
 
 app = typer.Typer(
-    help="Sparky Cluster test/bench harness (ADR-0010).",
+    help="Sparky Cluster — operator entrypoint (ADR-0015).",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -28,8 +31,7 @@ console = Console()
 
 @app.callback()
 def _root() -> None:
-    """Sparky Cluster test/bench harness (ADR-0010)."""
-    # Present so Typer keeps subcommand names even with a single command today.
+    """Sparky Cluster — operator entrypoint (ADR-0015)."""
 
 
 @app.command("topology")
@@ -150,6 +152,69 @@ def report_cmd(
     with Store() as store:
         comparison = report.compare(store, label_a, label_b)
     report.render(console, label_a, label_b, comparison)
+
+
+# --- cluster lifecycle (ADR-0015: sparky drives ansible) --------------------
+
+@app.command()
+def deploy(profile: str = typer.Argument(ops.DEFAULT_PROFILE, help="Profile to apply.")) -> None:
+    """Publish the repo and apply a profile (ansible site.yml). Restarts only changed units."""
+    raise typer.Exit(ops.deploy(profile))
+
+
+@app.command()
+def check(profile: str = typer.Argument(ops.DEFAULT_PROFILE, help="Profile to dry-run.")) -> None:
+    """Dry-run a profile deploy (--check --diff) — shows what would change, makes nothing."""
+    raise typer.Exit(ops.deploy(profile, dry_run=True))
+
+
+@app.command()
+def teardown(
+    profile: str = typer.Argument(ops.DEFAULT_PROFILE),
+    webui: bool = typer.Option(False, "--webui", help="also stop Open WebUI"),
+) -> None:
+    """Stop + disable vLLM engines on both nodes (frees the GPUs)."""
+    raise typer.Exit(ops.teardown(profile, include_webui=webui))
+
+
+@app.command()
+def status() -> None:
+    """systemd state of the vLLM units on both nodes."""
+    raise typer.Exit(ops.status())
+
+
+@app.command()
+def logs(node: str = typer.Argument("head", help="head | worker")) -> None:
+    """Follow the vLLM journal on a node."""
+    raise typer.Exit(ops.logs(node))
+
+
+@app.command()
+def lint() -> None:
+    """Ansible syntax-check across every profile + teardown (ADR-0011 Layer 1)."""
+    raise typer.Exit(ops.lint())
+
+
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+def test(ctx: typer.Context) -> None:
+    """Run the harness unit tests (pytest). Extra args pass through (e.g. -k name, -x)."""
+    import pytest
+
+    os.chdir(ops.REPO_ROOT)
+    raise typer.Exit(int(pytest.main(list(ctx.args))))
+
+
+@app.command()
+def download(
+    repo: str = typer.Argument(..., help="HF repo id, e.g. stepfun-ai/Step-3.5-Flash-FP8."),
+    dest: str = typer.Argument(None, help="Optional dir name in the inbox."),
+) -> None:
+    """Stage a HuggingFace model into the inbox (scripts/download.py via uv)."""
+    import subprocess
+
+    script = ops.REPO_ROOT / "scripts" / "download.py"
+    cmd = ["uv", "run", "--script", str(script), repo] + ([dest] if dest else [])
+    raise typer.Exit(subprocess.run(cmd).returncode)
 
 
 if __name__ == "__main__":

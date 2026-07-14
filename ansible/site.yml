@@ -1,6 +1,6 @@
 ---
 # Bring the cluster to a profile's desired state.
-#   make deploy PROFILE=step-3.5-fp8
+#   ./sparky.sh deploy step-3.5-fp8
 #   (or: ansible-playbook site.yml -e @profiles/step-3.5-fp8.yml)
 #
 # Plays run in order so services come up cleanly: prerequisites + models on all

@@ -1,5 +1,5 @@
 ---
-# Where `make deploy` publishes the sparky harness (see ansible/Makefile). The gate
+# Where `./sparky.sh deploy` publishes the sparky harness (see ansible/Makefile). The gate
 # builds a stdlib venv here and runs the CLI from it.
 harness_dir: /opt/cluster/sparky
 # In-flight topology the gate probes (current-topology.json isn't written until the

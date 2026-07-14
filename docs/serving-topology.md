@@ -35,7 +35,7 @@ control panel point at the wrong place.
 
 1. A profile declares the **serving topology once**, as structured data.
 2. Every model-dependent service is a **projection** of that one declaration, so
-   `make deploy PROFILE=X` reshapes serving *and* reconfigures its dependents in
+   `./sparky.sh deploy X` reshapes serving *and* reconfigures its dependents in
    the same run — they stay in sync by construction.
 3. Support **N engines**, each spanning one or more nodes, with more than one
    engine co-resident on a node (hand-partitioned GPU memory).
@@ -151,7 +151,7 @@ skill and run a memory-profiled bring-up before committing a dense profile.
 1. **T1 — engine spec + `vllm` role refactor.** Define the schema; make the role
    template N instanced units from `serving_topology`; per-engine `master_addr`;
    node identity inventory-only. Convert `step.yml` to the new schema and
-   prove `make check` shows no functional change. Add pruning. (Closes the
+   prove `./sparky.sh check` shows no functional change. Add pruning. (Closes the
    node-identity `TODO.md` item.)
 2. **T2 — metrics topology-aware.** Prometheus targets from the spec (`file_sd`);
    Grafana dashboard group-by `model_name`.

@@ -4,7 +4,7 @@
 # candidate is `step-3.7-nvfp4` (Step-3.7-Flash-NVFP4 on 26.06) — A/B them by
 # deploying each in turn. Profile names are the <model>-<version>-<quant> triple.
 #
-# Apply with:  make deploy PROFILE=step-3.5-fp8
+# Apply with:  ./sparky.sh deploy step-3.5-fp8
 profile_name: step-3.5-fp8
 
 # Serving topology — the single source of truth for what runs where. Every

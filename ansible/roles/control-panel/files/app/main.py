@@ -8,7 +8,7 @@ that file is absent (e.g. mid-deploy before it's written).
 
 Runs as the `deploy` user (systemd), bound to 127.0.0.1; Caddy fronts it at
 /admin. `deploy` has NOPASSWD sudo and owns the published playbooks at
-$ANSIBLE_DIR, so it can run ansible-playbook directly (this is `make deploy`
+$ANSIBLE_DIR, so it can run ansible-playbook directly (this is `./sparky.sh deploy`
 minus the repo->live publish step). Config comes from environment set by the
 systemd unit — nothing host-specific is hardcoded here.
 
@@ -84,7 +84,7 @@ ACTION_LIST = [{"name": k, **{f: v[f] for f in ("label", "danger", "desc")}}
 def available_profiles():
     """Deployable profile names, sorted. Profiles that declare a top-level
     `blocked: true` are parked candidates (e.g. waiting on upstream support) and are
-    hidden from the deploy UI — a deliberate CLI `make deploy PROFILE=<x>` still works."""
+    hidden from the deploy UI — a deliberate CLI `./sparky.sh deploy <x>` still works."""
     p = Path(ANSIBLE_DIR) / "profiles"
     try:
         out = []

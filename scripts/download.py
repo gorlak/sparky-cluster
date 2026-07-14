@@ -9,13 +9,13 @@
 inline deps above, so this does not depend on anything installed on your machine.
 
 Run it:
-    make download REPO=<hf-repo> [DEST=<dir-name>]      # the intended front end
+    ./sparky.sh download <hf-repo>      # the intended front end
     ./scripts/download.py <hf-repo-id> [dest-name]      # or directly (uv shebang)
 
 Why a script: `hf download` WITHOUT --local-dir dumps a symlink cache tree; WITH
 --local-dir it writes flat real files. `snapshot_download(local_dir=...)` is the library
 equivalent — flat real files into the deploy-writable inbox (no sudo). The next
-`make deploy` moves them into /opt/vllm/models and mirrors to every node.
+`./sparky.sh deploy` moves them into /opt/vllm/models and mirrors to every node.
 """
 import os
 import sys
@@ -42,9 +42,9 @@ def human(nbytes: float) -> str:
 def main() -> int:
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
-        print("usage: make download REPO=<hf-repo> [DEST=<name>]", file=sys.stderr)
+        print("usage: ./sparky.sh download <hf-repo>", file=sys.stderr)
         print("   or: ./scripts/download.py <hf-repo-id> [dest-name]", file=sys.stderr)
-        print("  e.g. make download REPO=stepfun-ai/Step-3.7-Flash-NVFP4", file=sys.stderr)
+        print("  e.g. ./sparky.sh download stepfun-ai/Step-3.7-Flash-NVFP4", file=sys.stderr)
         return 2
 
     repo = args[0]
@@ -64,7 +64,7 @@ def main() -> int:
     print(f"\n✓ staged: {target}  ({human(size)})")
     print("\nnext:")
     print(f"  • set  model: {dest}  in a profile  (ansible/profiles/<name>.yml)")
-    print("  • cd ansible && make deploy PROFILE=<name>")
+    print("  • cd ansible && ./sparky.sh deploy <name>")
     print("    → the model role moves it into /opt/vllm/models and mirrors to every node")
     return 0
 

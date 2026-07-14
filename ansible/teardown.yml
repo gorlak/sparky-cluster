@@ -5,7 +5,7 @@
 # which engines a profile defined. Open WebUI is CPU-only and is left running
 # unless you explicitly ask for it:
 #
-#   make teardown                 # stops all vLLM + Ollama engines on both nodes
+#   ./sparky.sh teardown                 # stops all vLLM + Ollama engines on both nodes
 #   ansible-playbook teardown.yml --tags webui   # also stops Open WebUI + Caddy
 
 - name: Stop all vLLM + Ollama engines (all nodes)

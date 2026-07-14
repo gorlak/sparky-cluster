@@ -160,7 +160,7 @@ scp -i "$SSH_KEY" "$SSH_CONFIG" "$SNOOPY:.ssh/config"
 
 # --- initial publish of the ansible project into /opt/cluster --------------
 # The repo is the source of truth; this is the first publish of it to the live
-# runtime location. Thereafter `make deploy` re-publishes (rsync) automatically.
+# runtime location. Thereafter `./sparky.sh deploy` re-publishes (rsync) automatically.
 log "publishing ansible project to $CLUSTER_DIR/ansible"
 sudo rsync -a --chown="$DEPLOY_USER:$CLUSTER_GROUP" "$SCRIPT_DIR"/ "$CLUSTER_DIR/ansible/"
 
@@ -168,5 +168,5 @@ log "bootstrap complete."
 log "  • Source of truth: the git repo at $SCRIPT_DIR."
 log "  • $CLUSTER_DIR/ansible is the published runtime copy deploy runs from."
 log "  • Log out and back in (or run: newgrp $CLUSTER_GROUP) to pick up the"
-log "    '$CLUSTER_GROUP' group so 'make deploy' can publish to $CLUSTER_DIR."
-log "  • Then: cd $SCRIPT_DIR && make deploy"
+log "    '$CLUSTER_GROUP' group so './sparky.sh deploy' can publish to $CLUSTER_DIR."
+log "  • Then: cd $SCRIPT_DIR && ./sparky.sh deploy"

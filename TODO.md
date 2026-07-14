@@ -77,8 +77,8 @@ hostnames either. More invasive — do last or separately.
 1. `ansible-playbook --syntax-check site.yml` with example files in place —
    catches missing variable references before touching the cluster.
 2. `shellcheck ansible/bootstrap-deploy.sh` — catches shell regressions.
-3. `make check PROFILE=step-3.5-fp8` (dry run) — confirms templates render correctly.
-4. Full `make deploy` on the actual cluster to confirm end-to-end.
+3. `./sparky.sh check step-3.5-fp8` (dry run) — confirms templates render correctly.
+4. Full `./sparky.sh deploy` on the actual cluster to confirm end-to-end.
 
 > Cross-reference: the "Make node identity fully inventory-driven" item below
 > overlaps on `master_addr` and the shell leaks — this item supersedes the
