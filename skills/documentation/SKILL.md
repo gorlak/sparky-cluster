@@ -15,7 +15,7 @@ description: Conventions for this repo's docs/ tree — model fact sheets, upgra
 The boundary matters and is enforced:
 - **Fact sheets** hold facts about a model, independent of any other. No transition analysis.
 - **Upgrade trackers** hold the *delta* between where we are and a target, plus what it means for the cluster. They link to fact sheets; they never duplicate them.
-- **ADRs** are immutable once Implemented. A thing still in flux is a tracker, not an ADR.
+- **ADRs** are immutable once Accepted. A thing still in flux is a tracker, not an ADR.
 
 ## Which artifact does the request want?
 
@@ -95,12 +95,15 @@ Tempted to add a "lessons learned" footnote to an existing ADR? Stop — that go
 the docs, or in a new ADR that supersedes this one.
 
 ### Status lifecycle
-`Proposed → Accepted → Implemented` (↘ `Superseded by ADR-NNNN`; `Deprecated` = no
-replacement). Proposed = under consideration; Accepted = decided but not yet
-deployed; Implemented = in production and now **immutable**.
+`Proposed → Accepted` (↘ `Superseded by ADR-NNNN`; `Deprecated` = no replacement).
+Two active states only — **no `Implemented`, no in-progress**; this is the standard
+ADR lifecycle (Nygard / MADR). Implementation *tracking* ("how much is built") lives
+in code / README / TODO, never in the status. **Proposed** = a design not yet built.
+**Accepted** = the decision *and* its implementation landed together (see "How to
+write one"), it's now in effect — and **immutable**.
 
 ### Immutability
-Once **Implemented**, the only permitted edit is adding a `Superseded by ADR-NNNN`
+Once **Accepted**, the only permitted edit is adding a `Superseded by ADR-NNNN`
 line — nothing else, even if the decision turned out wrong. To change a decision,
 write a **new** ADR referencing the old one and set the old one to Superseded. The
 historical record of what was believed at the time is the point.
@@ -115,7 +118,8 @@ don't commit).
 ### How to write one
 1. Copy an existing `docs/adr/NNNN-*.md`.
 2. Number from the highest existing `docs/adr/NNNN-*.md` filename.
-3. Start at `Proposed` or `Accepted`.
+3. Status `Proposed` while it's an unbuilt design; flip to `Accepted` in the commit
+   that lands the implementation (usually the same commit — step 5).
 4. Sections: **Context** · **Options considered** · **Decision** · **Consequences**.
 5. Commit in the **same commit** as the implementation it documents ([[development]]).
 

@@ -111,7 +111,7 @@ caddy_dir: /opt/caddy
 control_panel_dir: /opt/cluster/control-panel
 control_panel_port: 8088
 # The published (live) playbook tree the panel runs actions from, and the profile
-# its deploy/teardown actions target. (cluster_ansible_dir mirrors the Makefile's
+# its deploy/teardown actions target. (cluster_ansible_dir mirrors sparky/ansible.py's
 # LIVE; cluster_profile is the panel's default — profile switching is future work.)
 cluster_ansible_dir: /opt/cluster/ansible
 cluster_profile: step-3.5-fp8

@@ -15,8 +15,8 @@ means editing several spots instead of just the inventory:
 
 - `ansible/group_vars/all.yml` — `master_addr: 10.0.200.12` **duplicates** the
   head's IP; `web_domain: sparky.flummoxed.net` bakes in the head's domain.
-- `ansible/Makefile` — `SNOOPY := deploy@10.0.200.13` (worker IP, used by
-  `logs-worker`).
+- `sparky/ansible.py` — `WORKER_SSH = "deploy@10.0.200.13"` (worker IP, used by
+  `logs worker`).
 - `ansible/bootstrap-deploy.sh` — worker IP `10.0.200.13` and a
   `hostname == "sparky"` control-node assumption.
 
@@ -25,9 +25,9 @@ means editing several spots instead of just the inventory:
   `master_addr: "{{ hostvars[groups['head'][0]].vllm_host_ip }}"` (removes the
   duplication outright).
 - Keep `web_domain` as a single, clearly-labeled config knob.
-- `Makefile` / `bootstrap-deploy.sh` are shell (can't easily read inventory) —
-  leave each as a single top-of-file variable and add a short README
-  "adapt to your cluster" section listing exactly what to change.
+- `sparky/ansible.py` is Python and *could* derive its `WORKER_SSH` from the
+  inventory; `bootstrap-deploy.sh` is shell — leave it a single top-of-file
+  variable and add a short README "adapt to your cluster" section.
 
 **Why:** makes the repo genuinely clone-and-edit-one-place for others with
 similar hardware but different hostnames/IPs.
@@ -36,7 +36,7 @@ similar hardware but different hostnames/IPs.
 > [`docs/serving-topology.md`](docs/serving-topology.md) makes node identity
 > inventory-only (head/worker becomes a per-engine computed rank, `master_addr`
 > per-engine) — its T1 phase closes the Ansible-side of this item. The shell
-> leaks (`Makefile`, `bootstrap-deploy.sh`) remain as documented above.
+> leaks (`sparky/ansible.py`, `bootstrap-deploy.sh`) remain as documented above.
 
 ---
 
@@ -61,7 +61,8 @@ Remove personal identifiers so the repo is safe to publish publicly. Approach:
 - `bootstrap-deploy.sh` — replace hardcoded `ADMIN_USER=geoff`,
   `SNOOPY=geoff@10.0.200.13`, SSH key path with variables sourced from a
   local config or with clear top-of-file "edit these" comments.
-- `ansible/Makefile` — replace `SNOOPY := deploy@10.0.200.13` similarly.
+- `sparky/ansible.py` — replace `WORKER_SSH = "deploy@10.0.200.13"` similarly (or
+  derive it from the inventory).
 - Hostname guard `[[ "$(hostname)" == "sparky" ]]` in bootstrap — replace with
   a configurable `HEAD_HOSTNAME` var or remove the guard entirely (it's just a
   safety check).

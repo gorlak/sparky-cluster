@@ -1,7 +1,7 @@
 # ADR-0015: Sparky as the single operator entrypoint (make removed)
 
 **Date:** 2026-07-13
-**Status:** Implemented
+**Status:** Accepted
 
 ## Context
 
@@ -69,7 +69,7 @@ the deploy primitive by construction.
   the unlock the orchestrator needs; the split that prompted this ADR is gone.
 - **Muscle memory changes:** `make deploy PROFILE=x` → `./sparky.sh deploy x`. The
   living docs (README, CLAUDE, `docs/*.md`, the Accepted ADRs) are rewritten to
-  match. **Implemented ADRs keep their `make` references** as historical record
+  match. **Prior ADRs keep their `make` references** as historical record
   (immutability — make *was* the interface then); this ADR is where the interface
   changed.
 - **The non-interactive / unattended deploy-context is *not* solved here.**

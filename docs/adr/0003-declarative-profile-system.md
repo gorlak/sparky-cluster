@@ -1,7 +1,7 @@
 # ADR-0003: Declarative YAML profile system
 
 **Date:** 2026-05-24
-**Status:** Implemented
+**Status:** Accepted
 
 ## Context
 

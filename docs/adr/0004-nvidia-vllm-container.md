@@ -1,7 +1,7 @@
 # ADR-0004: NVIDIA vLLM container runtime (not pip/venv)
 
 **Date:** 2026-05-24
-**Status:** Implemented
+**Status:** Accepted
 
 ## Context
 

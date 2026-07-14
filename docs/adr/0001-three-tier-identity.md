@@ -1,7 +1,7 @@
 # ADR-0001: Three-tier identity model (geoff / deploy / vllm)
 
 **Date:** 2026-05-24
-**Status:** Implemented
+**Status:** Accepted
 
 ## Context
 

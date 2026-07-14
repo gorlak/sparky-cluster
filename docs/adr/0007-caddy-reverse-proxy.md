@@ -1,7 +1,7 @@
 # ADR-0007: Caddy as reverse proxy with wildcard DNS
 
 **Date:** 2026-05-24
-**Status:** Implemented
+**Status:** Accepted
 
 ## Context
 

@@ -1,7 +1,7 @@
 # ADR-0013: Container images as first-class sourced artifacts (`images` role)
 
 **Date:** 2026-07-03
-**Status:** Accepted
+**Status:** Proposed
 
 ## Context
 
@@ -110,5 +110,5 @@ Design:
 
 Implementation follows in the same change set (the role + the `container_images`
 declaration covering the 26.04 base, the 26.06 base, and the
-`dgx-spark/vllm:26.06-fastapi-fix` derived image); status flips to **Implemented**
+`dgx-spark/vllm:26.06-fastapi-fix` derived image); status flips to **Accepted**
 when it lands.

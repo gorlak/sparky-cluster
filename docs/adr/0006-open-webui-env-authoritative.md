@@ -1,7 +1,7 @@
 # ADR-0006: Open WebUI env-authoritative configuration
 
 **Date:** 2026-05-24
-**Status:** Implemented
+**Status:** Accepted
 
 ## Context
 

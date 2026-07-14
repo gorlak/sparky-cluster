@@ -102,6 +102,6 @@ Grafana gets a second datasource (`frser-sqlite-datasource` via
   node degrades to skip-and-continue instead of re-freezing on rerun.
 - **`benchmark/compare.py` and `run.sh` are absorbed** into the package
   (`report.py` + the `bench` command); the JSON files stay for raw record.
-- Status flips to **Implemented** as the shared library fills in; the scaffold
+- The scaffold
   (`pyproject.toml`, package skeleton, Make targets) lands with the first real
   utility, not as an empty foundation.

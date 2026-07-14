@@ -1,7 +1,7 @@
 # ADR-0005: Native multinode via torch.distributed (no Ray)
 
 **Date:** 2026-05-24
-**Status:** Implemented
+**Status:** Accepted
 
 ## Context
 

@@ -1,7 +1,7 @@
 # ADR-0002: Ansible for cluster management
 
 **Date:** 2026-05-24
-**Status:** Implemented
+**Status:** Accepted
 
 ## Context
 

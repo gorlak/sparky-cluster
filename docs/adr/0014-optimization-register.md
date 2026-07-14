@@ -1,7 +1,7 @@
 # ADR-0014: Optimization register — re-enabling tabled performance options
 
 **Date:** 2026-07-03
-**Status:** Accepted
+**Status:** Proposed
 
 ## Context
 

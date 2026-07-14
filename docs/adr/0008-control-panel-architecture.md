@@ -1,7 +1,7 @@
 # ADR-0008: Control panel architecture (FastAPI/HTMX on-host as deploy user)
 
 **Date:** 2026-05-24
-**Status:** Implemented
+**Status:** Accepted
 
 ## Context
 
