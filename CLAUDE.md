@@ -24,9 +24,10 @@ as slash commands). When a task matches one, read its `SKILL.md` and follow it:
   "assess upgrading our models".
 - **`skills/documentation/SKILL.md`** — conventions for the `docs/` tree: model
   fact sheets (`docs/models/`), upgrade trackers (`docs/upgrades/`, named
-  `container-…` / `profile-…`), and **decision records** (`docs/adr/` — ADR
-  lifecycle, immutability, when to write one). Read when documenting a model,
-  planning/tracking an upgrade, or writing/deciding on an ADR.
+  `container-…` / `profile-…`), **decision records** (`docs/adr/` — ADR
+  lifecycle, immutability, when to write one), the **defect register**
+  (`docs/defects.md`), and **update pathways** (`docs/updating.md`). Read when
+  documenting a model, planning/tracking an upgrade, or writing/deciding on an ADR.
 - **`skills/development/SKILL.md`** — development workflow conventions: git
   commit ownership, staging, ADR-in-same-commit. Read before making changes or
   preparing commits. **Geoff runs all git commits** — never run `git commit`
@@ -39,3 +40,8 @@ as slash commands). When a task matches one, read its `SKILL.md` and follow it:
 Significant decisions shipped to this cluster are documented in `docs/adr/` (one
 file per decision). When implementing something new, write the ADR alongside the
 implementation and commit both together.
+
+**Before an update** (bumping a container, adding a model/role/profile), read
+`docs/updating.md` — it lists every place that must move together and ends by
+consulting `docs/defects.md`, the register of open defects the cluster carries (each
+with a *clears-when* condition, so a bump knows what to re-test).

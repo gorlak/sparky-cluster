@@ -14,6 +14,10 @@
     - common
     - role: model
       tags: [model]
+    # Container images (ADR-0013): guarantee every image a profile may select is
+    # present on every node — before the vllm play docker-runs any unit.
+    - role: images
+      tags: [images]
 
 - name: vLLM engines — configure and bring up (all nodes)
   hosts: all

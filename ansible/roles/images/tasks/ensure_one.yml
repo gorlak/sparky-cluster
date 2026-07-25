@@ -1,0 +1,41 @@
+---
+# Ensure one container image is present on this node. `image` is the loop var: one
+# declaration from `container_images` — either
+#   {pull: <ref>}                          upstream, ideally <ref>@sha256:<digest>
+#   {build: <tag>, context: <dir>}         derived, built from files/<dir>/Dockerfile
+# Idempotent: skip the pull/build entirely if the image is already local (mirrors the
+# `model` role's "skip if already canonical"). A derived image rebuilds only when
+# absent, or when the entry sets `force: true`.
+
+- name: Is {{ image.pull | default(image.build) }} already present on this node?
+  ansible.builtin.command: "docker image inspect {{ image.pull | default(image.build) }}"
+  register: image_present
+  changed_when: false
+  failed_when: false
+
+# --- upstream: pull (pinned by digest where filled in) -------------------------
+- name: Pull {{ image.pull | default('') }}
+  ansible.builtin.command: "docker pull {{ image.pull }}"
+  when:
+    - image.pull is defined
+    - image_present.rc != 0
+  changed_when: true
+
+# --- derived: build from an in-repo Dockerfile ---------------------------------
+# The build context must exist on the TARGET node, so stage it there (copy reads
+# from the control node's role files/, pushes to each node) then build.
+- name: Build {{ image.build | default('') }} from files/{{ image.context | default('') }}/
+  when:
+    - image.build is defined
+    - image_present.rc != 0 or (image.force | default(false) | bool)
+  block:
+    - name: Stage the {{ image.build }} build context on this node
+      ansible.builtin.copy:
+        src: "{{ image.context }}/"
+        dest: "{{ images_build_dir }}/{{ image.context }}/"
+        mode: "0644"
+
+    - name: docker build {{ image.build }}
+      ansible.builtin.command:
+        cmd: "docker build -t {{ image.build }} {{ images_build_dir }}/{{ image.context }}"
+      changed_when: true

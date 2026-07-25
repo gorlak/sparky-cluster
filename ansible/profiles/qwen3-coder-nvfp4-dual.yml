@@ -28,7 +28,7 @@
 # qwen3_next is a native arch on 26.06's vLLM (registry-confirmed).
 
 profile_name: qwen3-coder-nvfp4-dual
-# NVFP4 needs the 26.06 container. Build the patched image on both nodes (docker/vllm-26.06-fastapi-fix — see WAR register).
+# NVFP4 needs the 26.06 container. The `images` role builds this patched image on every node (ADR-0013).
 vllm_image: dgx-spark/vllm:26.06-fastapi-fix
 serving_topology:
   - name: qwen3-coder-sparky

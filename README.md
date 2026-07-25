@@ -72,7 +72,7 @@ profiles are TP=2 across both nodes.
 | Profile | Shape |
 |---|---|
 | `step-3.5-fp8` | Step-3.5-Flash-FP8 TP=2 across both nodes (fully-committed big-shared) — stable |
-| `step-3.7-nvfp4` | Step-3.7-Flash-NVFP4 TP=2 on 26.06 — **⛔ blocked** (upstream vLLM VL bug; hidden from deploy UI) |
+| `step-3.7-nvfp4` | Step-3.7-Flash-NVFP4 TP=2 on 26.06 — **⛔ blocked** (upstream vLLM VL bug, DEF-0006; hidden from deploy UI) |
 | `minimax-m2.7-awq` | MiniMax-M2.7-AWQ TP=2 across both nodes (big-shared, ~30 GiB/node dev headroom) |
 | `minimax-m2.7-nvfp4` | MiniMax-M2.7-NVFP4 TP=2 on 26.06 — NVFP4 A/B vs the AWQ profile |
 | `qwen3-coder-nvfp4-dual` | Qwen3-Coder-Next (NVFP4) single-node on each node (~55 GiB/node dev headroom) |
@@ -86,7 +86,8 @@ See [`docs/profiles.md`](docs/profiles.md) for what each serves and how to switc
 `gpu_memory_utilization` as a deliberate split between vLLM and system/dev memory,
 plus the GB10 unified-memory accounting quirk.
 
-**Do not use:** `Qwen3.5-122B-A10B-FP8` — froze sparky during load.
+**Do not use:** `Qwen3.5-122B-A10B-FP8` — froze sparky during load (DEF-0008,
+[`docs/defects.md`](docs/defects.md)).
 
 ### Services
 
@@ -164,9 +165,10 @@ image ships matching torch + vLLM compiled for sm_121.
 - **Multi-node:** vLLM 0.19 dropped Ray; native multinode uses
   `--nnodes / --node-rank / --master-addr / --headless` over torch.distributed. Both
   nodes rendezvous at `10.0.200.12:29500` over ConnectX-7.
-- **Update path:** bump `vllm_image` in `group_vars/all.yml`, `docker pull` on both
-  nodes (digests must match), then `./sparky.sh deploy` — the unit files change, so
-  both services restart onto the new image.
+- **Update path:** add/adjust the image in `container_images` (`group_vars/all.yml`)
+  and point `vllm_image` at it, then `./sparky.sh deploy` — the `images` role pulls
+  (or builds) it on every node before the units run (ADR-0013), and the unit files
+  change so both services restart onto the new image. No manual `docker pull`/`build`.
 
 ### NCCL configuration
 
@@ -308,6 +310,8 @@ changes on deploy.
 ├── skills/                    # agent skills (model-discovery, model-evaluation, …)
 ├── docs/                      # profiles, profile-tuning, serving-topology,
 │   ├── adr/                   #   control-interface, models/, upgrades/, and ADRs
+│   ├── updating.md            #   change-pathway checklists (bump a container, add a model…)
+│   ├── defects.md             #   register of open defects, each with a clears-when
 │   └── …
 ├── benchmark/                 # legacy bench scripts (being absorbed into sparky bench)
 └── ansible/                   # THE Ansible project
@@ -337,8 +341,9 @@ changes on deploy.
   accounts, chats, and uploads are *data*, not config, and are unaffected.
 - **`--kv-cache-dtype fp8` + `--enable-prefix-caching` are disabled on `step-3.5-fp8`**
   for stable multi-turn operation (Nth-turn garbage / nonstop thinking on vLLM 0.19).
-  Re-enabling them is tracked in ADR-0014's optimization register; use
-  `./sparky.sh bench` to quantify the win once re-enabled.
+  Tracked as DEF-0007 ([`docs/defects.md`](docs/defects.md)); re-enabling is governed by
+  ADR-0014's optimization register; use `./sparky.sh bench` to quantify the win once
+  re-enabled.
 
 ---
 

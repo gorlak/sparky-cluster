@@ -67,11 +67,11 @@ know which was still load-bearing (pulling several at once hides that).
 
 | WAR | Fixes (symptom) | Upstream | Cost | Applied in | Remove when | Status |
 |---|---|---|---|---|---|---|
-| `NCCL_NVLS_ENABLE=0` | NCCL-init hard hang at TP=2 bring-up | [nccl#2167](https://github.com/NVIDIA/nccl/issues/2167) | none — NVLS is unusable without NVLink | `roles/common/files/nccl-env.conf` | #2167 fixed **or** a container ships NCCL ≥ 2.30.6 with the NVLS regression reverted | ✅ applied — confirmed (cleared NCCL init 2026-07-02) |
+| **DEF-0001** · `NCCL_NVLS_ENABLE=0` | NCCL-init hard hang at TP=2 bring-up | [nccl#2167](https://github.com/NVIDIA/nccl/issues/2167) | none — NVLS is unusable without NVLink | `roles/common/files/nccl-env.conf` | #2167 fixed **or** a container ships NCCL ≥ 2.30.6 with the NVLS regression reverted | ✅ applied — confirmed (cleared NCCL init 2026-07-02) |
 | `--enforce-eager` | *(hypothesis: compile-phase hang)* | — | throughput | — | — | ❌ **ruled out** (2026-07-02) — hung *identically* at Marlin-MoE weight load with compile+cudagraphs disabled, so the hang is below the compile layer |
-| `cudagraph_mode: PIECEWISE` | cudagraph inference hang | [vllm#40969](https://github.com/vllm-project/vllm/issues/40969) | some throughput | per-profile args | #40969 fixed | ⚪ candidate (only relevant once a model gets *past* load and serves) |
-| PP=2 instead of TP=2 | inference-time compute deadlock | [vllm#41725](https://github.com/vllm-project/vllm/issues/41725) | single-stream latency (pipeline bubbles) | profile `pipeline_parallel_size` | #41725 fixed | ⚪ candidate — architectural fallback |
-| **Patched image**: pin `fastapi<0.137` (built `FROM` 26.06) | HTTP **500 on every `/v1/*` request** — `prometheus_fastapi_instrumentator` 8.0.0 crashes on FastAPI 0.137's `_IncludedRouter` (no `.path`); `/health`+`/metrics` excluded so it *looks* up | [vllm#45596](https://github.com/vllm-project/vllm/issues/45596), [#45597](https://github.com/vllm-project/vllm/issues/45597), [fastapi#15791](https://github.com/fastapi/fastapi/discussions/15791) | none (thin layer; upstream vLLM does the same cap) | `docker/vllm-26.06-fastapi-fix/Dockerfile` + 26.06 profiles' `vllm_image` | NVIDIA ships a 26.06+ image that caps `fastapi<0.137` or bundles a `_IncludedRouter`-aware instrumentator | ✅ applied — image built both nodes 2026-07-03 (fastapi 0.137.1→0.136.3); NVFP4 **load validated**, serving pending re-deploy onto the patched image |
+| **DEF-0003** · `cudagraph_mode: PIECEWISE` | cudagraph inference hang | [vllm#40969](https://github.com/vllm-project/vllm/issues/40969) | some throughput | per-profile args | #40969 fixed | ⚪ candidate (only relevant once a model gets *past* load and serves) |
+| **DEF-0002** · PP=2 instead of TP=2 | inference-time compute deadlock | [vllm#41725](https://github.com/vllm-project/vllm/issues/41725) | single-stream latency (pipeline bubbles) | profile `pipeline_parallel_size` | #41725 fixed | ⚪ candidate — architectural fallback |
+| **DEF-0005** · **Patched image**: pin `fastapi<0.137` (built `FROM` 26.06) | HTTP **500 on every `/v1/*` request** — `prometheus_fastapi_instrumentator` 8.0.0 crashes on FastAPI 0.137's `_IncludedRouter` (no `.path`); `/health`+`/metrics` excluded so it *looks* up | [vllm#45596](https://github.com/vllm-project/vllm/issues/45596), [#45597](https://github.com/vllm-project/vllm/issues/45597), [fastapi#15791](https://github.com/fastapi/fastapi/discussions/15791) | none (thin layer; upstream vLLM does the same cap) | `ansible/roles/images/files/vllm-26.06-fastapi-fix/Dockerfile` (built by the `images` role, ADR-0013) + 26.06 profiles' `vllm_image` | NVIDIA ships a 26.06+ image that caps `fastapi<0.137` or bundles a `_IncludedRouter`-aware instrumentator | ✅ applied — image built both nodes 2026-07-03 (fastapi 0.137.1→0.136.3); NVFP4 **load validated**, serving pending re-deploy onto the patched image |
 
 ## Completion criteria (re-attempt when ANY holds)
 
@@ -98,8 +98,9 @@ keep loading on 26.04. See "Per-profile container pinning" note below.
 
 When a completion criterion is met:
 
-1. Add the 26.06 pin to the **NVFP4 profile only**; `docker pull` 26.06 on both nodes;
-   **verify digests match**.
+1. Add the 26.06 pin to the **NVFP4 profile only**; the `images` role (ADR-0013)
+   pulls/builds the required images on both nodes at deploy — no manual `docker pull`.
+   Pin the `container_images` entry by digest to make both nodes byte-identical.
 2. Confirm `NCCL_NVLS_ENABLE=0` is present in the deployed NCCL config.
 3. **Test solo first** if a small-enough NVFP4 model fits one node (no cross-node NCCL) — it
    isolates the FP4 kernels from the multinode path. (Step-3.7-NVFP4 is ~129 GiB and needs
@@ -151,7 +152,7 @@ while the `step-3.7-nvfp4` profile runs 26.06 on the same cluster.
   the retry plan). (3) Also hit a first-deploy playbook abort from the worker-reconnect task, now
   fixed (regression noted in ADR-0011).
 
-## Appendix — Marlin-MoE load-hang repro (errata; follow-up deferred)
+## Appendix — Marlin-MoE load-hang repro (DEF-0004; errata; follow-up deferred)
 
 Full detail for the 26.06 model-load hang, kept as the record + the seed for a future repro
 run / upstream report. Investigation is **paused** — minimax stays on 26.04. Summary is in the

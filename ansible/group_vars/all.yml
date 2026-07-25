@@ -5,7 +5,8 @@
 # Container runtime — the cluster DEFAULT image, overridable per profile. Built for
 # GB10 / SM12.1 (see CLAUDE.md). A profile may set its own `vllm_image` in the profile
 # YAML (extra-vars outrank group_vars), so different models can run different containers
-# on the same cluster. Update on both nodes, digests must match.
+# on the same cluster. Whatever a profile selects must be listed in `container_images`
+# below, which the `images` role guarantees present on every node (ADR-0013).
 #
 # Default 26.04 (vLLM 0.19, NCCL 2.29.7) is the stable, known-good image. AWQ /
 # compressed-tensors MoE models (minimax, step-3.5) MUST stay here — 26.06 hangs loading
@@ -13,6 +14,27 @@
 # profiles/step-3.7-nvfp4.yml pins it. Full story + WAR register + fail-safe boot (ADR-0009):
 # docs/upgrades/container-nvidia-vllm-26.06-py3.md.
 vllm_image: nvcr.io/nvidia/vllm:26.04-py3
+
+# Container images required on every node (ADR-0013), ensured by the `images` role
+# in the first play — `docker pull` for upstream images, `docker build` for derived
+# ones (Dockerfiles under roles/images/files/<context>/). This is the codified,
+# all-nodes replacement for the old manual "docker pull on both nodes, digests must
+# match" runbook step: per-profile `vllm_image:` above SELECTS which of these a
+# profile runs; this list GUARANTEES they (and their build bases) exist.
+#
+# Pinning: upstream `pull:` entries are pinned by digest (…@sha256:…) so a bump is a
+# deliberate digest change and both nodes are byte-identical by construction (the
+# registry manifest digest is content-addressed — the same tag resolves to the same
+# digest on every node). Re-read with `docker images --digests` when bumping. The tag
+# each digest corresponds to is in the trailing comment.
+container_images:
+  # nvcr.io/nvidia/vllm:26.04-py3 — stable default (vLLM 0.19)
+  - pull: nvcr.io/nvidia/vllm@sha256:98494fdaea68ad892c107180b0be41c99caa3c77683175becc4e202b2cb75b27
+  # nvcr.io/nvidia/vllm:26.06-py3 — NVFP4 base (vLLM 0.22.1); the derived image's FROM is pinned to this digest
+  - pull: nvcr.io/nvidia/vllm@sha256:6e537fc8d84beb9b60e789236168141d2ef4420bc28cbb85ec7d4318ca918b6c
+  # dgx-spark/vllm:26.06-fastapi-fix — 26.06 + fastapi<0.137 WAR for DEF-0005 (see the Dockerfile)
+  - build: dgx-spark/vllm:26.06-fastapi-fix
+    context: vllm-26.06-fastapi-fix
 
 # Host paths
 vllm_models_dir: /opt/vllm/models

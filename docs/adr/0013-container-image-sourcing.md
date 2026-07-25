@@ -1,18 +1,18 @@
 # ADR-0013: Container images as first-class sourced artifacts (`images` role)
 
-**Date:** 2026-07-03
-**Status:** Proposed
+**Date:** 2026-07-03 (accepted 2026-07-24)
+**Status:** Accepted
 
 ## Context
 
 Model weights have a codified, reproducible, idempotent, all-nodes pipeline: the
-`model` role sources them (`make download` → inbox), moves them to the canonical
-store, and mirrors them to every node — a fresh node or disaster-recovery
-`make deploy` stages weights automatically (see ADR-0003, the `model` role, and
-the README deploy sequence).
+`model` role sources them (`./sparky.sh download` → inbox), moves them to the
+canonical store, and mirrors them to every node — a fresh node or disaster-recovery
+`./sparky.sh deploy` stages weights automatically (see ADR-0003, the `model` role,
+and the README deploy sequence).
 
 **Container images have no such pipeline — they are hand-managed.** The runbook
-says *"`docker pull <tag>` on both nodes, digests must match, then `make deploy`"*
+says *"`docker pull <tag>` on both nodes, digests must match, then `./sparky.sh deploy`"*
 — a manual step, and the digest-match is an admonition, not something enforced.
 The gap became concrete on 2026-07-03: the 26.06 migration needed a **derived**
 image (NVIDIA's `nvcr.io/nvidia/vllm:26.06-py3` re-pinned to `fastapi<0.137` to
@@ -68,36 +68,54 @@ present on every node, codified in-repo — is the same).
 
 Design:
 
-- **Declaration.** A list of required images in `group_vars` (e.g.
-  `container_images:`), each entry either:
-  - `{ pull: "<ref>@sha256:<digest>" }` — upstream, **pinned by digest**; or
-  - `{ build: "<tag>", context: "<repo path>" }` — derived, built from a
-    committed `docker/<name>/Dockerfile`.
+- **Declaration.** A list of required images in `group_vars` (`container_images:`),
+  each entry either:
+  - `{ pull: "<ref>" }` — upstream, ideally `<ref>@sha256:<digest>` (**pinned by
+    digest**); or
+  - `{ build: "<tag>", context: "<dir>" }` — derived, built from a committed
+    `roles/images/files/<dir>/Dockerfile`.
   Per-profile `vllm_image:` continues to **select** which image a profile runs;
   the role **guarantees** the selected images (and their bases) exist.
-- **Idempotence.** `pull` → skip if the digest is already local; `build` → Docker's
-  layer cache rebuilds only the changed layer (gate on Dockerfile content if
-  needed). Mirrors the `model` role's "skip if already canonical."
+- **Mechanism — raw `docker` CLI.** The role drives `docker image inspect` /
+  `docker pull` / `docker build` via the `command` module, not `community.docker` —
+  matching how the rest of the repo talks to Docker (raw `docker run` in the vllm
+  units) and needing **no docker-py SDK** on the nodes.
+- **Idempotence.** A `docker image inspect` guard runs first; `pull` and `build` are
+  skipped entirely when the image is already local (mirrors the `model` role's "skip
+  if already canonical"). A derived image rebuilds when absent, or when its entry
+  sets `force: true`.
 - **All-nodes.** Runs on `hosts: all` (like `common` / `model`) — each node
-  pulls/builds independently; **no rsync of image layers**. A registry backend can
-  later replace per-node build with build-once-push-pull, with no profile changes.
-- **Ordering.** Runs **before** the `vllm` role in `site.yml`, so images are
-  guaranteed present before any unit `docker run`s them.
+  pulls/builds independently; **no rsync of image layers**. For a `build`, the
+  context ships **with the role** (`files/<dir>/`, published in the `ansible/` tree)
+  and is staged to each node before `docker build`. A registry backend can later
+  replace per-node build with build-once-push-pull, with no profile changes.
+- **Ordering.** Runs in the first play (after `model`), **before** the `vllm` role's
+  play in `site.yml`, so images are guaranteed present before any unit `docker run`s
+  them.
 - **No inbox.** The `model` role's inbox→canonical staging does **not** transfer —
   Docker's local image store *is* the canonical store; pull/build write straight to
   it.
+- **Pinned by digest.** The shipped `container_images` pulls are pinned as
+  `<ref>@sha256:<digest>` (the registry manifest digest is content-addressed, so the
+  same tag resolves to the same digest on every node — that's what makes the two
+  nodes byte-identical by construction). The derived image's Dockerfile `FROM` is
+  pinned to the **same** 26.06 digest the role pulls as the base, so the build
+  resolves to the already-present image with no registry round-trip and is
+  reproducible. Bumps are a deliberate digest change; re-read with
+  `docker images --digests`.
 
 ## Consequences
 
-- **Reproducibility.** DR / new-node `make deploy` now builds+pulls the exact
+- **Reproducibility.** DR / new-node `./sparky.sh deploy` now builds+pulls the exact
   images automatically, exactly as it already stages weights. The runbook's manual
   "`docker pull` on both nodes" step goes away.
 - **Derived-image WARs are codified, not hand-built.** The 26.06 `fastapi<0.137`
   patch (and any future patched image) lives as a repo Dockerfile + a declaration,
   survives a rebuild, and is auditable — no artifact that exists only because
   someone typed `docker build` once.
-- **"Digests must match" becomes enforced**, not admonished — pinned pulls make an
-  image bump a deliberate digest change (which is the point).
+- **"Digests must match" becomes enforced**, not admonished — the upstream pulls are
+  pinned by digest in `container_images`, so an image bump is a deliberate digest
+  change and both nodes are byte-identical by construction (which is the point).
 - **Registry stays optional.** Per-node build is fine at two nodes (shared base,
   thin/fast derived layers); the role is structured so a registry backend slots in
   later when scale makes build-once-distribute cheaper — see Option C.
@@ -108,7 +126,9 @@ Design:
   declare `vllm_image`; this guarantees it exists). Supersedes the manual image-pull
   step in the README deploy sequence.
 
-Implementation follows in the same change set (the role + the `container_images`
-declaration covering the 26.04 base, the 26.06 base, and the
-`dgx-spark/vllm:26.06-fastapi-fix` derived image); status flips to **Accepted**
-when it lands.
+Implementation landed with this ADR: the `images` role (`roles/images/`), the
+`container_images` declaration in `group_vars/all.yml` covering the 26.04 base, the
+26.06 base, and the `dgx-spark/vllm:26.06-fastapi-fix` derived image, its Dockerfile
+relocated from repo-root `docker/` to `roles/images/files/vllm-26.06-fastapi-fix/`
+(so it ships with the role — repo-root `docker/` was never published to the runtime
+tree), and the `images` role wired into `site.yml`'s first play before `vllm`.

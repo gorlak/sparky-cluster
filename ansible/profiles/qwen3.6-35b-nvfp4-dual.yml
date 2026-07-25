@@ -29,7 +29,7 @@
 # number-misreads — enable it as a text-only A/B pass later. Fail-safe net armed.
 
 profile_name: qwen3.6-35b-nvfp4-dual
-# NVFP4 needs the 26.06 container. Build the patched image on both nodes (docker/vllm-26.06-fastapi-fix — see WAR register).
+# NVFP4 needs the 26.06 container. The `images` role builds this patched image on every node (ADR-0013).
 vllm_image: dgx-spark/vllm:26.06-fastapi-fix
 serving_topology:
   - name: qwen3.6-35b-sparky

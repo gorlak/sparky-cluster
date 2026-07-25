@@ -1,0 +1,24 @@
+---
+# Container images as first-class sourced artifacts (ADR-0013). Symmetric IN
+# PRINCIPLE to the `model` role — sourced, versioned, idempotent, present on every
+# node, codified in-repo — but using Docker's native pull/build rather than rsync
+# (Docker owns image distribution; you don't rsync /var/lib/docker). Runs on
+# hosts:all in the first play, so every image a profile might SELECT via
+# `vllm_image:` is GUARANTEED present before the vllm role docker-runs any unit.
+#
+# Declaration: `container_images` in group_vars/all.yml. Each entry is either a
+# `pull:` (upstream image, ideally digest-pinned) or a `build:` (derived image,
+# built from a Dockerfile committed under this role's files/<context>/). This is the
+# codified, all-nodes replacement for the old manual "docker pull on both nodes,
+# digests must match" runbook step.
+#
+# Raw `docker` CLI (via command), not community.docker — matches how the rest of the
+# repo talks to Docker (raw `docker run` in the vllm units) and needs no docker-py
+# SDK on the nodes.
+
+- name: Ensure each declared container image is present (pull or build)
+  ansible.builtin.include_tasks: ensure_one.yml
+  loop: "{{ container_images }}"
+  loop_control:
+    loop_var: image
+    label: "{{ image.pull | default(image.build) }}"

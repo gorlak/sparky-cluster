@@ -31,7 +31,7 @@ serving_topology:
     # The API node gets the tool/reasoning parsers + auto tool choice; the
     # headless worker only needs the compute-side flag. --kv-cache-dtype fp8 /
     # --enable-prefix-caching are intentionally omitted (multi-turn corruption
-    # on this model — see CLAUDE.md).
+    # on this model — DEF-0007, docs/defects.md; re-test on 26.06 per ADR-0014).
     head_extra_args:
       - --enable-chunked-prefill
       - --enable-auto-tool-choice

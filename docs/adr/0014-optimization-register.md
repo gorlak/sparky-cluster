@@ -57,12 +57,12 @@ Keep a knob only if it's stable *and* wins; otherwise revert and record why.
 
 | Optimization | Where | Why disabled | Re-test | Expected win | Status |
 |---|---|---|---|---|---|
-| **FP8 KV cache** (`--kv-cache-dtype fp8`) | `step-3.5-fp8` (and other FP8/AWQ profiles on 26.04) | Multi-turn corruption (Nth-turn garbage / nonstop thinking), vLLM 0.19 — suspected interaction with prefix caching | Enable alone, run multi-turn convos; **also re-test on 26.06 (0.22.1)** — may be fixed | ~2× KV capacity → longer context / more concurrency | ⚪ tabled (README "Pending investigation") |
-| **Prefix caching** (`--enable-prefix-caching`) | `step-3.5-fp8` | Same corruption; suspected FP8-KV × prefix-cache interaction | Enable alone (BF16 KV) → then with FP8 KV | Large TTFT win on shared prefixes (system prompts, multi-turn) | ⚪ tabled |
+| **FP8 KV cache** (`--kv-cache-dtype fp8`) — DEF-0007 | `step-3.5-fp8` (and other FP8/AWQ profiles on 26.04) | Multi-turn corruption (Nth-turn garbage / nonstop thinking), vLLM 0.19 — suspected interaction with prefix caching | Enable alone, run multi-turn convos; **also re-test on 26.06 (0.22.1)** — may be fixed | ~2× KV capacity → longer context / more concurrency | ⚪ tabled (README "Pending investigation") |
+| **Prefix caching** (`--enable-prefix-caching`) — DEF-0007 | `step-3.5-fp8` | Same corruption; suspected FP8-KV × prefix-cache interaction | Enable alone (BF16 KV) → then with FP8 KV | Large TTFT win on shared prefixes (system prompts, multi-turn) | ⚪ tabled |
 | **MTP / speculative decoding** (MTP-3) | `qwen3.6-35b-nvfp4-*`; `step-3.7-nvfp4` (native MTP-3) | First-bring-up caution; GB10 forum: MTP causes **image** number-misreads (VL) | Enable **text-only**, A/B single-stream TPS behind fail-safe | **~3× single-stream** on qwen3.6-35b (~28–30 → ~97 tok/s, community) | ⚪ tabled — highest-value |
 | **flashinfer attention** (`--attention-backend flashinfer`) | `qwen3.6-35b-nvfp4-*` (community-recommended for GB10) | Not set — vLLM auto-selects | Pin it, A/B | Recommended backend for this model on GB10 | ⚪ candidate |
 | **Relax conservative gmu / `max_model_len`** | `step-3.7-nvfp4` (ctx 32768 → "raise toward 131072"); qwen gmu 0.55 | First-bring-up conservatism | Raise once stable; trust vLLM's *estimated max model length* | More context / concurrency | ⚪ per-profile tuning |
-| **Full cudagraphs / TP=2 restore on 26.06** | container-level | 26.06 WARs — cudagraph inference hang ([vllm#40969](https://github.com/vllm-project/vllm/issues/40969)), TP=2 deadlock ([#41725](https://github.com/vllm-project/vllm/issues/41725)) | Restore when upstream fixes land | throughput / latency | ⚪ upstream-gated — see the 26.06 tracker WAR register |
+| **Full cudagraphs / TP=2 restore on 26.06** — DEF-0003 / DEF-0002 | container-level | 26.06 WARs — cudagraph inference hang ([vllm#40969](https://github.com/vllm-project/vllm/issues/40969)), TP=2 deadlock ([#41725](https://github.com/vllm-project/vllm/issues/41725)) | Restore when upstream fixes land | throughput / latency | ⚪ upstream-gated — see the 26.06 tracker WAR register |
 
 ## Consequences
 

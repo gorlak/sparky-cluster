@@ -21,7 +21,7 @@
 profile_name: minimax-m2.7-nvfp4
 # NVFP4 (modelopt FP4) needs 26.06; the modelopt path is distinct from 26.06's
 # hanging Marlin/AWQ MoE loader, so this checkpoint is fine here. 26.04 default
-# stays for AWQ/FP8 profiles. Build the patched image on both nodes (docker/vllm-26.06-fastapi-fix — see WAR register).
+# stays for AWQ/FP8 profiles. The `images` role builds this patched image on every node (ADR-0013).
 vllm_image: dgx-spark/vllm:26.06-fastapi-fix
 serving_topology:
   - name: minimax-m2.7-nvfp4

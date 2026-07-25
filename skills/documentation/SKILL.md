@@ -3,25 +3,30 @@ name: documentation
 description: Conventions for this repo's docs/ tree — model fact sheets, upgrade trackers, and decision records (ADRs): where each lives, how they are structured and named, and the fact-vs-transition-vs-decision boundary. Read when asked to investigate/document a model, plan/track an upgrade, write an ADR, or decide whether a change needs one.
 ---
 
-## The `docs/` tree — three kinds of doc, three purposes
+## The `docs/` tree — kinds of doc, and their purposes
 
 | Location | Kind | Purpose |
 |---|---|---|
 | `docs/models/<model>.md` | **Fact sheet** | Independent statement of fact about **one** model — analyzed on its own, never vs another. |
 | `docs/upgrades/<kind>-<…>.md` | **Upgrade tracker** | Living, gated tracker of a version/model **transition** and its cluster implications. |
 | `docs/adr/NNNN-*.md` | **Decision record** | Immutable record of a decision already made — the "why." See "Decision records" below. **Not** for living state. |
+| `docs/defects.md` | **Defect register** | Living index of **open** defects the cluster carries, each with a *clears-when* condition. Rolls up (links, never duplicates) the per-tracker WAR registers, ADR-0014, and README shortcomings. |
+| `docs/updating.md` | **Update pathways** | The change-fan-out checklists (bump a container, add a model/role, …); each pathway ends by consulting the defect register. |
 | `docs/*.md` | Reference | Standing docs (profiles, profile-tuning, serving-topology, control-interface). |
 
 The boundary matters and is enforced:
 - **Fact sheets** hold facts about a model, independent of any other. No transition analysis.
 - **Upgrade trackers** hold the *delta* between where we are and a target, plus what it means for the cluster. They link to fact sheets; they never duplicate them.
 - **ADRs** are immutable once Accepted. A thing still in flux is a tracker, not an ADR.
+- **The defect register** is an *index*, not a home — a row links to the detailed WAR/ADR/fact-sheet that owns the analysis. When you add a workaround anywhere, add its `DEF-NNNN` row here and back-reference the ID from the code/profile comment. See `docs/defects.md` for the filing convention.
 
 ## Which artifact does the request want?
 
 - "Investigate / analyze / document model X" → **fact sheet** `docs/models/X.md` (create or update).
 - "Should profile P serve model M?" / "what changes if `step` runs 3.7?" → **profile upgrade tracker** `docs/upgrades/profile-P-M.md`.
-- "Bump / upgrade the container to T" → **container upgrade tracker** `docs/upgrades/container-<coord>-T.md`.
+- "Bump / upgrade the container to T" → **container upgrade tracker** `docs/upgrades/container-<coord>-T.md`, and walk the pathway in `docs/updating.md`.
+- "We're carrying a bug / working around an upstream issue" → a **DEF-NNNN row** in `docs/defects.md` (+ detail in its home).
+- "How do I update X / what else needs touching?" → `docs/updating.md` (the change-pathway checklists).
 - A settled, one-way decision → an **ADR** (see "Decision records" below), not a tracker.
 
 ## Naming (upgrade trackers)

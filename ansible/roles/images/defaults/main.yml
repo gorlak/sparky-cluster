@@ -1,0 +1,5 @@
+---
+# Where derived-image build contexts are staged on each node before `docker build`.
+# Under /opt/vllm (present on every node — the weights + nccl conf live here too);
+# NOT /opt/cluster, which is the head-only published tree.
+images_build_dir: /opt/vllm/image-build
