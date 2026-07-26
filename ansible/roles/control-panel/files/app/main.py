@@ -355,6 +355,41 @@ def health_json():
             "has_topology": s.get("has_topology", False)}
 
 
+def status_dict():
+    """gather() as a JSON-clean, machine-readable dict — the no-sudo live-status
+    surface for the CLI (`sparky status`) and agents. Drops the template-only
+    `ok_states` set, normalizes `services` tuples to objects, and derives a single
+    top-line `ok`: everything the deploy intended is up and serving, and nothing is
+    in the fail-safe recovery state (ADR-0009). `ok` is only meaningful when a
+    topology is recorded (has_topology); it's False in the no-topology fallback."""
+    s = gather()
+    services = [{"name": n, "state": st} for n, st in s.get("services", [])]
+    if not s.get("has_topology"):
+        return {"has_topology": False, "ok": False, "profile": None,
+                "failsafe": s.get("failsafe", False),
+                "engines": [], "services": services,
+                "units": [{"unit": u, "state": st} for u, st in s.get("units", [])]}
+    engines = s.get("engines", [])
+    # ok = nothing the deploy intended is unhealthy and nothing tripped fail-safe.
+    # all() over no engines is True, so a deployed `empty` profile is healthy (it's
+    # intended to serve nothing) — only a down/unreachable engine or fail-safe is not-ok.
+    ok = (not s.get("failsafe", False) and all(
+        e.get("api_ok") and all(n["state"] in _OK_STATES for n in e["nodes"])
+        for e in engines))
+    return {"has_topology": True, "ok": ok, "profile": s.get("profile"),
+            "deployed_at": s.get("deployed_at"), "failsafe": s.get("failsafe", False),
+            "engines": engines, "services": services}
+
+
+@app.get("/status.json")
+def status_json():
+    """Full live cluster status as JSON — per-engine, per-node systemd state + API
+    readiness + fail-safe, gathered live from both nodes (this service runs as
+    `deploy` with the SSH key, so no sudo is needed). The machine-readable twin of
+    the `/status` HTML view; `sparky status` reads it. Served at /admin/status.json."""
+    return status_dict()
+
+
 @app.get("/actions", response_class=HTMLResponse)
 def actions(request: Request):
     run = current_run()

@@ -113,6 +113,64 @@ def test_health_json_reflects_failsafe(panel, monkeypatch):
     assert r.json() == {"failsafe": True, "profile": "p", "has_topology": True}
 
 
+# --- /status.json (the no-sudo agent surface) ------------------------------
+
+def _mock_status(main, monkeypatch, *, state, api_ok, marker=False, topo=None):
+    monkeypatch.setattr(main, "load_topology", lambda: topo if topo is not None else _topo())
+    monkeypatch.setattr(main, "_is_active", lambda unit, ssh=None: state)
+    monkeypatch.setattr(main, "_vllm_api",
+                        lambda base: (api_ok, "step-3.5-flash" if api_ok else "down"))
+    monkeypatch.setattr(main, "_container", lambda name: "running")
+    monkeypatch.setattr(main, "_marker_present", lambda path, ssh=None: marker)
+
+
+def test_status_json_ok_when_healthy(panel, monkeypatch):
+    main, client = panel
+    _mock_status(main, monkeypatch, state="active", api_ok=True)
+    j = client.get("/status.json").json()
+    assert j["ok"] is True and j["has_topology"] is True and j["failsafe"] is False
+    assert j["profile"] == "p"
+    nodes = j["engines"][0]["nodes"]
+    assert [n["node"] for n in nodes] == ["sparky", "snoopy"]
+    assert all(n["state"] == "active" for n in nodes)
+    # JSON-clean: no template-only set, services normalized to objects.
+    assert "ok_states" not in j
+    assert j["services"] and all({"name", "state"} <= s.keys() for s in j["services"])
+
+
+def test_status_json_not_ok_when_api_down(panel, monkeypatch):
+    main, client = panel
+    _mock_status(main, monkeypatch, state="active", api_ok=False)
+    assert client.get("/status.json").json()["ok"] is False
+
+
+def test_status_json_not_ok_and_failsafe(panel, monkeypatch):
+    main, client = panel
+    _mock_status(main, monkeypatch, state="inactive", api_ok=False, marker=True)
+    j = client.get("/status.json").json()
+    assert j["ok"] is False and j["failsafe"] is True
+    assert j["engines"][0]["nodes"][0]["failsafe"] is True
+
+
+def test_status_json_ok_for_empty_profile(panel, monkeypatch):
+    main, client = panel
+    _mock_status(main, monkeypatch, state="active", api_ok=True,
+                 topo={"profile": "empty", "engines": []})
+    j = client.get("/status.json").json()
+    # all() over zero engines is true — an intended-empty deploy is healthy.
+    assert j["has_topology"] is True and j["ok"] is True and j["engines"] == []
+
+
+def test_status_json_no_topology_is_not_ok(panel, monkeypatch):
+    main, client = panel
+    monkeypatch.setattr(main, "load_topology", lambda: None)
+    monkeypatch.setattr(main, "_vllm_units", lambda ssh=None: [("vllm-e.service", "active")])
+    monkeypatch.setattr(main, "_container", lambda name: "running")
+    j = client.get("/status.json").json()
+    assert j["has_topology"] is False and j["ok"] is False
+    assert j["units"] and {"unit", "state"} <= j["units"][0].keys()
+
+
 # --- _build_cmd ------------------------------------------------------------
 
 def test_build_cmd_per_action(panel):

@@ -15,6 +15,8 @@ import getpass
 import subprocess
 from pathlib import Path
 
+import httpx
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ANSIBLE_DIR = REPO_ROOT / "ansible"
 LIVE = Path("/opt/cluster/ansible")            # deploy-owned runtime copy ansible runs from
@@ -22,6 +24,11 @@ HARNESS_LIVE = Path("/opt/cluster/sparky")     # published harness (the smoke ga
 DEPLOY_KEY = "/home/deploy/.ssh/id_ed25519"
 WORKER_SSH = "deploy@10.0.200.13"
 DEFAULT_PROFILE = "step-3.5-fp8"
+# The control panel (User=deploy) is the no-sudo live-status surface: it already
+# queries systemd on both nodes with deploy's SSH key. `sparky status` reads its
+# /status.json instead of shelling `sudo -u deploy ansible … systemctl` (which needs
+# geoff's password). Bound to 127.0.0.1:{control_panel_port} (group_vars, default 8088).
+CONTROL_PANEL_URL = "http://127.0.0.1:8088"
 
 
 def _as_deploy() -> list[str]:
@@ -71,8 +78,20 @@ def teardown(profile: str = DEFAULT_PROFILE, *, include_webui: bool = False) -> 
     return _run(_playbook_cmd("teardown.yml", profile, extra), cwd=LIVE)
 
 
+def panel_status() -> dict | None:
+    """Live status from the control panel's /status.json (no sudo) — or None if the
+    panel is unreachable (down / not deployed). See CONTROL_PANEL_URL."""
+    try:
+        r = httpx.get(f"{CONTROL_PANEL_URL}/status.json", timeout=5.0)
+        r.raise_for_status()
+        return r.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
 def status() -> int:
-    """systemd state of the vLLM units on both nodes."""
+    """systemd state of the vLLM units on both nodes, via ansible (the fallback path
+    when the control panel is down — shells `sudo -u deploy`, needs geoff's password)."""
     cmd = [*_as_deploy(), "ansible", "all", "-m", "shell", "-a",
            "systemctl --no-pager --lines=0 status 'vllm-*.service' 2>/dev/null; true"]
     return _run(cmd, cwd=LIVE)

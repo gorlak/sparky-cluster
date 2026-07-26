@@ -141,6 +141,12 @@ cluster_profile: step-3.5-fp8
 # a deploy (and teardown clears it); the control panel reads it for topology-aware
 # status + per-engine actions. See docs/serving-topology.md (T5).
 cluster_topology_file: /opt/cluster/current-topology.json
+# Deploy-gate breadcrumb: the smoke role runs `sparky smoke --report` here, so the
+# last gate result (per-engine ready/tool-shape/quality + overall ok, with a timestamp)
+# is durable and readable — written even when the gate FAILS (the smoke play runs
+# before topology-state, so a failed gate aborts the deploy but still leaves this).
+# See docs/control-interface.md.
+cluster_smoke_report: /opt/cluster/last-smoke.json
 
 # Links shown on the landing page (sparky.flummoxed.net/).
 landing_services:

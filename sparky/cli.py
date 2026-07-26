@@ -7,7 +7,9 @@ here. sparky is the outer layer; ansible is the engine it drives (sparky/ansible
 
 from __future__ import annotations
 
+import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
@@ -66,6 +68,11 @@ def smoke(
         help="Topology JSON to probe (default: the live current-topology.json). The deploy "
         "gate passes the in-flight topology so it's validated before being recorded.",
     ),
+    report_file: str = typer.Option(
+        None, "--report",
+        help="Write the gate result (per-engine ready/tool-shape/quality + overall ok) to this "
+        "JSON path — a durable breadcrumb. Written pass OR fail, so a failed deploy still leaves it.",
+    ),
 ) -> None:
     """Post-deploy gate: probe each live engine (from current-topology.json) for
     readiness, the tool-call shape Open WebUI sends, and multiturn output quality.
@@ -90,12 +97,15 @@ def smoke(
         table.add_column(col, overflow="fold")
 
     failed = False
+    results = []
     for e in engines:
         tool, quality, ok = "—", "—", False
+        tool_code, quality_str = None, "skipped"
         with VllmClient(e["api_url"], timeout=120.0) as client:
             ready = client.is_ready()
             if ready:
                 code = client.probe_tool_support(e["served_as"]).status_code
+                tool_code = code
                 tool = "[green]200[/]" if code == 200 else f"[red]{code}[/]"
                 ok = code == 200
                 if ok:
@@ -103,16 +113,24 @@ def smoke(
                     ok = result.ok
                     if result.ok:
                         quality = "[green]pass[/]"
+                        quality_str = "pass"
                     else:
                         reasons = sorted({r for t in result.failures for r in t.verdict.reasons})
                         quality = "[red]FAIL: " + ",".join(reasons) + "[/]"
+                        quality_str = "fail: " + ",".join(reasons)
         failed = failed or not ok
+        results.append({"name": e["name"], "api_url": e["api_url"], "ready": ready,
+                        "tool_shape": tool_code, "quality": quality_str, "ok": ok})
         table.add_row(
             e["name"], e["api_url"],
             "[green]yes[/]" if ready else "[red]no[/]", tool, quality,
         )
 
     console.print(table)
+    if report_file:
+        Path(report_file).write_text(json.dumps(
+            {"profile": profile, "ran_at": datetime.now(timezone.utc).isoformat(),
+             "ok": not failed, "engines": results}, indent=2) + "\n")
     if failed:
         raise typer.Exit(1)
 
@@ -177,9 +195,53 @@ def teardown(
     raise typer.Exit(ops.teardown(profile, include_webui=webui))
 
 
+def _render_status(s: dict) -> None:
+    """Human view of the control panel's /status.json."""
+    if not s.get("has_topology"):
+        console.print("[yellow]No topology recorded[/] — nothing deployed, or a deploy is in flight.")
+        for u in s.get("units", []):
+            console.print(f"  {u['unit']}: {u['state']}")
+        return
+    ok = s.get("ok")
+    verdict = "[green]✓ healthy[/]" if ok else (
+        "[red]⚠ fail-safe recovery[/]" if s.get("failsafe") else "[red]✗ degraded[/]")
+    when = s.get("deployed_at") or "?"
+    console.print(f"[bold]{s.get('profile')}[/]   deployed {when}   {verdict}")
+    table = Table(title_justify="left")
+    for col in ("engine", "node", "systemd", "API", "model"):
+        table.add_column(col, overflow="fold")
+    for e in s.get("engines", []):
+        api = ("[green]ready[/]" if e.get("api_ok") else "[red]down[/]")
+        for i, n in enumerate(e.get("nodes", [])):
+            st = n["state"] + (" [red](fail-safe)[/]" if n.get("failsafe") else "")
+            st = f"[green]{st}[/]" if n["state"] in ("active", "running") else f"[red]{st}[/]"
+            table.add_row(e["name"] if i == 0 else "", n["node"], st,
+                          api if i == 0 else "", (e.get("model") or "—") if i == 0 else "")
+    console.print(table)
+    console.print("  " + "   ".join(f"{svc['name']}: {svc['state']}" for svc in s.get("services", [])))
+
+
 @app.command()
-def status() -> None:
-    """systemd state of the vLLM units on both nodes."""
+def status(
+    json_out: bool = typer.Option(False, "--json", help="Emit raw JSON (machine-readable)."),
+) -> None:
+    """Live cluster status — reads the control panel (no sudo, both nodes). Exit 0 when
+    healthy, 1 when an engine is down / in fail-safe. Falls back to systemd-over-ansible
+    (needs your sudo password) only if the control panel is unreachable."""
+    s = ops.panel_status()
+    if s is not None:
+        if json_out:
+            console.print_json(data=s)
+        else:
+            _render_status(s)
+        raise typer.Exit(0 if s.get("ok") else 1)
+    # Control panel unreachable — fall back to the ansible/systemd path.
+    if json_out:
+        console.print_json(data={"error": "control panel unreachable",
+                                 "hint": "run `./sparky.sh status` for the systemd view"})
+        raise typer.Exit(2)
+    console.print("[yellow]control panel unreachable — falling back to systemd over ansible "
+                  "(needs your sudo password)…[/]")
     raise typer.Exit(ops.status())
 
 

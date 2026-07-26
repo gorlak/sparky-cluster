@@ -62,6 +62,34 @@ covers the new hosts — no new DNS.
   logs; single-run lock.
 - Confirmation modal on each action (current → target).
 
+### Status surfaces — the no-sudo contract (`/status.json` + the gate breadcrumb)
+
+The panel is the cluster's **no-sudo live-status surface**, and this is deliberate:
+it runs as `User=deploy` with the deploy SSH key, so its `gather()` already queries
+systemd on *both* nodes without a password. Everything else should read *it* rather
+than shell `sudo -u deploy ansible … systemctl` (which prompts for Geoff's password
+and hangs a non-interactive agent).
+
+- **`/admin/health.json`** — thin: `{failsafe, profile, has_topology}` (the landing
+  page's fail-safe check).
+- **`/admin/status.json`** — full machine-readable status: per-engine, per-node
+  systemd state + API readiness + fail-safe, plus a derived top-line **`ok`** (nothing
+  the deploy intended is unhealthy and nothing is in the ADR-0009 recovery state; `ok`
+  is vacuously true for a deployed `empty` profile). The JSON twin of the `/status`
+  HTML view.
+- **`sparky status [--json]`** reads `/status.json` (no sudo) and **exits `0` healthy /
+  `1` degraded / `2` panel-unreachable**, so a deploy can be gated on it. It falls back
+  to the ansible/systemd path only when the panel is down.
+
+**Deploy-gate breadcrumb — `/opt/cluster/last-smoke.json`** (`cluster_smoke_report`).
+The smoke gate (ADR-0012) runs `sparky smoke --report`, recording the per-engine
+result + overall `ok` + timestamp. Because the gate runs *before* the topology is
+recorded, a **failed** deploy still leaves this file — so "what did the last deploy's
+gate find?" is answerable without re-running anything, even on a deploy that aborted.
+Contrast `current-topology.json`, which only updates on a *passing* deploy: the two
+together separate "last attempt's gate result" from "last good live topology." Teardown
+clears both. Agent-facing usage is in [`skills/operations/SKILL.md`](../skills/operations/SKILL.md).
+
 ### Metrics — exporter role on all nodes; prometheus + grafana on the head
 - `node_exporter` + a GPU exporter on sparky & snoopy; vLLM `/metrics` already
   exists.
@@ -109,3 +137,10 @@ covers the new hosts — no new DNS.
   set (its `clocks_event_reasons_* [us]` fields become invalid Prometheus metric
   names and crash-loop the container). Grafana set to land on the cluster
   dashboard via `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`. P3 remains.
+- **2026-07-25** — Made the panel the **no-sudo status surface for agents**: added
+  `/status.json` (full `gather()` as JSON + derived `ok`), routed `sparky status
+  [--json]` through it with a health-reflecting exit code (ansible/systemd path is now
+  only the fallback), and added the durable deploy-gate breadcrumb `last-smoke.json`
+  (`sparky smoke --report`, written pass-or-fail). Documented the workflow in the new
+  `skills/operations` skill. No ADR — extends the P1 status panel (ADR-0008) and the
+  smoke gate (ADR-0012) within their patterns.

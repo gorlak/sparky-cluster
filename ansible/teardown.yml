@@ -71,6 +71,12 @@
         mode: "0644"
       become: true
 
+    - name: Clear the deploy-gate breadcrumb (stale once nothing is deployed)
+      ansible.builtin.file:
+        path: "{{ cluster_smoke_report }}"
+        state: absent
+      become: true
+
 - name: Stop front-end — Open WebUI + Caddy (only with --tags webui)
   hosts: head
   tags: [never, webui]

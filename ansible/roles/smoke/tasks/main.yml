@@ -31,6 +31,12 @@
         virtualenv_command: "python3 -m venv"
 
     - name: Run the smoke gate (readiness + tool-shape + multiturn quality)
+      # --report writes a durable breadcrumb (cluster_smoke_report) with the per-engine
+      # result — written pass OR fail, so a deploy that fails the gate still leaves the
+      # last-gate result readable (agents read it; see docs/control-interface.md).
       ansible.builtin.command:
-        cmd: "{{ harness_dir }}/.venv/bin/sparky smoke --topology {{ smoke_topology_file }}"
+        cmd: >-
+          {{ harness_dir }}/.venv/bin/sparky smoke
+          --topology {{ smoke_topology_file }}
+          --report {{ cluster_smoke_report }}
       changed_when: false

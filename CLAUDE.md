@@ -32,6 +32,10 @@ as slash commands). When a task matches one, read its `SKILL.md` and follow it:
   commit ownership, staging, ADR-in-same-commit. Read before making changes or
   preparing commits. **Geoff runs all git commits** — never run `git commit`
   unless explicitly asked.
+- **`skills/operations/SKILL.md`** — verify a deploy and read live cluster status
+  the **no-sudo** way (`./sparky.sh status [--json]` reads the control panel; exit
+  code = health) plus the deploy-gate breadcrumb (`/opt/cluster/last-smoke.json`).
+  Read when asked "is the cluster up/healthy", or to confirm a deploy/restart worked.
 
 ---
 
