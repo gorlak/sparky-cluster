@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -153,8 +154,23 @@ def bench(
         console.print("[yellow]No API engines to benchmark.[/]")
         raise typer.Exit(1)
     profile = current.get("profile", "?")
+    # bench shells `docker exec` on THIS (head) node, so it can only reach an engine
+    # whose container is local. Skip worker-node engines with a warning instead of
+    # crashing on `docker exec <missing-container>`. Node-aware benching of worker
+    # engines (ssh to the node) is an ADR-0016 follow-up; per-node profiles are the
+    # experimental Tier-2 shape, and the head engine is representative for the A/B.
+    local = socket.gethostname().split(".")[0]
+    benchable = [e for e in engines if (e.get("api_node") or (e.get("nodes") or [local])[0]) == local]
+    for e in engines:
+        if e not in benchable:
+            node = e.get("api_node") or (e.get("nodes") or ["?"])[0]
+            console.print(f"[yellow]skipping {e['name']}: container is on '{node}', not the local "
+                          f"head — node-aware worker benching is a follow-up (ADR-0016).[/]")
+    if not benchable:
+        console.print("[yellow]No head-local engines to benchmark.[/]")
+        raise typer.Exit(1)
     with Store() as store:
-        for e in engines:
+        for e in benchable:
             console.print(f"[bold]benchmarking {e['name']} as '{label}'[/] — 3 scenarios, several minutes…")
             for run in run_all(label, e, store, profile):
                 console.print(f"  {run.scenario}: output {run.output_toks_s} tok/s, ttft p99 {run.ttft_p99_ms} ms")

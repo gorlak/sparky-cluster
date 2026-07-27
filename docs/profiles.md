@@ -28,10 +28,8 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
 | [`step-3.7-nvfp4`](#step-37-nvfp4) | TP=2 big-shared (**26.06**) | 0.75 | 32768 | ~30 GiB | ⛔ **BLOCKED** — upstream vLLM VL bug; hidden from deploy UI |
 | [`minimax-m2.7-awq`](#minimax-m27-awq) | TP=2 big-shared | 0.75 | 131072 | ~30 GiB | big-shared with dev headroom |
 | [`minimax-m2.7-nvfp4`](#minimax-m27-nvfp4) | TP=2 big-shared (**26.06**) | 0.80 | 131072 | ~24 GiB | NVFP4 A/B candidate vs the AWQ profile |
-| [`qwen3-coder-nvfp4-dual`](#qwen3-coder-nvfp4-dual--single) | per-node ×2 (**26.06**) | 0.55 | 262144 | ~55 GiB | small + dev-friendly |
-| [`qwen3-coder-nvfp4-single`](#qwen3-coder-nvfp4-dual--single) | per-node ×1 (snoopy, **26.06**) | 0.55 | 262144 | sparky free + ~55 GiB on snoopy | sparky-free for dev |
-| [`qwen3.6-35b-nvfp4-dual`](#qwen36-35b-nvfp4-dual--single) | per-node ×2 (**26.06**) | 0.55 | 262144 | ~55 GiB | reasoning-generalist A/B |
-| [`qwen3.6-35b-nvfp4-single`](#qwen36-35b-nvfp4-dual--single) | per-node ×1 (snoopy, **26.06**) | 0.55 | 262144 | sparky free + ~55 GiB on snoopy | sparky-free for dev |
+| [`qwen3-coder-nvfp4-single`](#qwen3-coder-nvfp4-single) | snoopy TP=1 (**26.06**) | 0.55 | 262144 | sparky free + ~55 GiB on snoopy | coder, sparky-free for dev |
+| [`qwen3.6-35b-nvfp4-mtp3-single`](#qwen36-35b-nvfp4-mtp3-single) | snoopy TP=1 (**26.06**, MTP-3) | 0.55 | 262144 | sparky free + ~55 GiB on snoopy | reasoning-generalist (2.3× single-stream) |
 | [`empty`](#empty) | no engines | — | — | full hardware | bare cluster |
 
 ### step-3.5-fp8
@@ -76,15 +74,13 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
   for the MiniMax slot; once it proves out on 26.06 it can become the default MiniMax profile.
 - **Workflow:** big-shared with ~24 GiB/node headroom.
 
-### qwen3-coder-nvfp4-dual / -single
+### qwen3-coder-nvfp4-single
 - **Model:** `Qwen3-Coder-Next-NVFP4` (80B-A3B linear-attention hybrid, ~45 GiB NVFP4;
   compressed-tensors — staged as the `RedHatAI/Qwen3-Coder-Next-NVFP4` build; the
   GB10-targeted `saricles/Qwen3-Coder-Next-NVFP4-GB10` is an alternative if needed);
   **pins container 26.06**. Coding-tuned agent.
-- **`-dual`:** two independent engines — `qwen3-coder-sparky` (`sparky:8000`) and
-  `qwen3-coder-snoopy` (`snoopy:8000`).
-- **`-single`:** only `qwen3-coder-snoopy` — byte-identical to `-dual`'s snoopy engine, so
-  switching `single ↔ dual` only adds/removes the sparky engine (no snoopy restart).
+- **Engine:** `qwen3-coder-snoopy` (`snoopy:8000`), TP=1. Single-node serving runs on
+  snoopy by design — sparky stays free for the frontends + dev.
 - **Why per-node, not TP=2:** weights fit one node with room to spare; with no NVLink between
   the Sparks, cross-node TP=2 for a 3B-active model is bandwidth/latency-bound and would only
   *cost* decode throughput. See the tuning doc for the full TP=2 cost analysis.
@@ -92,14 +88,14 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
   for dev/builds. **Fallback:** if compressed-tensors won't load on 26.06, use the official
   `Qwen/Qwen3-Coder-Next-FP8` (80 GiB) and rename the family to `-fp8`.
 
-### qwen3.6-35b-nvfp4-dual / -single
+### qwen3.6-35b-nvfp4-mtp3-single
 - **Model:** `Qwen3.6-35B-A3B-NVFP4` (35B-A3B MoE, ~22 GiB NVFP4; **nvidia modelopt** —
   the proven-loads path on 26.06); **pins container 26.06**. Reasoning-generalist (also VL —
-  run text-first, MTP off on first bring-up). Arch `Qwen3_5MoeForConditionalGeneration`,
+  run **text-first**; **MTP-3 on** — 2.3× single-stream decode, ADR-0014; MTP corrupts
+  image number-reads so it stays text-only). Arch `Qwen3_5MoeForConditionalGeneration`,
   registry-confirmed on 26.06's vLLM 0.22.1 / transformers 5.6.0.
-- **`-dual`:** two independent engines — `qwen3.6-35b-sparky` + `qwen3.6-35b-snoopy` (a
-  master + worker pair for agentic use).
-- **`-single`:** only `qwen3.6-35b-snoopy` (byte-identical to `-dual`'s snoopy engine).
+- **Engine:** `qwen3.6-35b-snoopy` (`snoopy:8000`), TP=1. Single-node serving on snoopy
+  by design.
 - **Why per-node, not TP=2:** same as the coder family — fits one node, cross-node TP=2 is a
   throughput loss for a 3B-active model.
 - **Why this tuning:** `gmu 0.55` → ~43 GiB KV (ample; cheap hybrid-attn KV), ~55 GiB/node
@@ -148,8 +144,7 @@ or `./sparky.sh status`.
    into the canonical store and mirrors to every node.
 2. **Copy** an existing profile that matches your shape:
    - big-shared TP=2 → start from `step-3.5-fp8.yml` or `minimax-m2.7-awq.yml`
-   - per-node small → start from `qwen3-coder-nvfp4-dual.yml` (two engines) or
-     `qwen3-coder-nvfp4-single.yml` (one)
+   - single-node small → start from `qwen3-coder-nvfp4-single.yml` (snoopy, TP=1)
 3. **Pick `gpu_memory_utilization` and `max_model_len`** per
    [`profile-tuning.md`](profile-tuning.md) — decide your *outside-headroom*
    target first, give vLLM the rest.

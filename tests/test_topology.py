@@ -48,14 +48,17 @@ def test_big_shared_tp2():
     assert e.served_as == "minimax-m2"
 
 
-def test_dual_is_two_single_node_engines():
-    p = topology.load_profile("qwen3-coder-nvfp4-dual")
-    assert len(p.engines) == 2
-    assert {e.nodes for e in p.engines} == {("sparky",), ("snoopy",)}
-    for e in p.engines:
-        assert not e.is_multinode
-        assert e.tensor_parallel_size == 1
-        assert e.api_node == e.nodes[0]
+def test_single_node_profile_runs_on_snoopy():
+    # Single-node profiles serve on snoopy by design — sparky is the head (frontends)
+    # and the dev node. The per-node "-dual" duplicate shape was retired (no value
+    # without a round-robin fronting the two endpoints). See docs/profiles.md.
+    p = topology.load_profile("qwen3-coder-nvfp4-single")
+    assert len(p.engines) == 1
+    e = p.engines[0]
+    assert e.nodes == ("snoopy",)
+    assert not e.is_multinode
+    assert e.tensor_parallel_size == 1
+    assert e.api_node == "snoopy"
 
 
 def test_gmu_string_parses_to_float():
@@ -64,6 +67,7 @@ def test_gmu_string_parses_to_float():
 
 
 def test_per_profile_vllm_image_override():
-    # dual pins the 26.06 image; the big-shared default leaves it unset (group_vars).
-    assert topology.load_profile("qwen3-coder-nvfp4-dual").vllm_image is not None
+    # the single-node coder pins the 26.06 image; the big-shared default leaves it
+    # unset (group_vars).
+    assert topology.load_profile("qwen3-coder-nvfp4-single").vllm_image is not None
     assert topology.load_profile("minimax-m2.7-awq").vllm_image is None

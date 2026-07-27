@@ -1,15 +1,41 @@
 ---
 # Install one model (`model` is the loop var: a dir name under the model stores).
 # Mirrors the old install-step2.sh: a same-filesystem `mv` from staging, then
-# chown to the vllm user. Idempotent — skips if already installed.
+# chown to the vllm user. Idempotent — skips if already installed, OR if the staged
+# copy is still downloading / partial (has *.incomplete files). The latter makes it
+# SAFE to run a deploy while `sparky download` is staging into the inbox: an
+# in-flight (or crashed-partial) download is left alone and ingested on a later
+# deploy once complete — instead of `mv`-ing a half-written model into the canonical
+# store (which also breaks the running download). See docs/updating.md.
 
 - name: Check whether {{ model }} is already installed
   ansible.builtin.stat:
     path: "{{ vllm_models_dir }}/{{ model }}/config.json"
   register: model_installed
 
-- name: Install {{ model }} from staging
+- name: Check whether {{ model }} is still downloading (has *.incomplete)
+  ansible.builtin.find:
+    paths: "{{ model_cache_dir }}/{{ model }}"
+    patterns: "*.incomplete"
+    recurse: true
+    hidden: true
+  register: model_partial
   when: not model_installed.stat.exists
+
+- name: Skip {{ model }} — download in progress / partial, not ready to ingest
+  ansible.builtin.debug:
+    msg: >-
+      Skipping {{ model }}: {{ model_partial.matched }} *.incomplete file(s) in the inbox
+      — a download is in progress or was interrupted. It will be ingested on a later
+      deploy once complete.
+  when:
+    - not model_installed.stat.exists
+    - (model_partial.matched | default(0) | int) > 0
+
+- name: Install {{ model }} from staging
+  when:
+    - not model_installed.stat.exists
+    - (model_partial.matched | default(0) | int) == 0
   block:
     - name: Verify staged copy exists ({{ model }})
       ansible.builtin.stat:

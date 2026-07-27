@@ -3,6 +3,27 @@ name: model-discovery
 description: Find new models or quantizations that fit this cluster — search HuggingFace (via the `hf` CLI) AND scour the dual-DGX-Spark community (NVIDIA forums, vLLM issues) for what actually runs on GB10. Use when asked to check for better models, newer quantizations, or what's new that fits.
 ---
 
+## Priority tiers — what this cluster is FOR
+
+Two GB10 nodes were bought and wired with 200 Gbit RoCE **specifically to run one model
+across both, dedicated** — maximum intelligence and speed, both machines fully committed.
+Rank every sweep by these tiers:
+
+- **Tier 1 — the point.** The **smartest model that fits TP=2 fully-committed across both
+  nodes and still runs reasonably fast** — multimodal too, when the container supports its
+  vision path. This flagship slot is the primary job. "Fully committed" means filling the
+  ~215 GiB two-node budget (~108 GiB/node) with the best weights — a candidate that only
+  fits by leaving a node or half the RAM idle is *under-using the hardware*, not winning.
+- **Tier 2 — secondary / experimental.** Single-node (`-single`, on snoopy by design) and
+  dev-headroom profiles exist only to spare a node for experimentation. **"Frees a node" is a cost here,
+  not a feature.**
+
+So a sweep leads with the Tier-1 question: *is the current flagship still the smartest
+fast-enough model that fills both nodes?* Everything else is secondary. When Tier-1
+candidates are close on intelligence+speed, **vendor/region diversity is a tiebreaker** —
+the suite is currently all-Chinese, so a strong European option (Mistral especially) or
+other diversity is a plus, all else near-equal.
+
 ## Cluster Constraints
 
 - **Hardware:** 2× NVIDIA GB10 (SM 12.1), 121 GiB unified memory each
@@ -15,6 +36,12 @@ description: Find new models or quantizations that fit this cluster — search H
   - Big-shared TP=2 with dev headroom (`gmu` ~0.75): each shard ≤ ~85 GiB.
   - Per-node single-engine (no TP): weights ≤ ~50–70 GiB depending on
     desired headroom.
+  - **The 2-node ceiling is ~215 GiB total weights** (TP=2 fully-committed). As of
+    2026-07 the open *frontier* has outgrown it: GLM-5.2 (~350–450 GiB NVFP4),
+    Qwen3.5-397B / MiniMax-M3 (~234 GiB), Kimi-K2.7 all need 4–8 GPUs. Don't burn a
+    sweep re-confirming they don't fit — the productive band for this cluster is the
+    tier below (~50–160 GiB: Nemotron-Super-120B, Mistral-Medium-128B, the 30–75B
+    NVFP4 line). Note frontier models only to record *why* they're out of range.
 - **Current loadout varies** — check `/opt/cluster/current-topology.json`,
   the panel at `/admin`, or [`docs/profiles.md`](../../docs/profiles.md) for the
   active profile.
@@ -29,9 +56,19 @@ it's structured, scriptable, and can size a repo *without downloading it*.
   - Filter to what fits: **`--num-parameters 'min:100B,max:250B'`** (maps to our
     TP=2 window), plus `--filter fp8` / `--filter modelopt` (NVFP4) / `--filter awq`.
   - Machine-readable: add `--json` (or `--format agent`).
+  - **NVFP4 lives under the `nvidia/` org.** For the proven GB10 path (modelopt FP4),
+    the calibrated quant is usually published by NVIDIA — for its *own* models
+    (Nemotron) *and* third-party (Mistral-Medium, Qwen3-VL, Gemma, GLM). Sweep it
+    directly: `hf models ls --author nvidia --filter modelopt --sort last_modified`.
+    A community NVFP4 is often RTN/uncalibrated — prefer the `nvidia/` calibrated one
+    when it exists (checked 2026-07: it increasingly does).
 - **Inspect:** `hf models info <repo>` (metadata + tags) · `hf models card <repo>` (model card).
 - **Size a quant BEFORE downloading:** `hf models ls <repo> --tree -h`, then sum the
   `*.safetensors` sizes. Disk ≈ VRAM footprint for quantized weights.
+  - **`-h` reports SI GB (÷10⁹); the memory math is in GiB (÷2³⁰).** Convert:
+    `GiB = GB / 1.0737` (~7% smaller). Calibrated 2026-07 against the measured
+    incumbent (Step-3.5-FP8: `hf` ~207 GB → 193 GiB actual). Skip this and every
+    fit call runs ~7% optimistic.
 
 Examples:
 - Successors/quants of what we run: `hf models ls --author stepfun-ai --sort last_modified`
@@ -101,8 +138,8 @@ highest quality that loads with acceptable headroom) and present *that* as the c
 model's quants are not competing options to A/B — the quant is chosen to fit the hardware
 (e.g. for a big-shared TP=2 slot, take NVFP4 over FP8 when NVFP4 fits with headroom and FP8 is
 fully-committed). Profiles are named with the `<model>-<version>-<quant>` triple — the chosen
-quant *is* in the name (`step-3.5-fp8`, `minimax-m2.7-nvfp4`), plus a `-single`/`-dual` topology
-suffix for the per-node shapes. Quant-to-fit still governs *which* quant you pick; the name
+quant *is* in the name (`step-3.5-fp8`, `minimax-m2.7-nvfp4`), plus a `-single` topology
+suffix for the single-node (snoopy) shape. Quant-to-fit still governs *which* quant you pick; the name
 just records it.
 
 Using the searches above (and vLLM release notes / leaderboards for context), look for:
@@ -134,3 +171,19 @@ For each candidate, report:
 - Why it's better or worse than what we're running
 
 Flag anything that needs investigation before committing to a download.
+
+## Self-improvement — leave this skill sharper than you found it
+
+Every sweep teaches two different things; file each in its home:
+
+- **What you found** (models, quants, sizes, GB10 viability) → the findings: a dated
+  `scouting-reports/<YYYY-MM>-*.md`, `docs/models/<model>.md` fact sheets, and
+  `docs/upgrades/` trackers (see [[model-evaluation]]). Not here.
+- **How discovery went** (the *method*) → **this skill.** In the same change set, fold
+  back what you learned about *searching*: an `hf` query/filter that surfaced fits (or
+  one that wasted time), a new community source that had the answer, a sizing gotcha, a
+  calibration that saves the next sweep from re-checking dead ends. Add the query that
+  worked; retire the one that didn't.
+
+A sweep that taught you something about how to search but left this skill unchanged
+threw that lesson away. Keep the edits concrete and small — this is a living instrument.

@@ -1,14 +1,11 @@
 ---
-# Profile: qwen3-coder-nvfp4-single — Qwen3-Coder-Next (NVFP4) on snoopy only.
-# Sparky is free for workstation-driven dev; snoopy serves one coder endpoint.
+# Profile: qwen3-coder-nvfp4-single — Qwen3-Coder-Next (NVFP4) on snoopy, TP=1.
+# Single-node serving runs on snoopy by design: sparky is the head (Open WebUI,
+# Caddy, control panel, metrics) and the workstation-driven dev node, so single-node
+# models serve on the resource-richer snoopy. Requires the 26.06 container (NVFP4).
 #
-# The engine here is byte-identical to qwen3-coder-nvfp4-dual's qwen3-coder-snoopy
-# entry (same name, served_as, flags). Effect: switching single <-> dual only
-# adds/removes the sparky engine — snoopy keeps serving without a restart (the
-# vllm role only restarts a unit when its rendered content actually changes).
-#
-# See qwen3-coder-nvfp4-dual.yml for the memory math and the "why per-node, not
-# TP=2" rationale. Requires the 26.06 container (NVFP4).
+# Memory math (gmu 0.55) and the "why per-node, not TP=2" rationale for the small
+# NVFP4 models: see docs/profile-tuning.md.
 
 profile_name: qwen3-coder-nvfp4-single
 vllm_image: dgx-spark/vllm:26.06-fastapi-fix
@@ -21,7 +18,7 @@ serving_topology:
     served_as: qwen3-coder-snoopy
     tensor_parallel_size: 1
     gpu_memory_utilization: "0.55"
-    max_model_len: 262144        # matches qwen3-coder-nvfp4-dual's snoopy byte-for-byte
+    max_model_len: 262144
     head_extra_args:
       - --enable-chunked-prefill
       - --enable-auto-tool-choice

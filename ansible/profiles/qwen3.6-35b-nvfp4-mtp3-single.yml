@@ -1,0 +1,35 @@
+---
+# Profile: qwen3.6-35b-nvfp4-mtp3-single — Qwen3.6-35B-A3B (NVFP4) on snoopy, TP=1,
+# MTP-3 speculative decoding ENABLED. Single-node serving runs on snoopy by design
+# (sparky = head/frontends + dev). Requires the 26.06 container.
+#
+# MTP-3 is KEEP per ADR-0014 (A/B 2026-07-27): single-stream decode 2.3× faster
+# (TPOT 37.6→16.6 ms, ~27→~60 tok/s), stable, exact output. TEXT-ONLY (MTP corrupts
+# image number-reads). Memory math (gmu 0.55) + the max_num_batched_tokens follow-up:
+# see docs/profile-tuning.md and ADR-0014's register.
+
+profile_name: qwen3.6-35b-nvfp4-mtp3-single
+vllm_image: dgx-spark/vllm:26.06-fastapi-fix
+serving_topology:
+  - name: qwen3.6-35b-snoopy
+    kind: vllm
+    nodes: [snoopy]
+    port: 8000
+    model: Qwen3.6-35B-A3B-NVFP4
+    served_as: qwen3.6-35b-snoopy
+    tensor_parallel_size: 1
+    gpu_memory_utilization: "0.55"
+    max_model_len: 262144
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --kv-cache-dtype fp8
+      - --enable-auto-tool-choice
+      - --tool-call-parser qwen3_xml
+      - --reasoning-parser qwen3
+      - "--speculative-config '{\"method\": \"mtp\", \"num_speculative_tokens\": 3}'"
+    worker_extra_args: []
+
+enable_open_webui: true
+enable_reverse_proxy: true
+enable_control_panel: true
+enable_metrics: true

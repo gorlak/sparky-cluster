@@ -74,7 +74,7 @@ node keeps **~30 GiB free**. Single/few-user serving still gets ample KV for
 long context with some batching. You can dev on sparky concurrently, or run
 snoopy as a distcc backend, etc.
 
-### Small-and-dev-friendly (e.g. `qwen3-coder-nvfp4-dual`, `qwen3.6-35b-nvfp4-single` at gmu 0.55)
+### Small-and-dev-friendly (e.g. `qwen3-coder-nvfp4-single`, `qwen3.6-35b-nvfp4-mtp3-single` at gmu 0.55)
 Small models that comfortably fit in well under half their node's memory. **~55 GiB
 free per node** for user work; serving still gets plenty of KV for several
 concurrent long-context sequences.
@@ -114,7 +114,7 @@ Numbers from measured deploys, 2026-05.
 | Attention | hybrid `qwen3_next` — only 12/48 layers full attention → tiny KV |
 | **At gmu 0.55 (current)**: budget ~66 GiB − ~45 weights → **~20 GiB KV**, headroom **~55 GiB** | KV is cheap; many concurrent 32–64k sessions |
 
-### Qwen3.6-35B-A3B-NVFP4 — `qwen3.6-35b-nvfp4-single`/`-dual`, TP=1 per node
+### Qwen3.6-35B-A3B-NVFP4 — `qwen3.6-35b-nvfp4-mtp3-single`/`-dual`, TP=1 per node
 | | value |
 |---|---|
 | Weights | **~22 GiB** (35B-A3B, nvidia modelopt NVFP4, FP8 KV baked in) |

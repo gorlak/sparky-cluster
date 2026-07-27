@@ -65,9 +65,12 @@ state and tears down / reconfigures / brings up as needed.
 
 Profiles live at `ansible/profiles/<name>.yml`; each captures the full
 `serving_topology` (engines, models, nodes, ports, `gmu`, `max_model_len`) plus
-front-end toggles. Names are the `<model>-<version>-<quant>` triple; a
-`-single`/`-dual` suffix marks per-node (TP=1) shapes, while bare big-shared
-profiles are TP=2 across both nodes.
+front-end toggles. Names are the `<model>-<version>-<quant>` triple; a `-single`
+suffix marks the single-node (snoopy) TP=1 shape, while bare big-shared profiles are
+TP=2 across both nodes. Single-node serving runs on **snoopy by design** — sparky is
+the head (frontends) + dev node, so single-node models serve on the resource-richer
+worker. (The per-node `-dual` duplicate shape was retired: two independent endpoints
+of one model buy nothing without a round-robin fronting them.)
 
 | Profile | Shape |
 |---|---|
@@ -75,10 +78,8 @@ profiles are TP=2 across both nodes.
 | `step-3.7-nvfp4` | Step-3.7-Flash-NVFP4 TP=2 on 26.06 — **⛔ blocked** (upstream vLLM VL bug, DEF-0006; hidden from deploy UI) |
 | `minimax-m2.7-awq` | MiniMax-M2.7-AWQ TP=2 across both nodes (big-shared, ~30 GiB/node dev headroom) |
 | `minimax-m2.7-nvfp4` | MiniMax-M2.7-NVFP4 TP=2 on 26.06 — NVFP4 A/B vs the AWQ profile |
-| `qwen3-coder-nvfp4-dual` | Qwen3-Coder-Next (NVFP4) single-node on each node (~55 GiB/node dev headroom) |
-| `qwen3-coder-nvfp4-single` | Qwen3-Coder-Next (NVFP4) on snoopy only (sparky free for dev) |
-| `qwen3.6-35b-nvfp4-dual` | Qwen3.6-35B-A3B (NVFP4) single-node on each node — reasoning-generalist A/B vs coder |
-| `qwen3.6-35b-nvfp4-single` | Qwen3.6-35B-A3B (NVFP4) on snoopy only (sparky free for dev) |
+| `qwen3-coder-nvfp4-single` | Qwen3-Coder-Next (NVFP4) on snoopy, TP=1 (sparky free for dev) |
+| `qwen3.6-35b-nvfp4-mtp3-single` | Qwen3.6-35B-A3B (NVFP4, **MTP-3**) on snoopy — reasoning-generalist; 2.3× single-stream decode (ADR-0014) |
 | `empty` | nothing serving; full hardware available |
 
 See [`docs/profiles.md`](docs/profiles.md) for what each serves and how to switch;
@@ -262,8 +263,8 @@ sparky's head unit allows `TimeoutStartSec=1200` for snoopy to join. Open WebUI 
 
 1. Stage weights: `./sparky.sh download <hf-repo>`.
 2. Copy an existing profile that matches your shape (`step-3.5-fp8.yml` /
-   `minimax-m2.7-awq.yml` for big-shared TP=2; `qwen3-coder-nvfp4-*` for per-node)
-   to `profiles/<name>.yml` and edit.
+   `minimax-m2.7-awq.yml` for big-shared TP=2; `qwen3-coder-nvfp4-single.yml` for
+   single-node on snoopy) to `profiles/<name>.yml` and edit.
 3. `./sparky.sh deploy <name>` — Ansible re-templates the units and restarts.
 
 Memory budgeting is **per-profile**: `gpu_memory_utilization` is a deliberate split
@@ -354,9 +355,11 @@ sweeps the whole fleet — verify every profile (deploy → smoke regression), r
 benchmarks across every model-hosting profile (deploy → bench → store), and update
 models. This builds on `sparky deploy` as a programmable primitive (loop + assert),
 plus a scoped non-interactive deploy-context and durable breadcrumbs so a multi-hour
-sweep resumes and quarantines a node-killer profile instead of re-freezing. Also:
-voice mode (STT/TTS) alongside Open WebUI, and re-enabling the tabled perf options
-(ADR-0014).
+sweep resumes and quarantines a node-killer profile instead of re-freezing. This is now
+specified as the **continuous-evaluation outer loop** — human-authorized, agent-driven
+sweeps measuring quality vs. performance per tier — in
+[ADR-0016](docs/adr/0016-continuous-evaluation-outer-loop.md). Also: voice mode
+(STT/TTS) alongside Open WebUI, and re-enabling the tabled perf options (ADR-0014).
 
 ---
 
