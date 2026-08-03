@@ -358,7 +358,11 @@ plus a scoped non-interactive deploy-context and durable breadcrumbs so a multi-
 sweep resumes and quarantines a node-killer profile instead of re-freezing. This is now
 specified as the **continuous-evaluation outer loop** — human-authorized, agent-driven
 sweeps measuring quality vs. performance per tier — in
-[ADR-0016](docs/adr/0016-continuous-evaluation-outer-loop.md). Also: voice mode
+[ADR-0016](docs/adr/0016-continuous-evaluation-outer-loop.md) (the loop, the CI-style
+sweep matrix of profile × variant × regiment, and the eval concepts), with the serving
+control model — **`deploy`** (convergent whole-fleet provisioning) + **`activate`** (an
+unprivileged selection reconciler), and **no web-API path to root** — in
+[ADR-0018](docs/adr/0018-provision-select-split.md). Also: voice mode
 (STT/TTS) alongside Open WebUI, and re-enabling the tabled perf options (ADR-0014).
 
 ---

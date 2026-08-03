@@ -1,7 +1,15 @@
 # ADR-0017: `sparky prune` — model removal as a deploy-context fleet operation
 
 **Date:** 2026-07-27
-**Status:** Proposed
+**Status:** Rejected — subsumed by [ADR-0018](0018-provision-select-split.md)
+
+> **Rejected 2026-07-29.** ADR-0018 makes `deploy` **convergent** — it reconciles the model
+> store to the allowlist, deleting de-allowlisted weights fleet-wide (plan-and-confirm,
+> never the active model, weights-only). So model removal is *"take it out of the allowlist,
+> `deploy`"* — no separate `prune` command and no per-node `sudo rm`. One mechanism handles
+> add and remove; a standalone `prune` is redundant. The problem framing below (removal was a
+> manual per-node sudo dance) still holds and motivated the convergent-`deploy` decision;
+> the proposed *command* is what's rejected.
 
 ## Context
 

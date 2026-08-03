@@ -1,141 +1,125 @@
-# ADR-0016: Continuous model-evaluation outer loop (human-authorized, agent-driven sweeps)
+# ADR-0016: Continuous model-evaluation outer loop (human-authored, agent-driven sweeps)
 
-**Date:** 2026-07-27
+**Date:** 2026-07-27 (scoped 2026-07-29: the deploy/activate mechanism and authorization
+model moved to ADR-0018; this ADR keeps the loop, the sweep representation, and the eval
+regiments)
 **Status:** Proposed
 
 ## Context
 
-The cluster's purpose is to serve the **smartest model that fits**, per tier, and to
-keep that current as models release (see the fleet-priority north star:
-Tier-1 = one model TP=2 fully-committed across both nodes; secondary tiers are
-experimental). Deciding "what's best right now" is not a one-time choice — it's a
-**standing, measured question**. A model discovery sweep (skills/model-discovery) tells
-us which candidates *might* win; only deploying and measuring them tells us which
-*does*.
+The cluster serves the **smartest model that fits**, per tier, and must keep that current as
+models release (fleet-priority north star: Tier-1 = one model TP=2 fully-committed across both
+nodes; secondary tiers experimental). "What's best right now" is a **standing, measured
+question** — model discovery says which candidates *might* win; only deploying and measuring
+says which *does*.
 
-Today that measurement is **manual and human-hand-held**. Each candidate is: a human
-runs `./sparky.sh deploy <profile>` (password-gated), waits, a human/agent runs
-`./sparky.sh bench`, reads numbers, repeats. The MTP-3 A/B on `qwen3.6-35b` (2026-07)
-is a representative dry-run: deploy → bench baseline → deploy variant → bench → compare —
-with a person crossing the one password gate at each step. That does not scale to
-"evaluate every candidate we just acquired, at its best, across two tiers."
+Today that measurement is manual and hand-held: `activate` a model, wait, `bench`, read
+numbers, repeat. The MTP-3 A/B on `qwen3.6-35b` (2026-07) was the representative prototype —
+and it doesn't scale to "evaluate every candidate we acquired, at its best, across two tiers."
 
-**Most of the substrate is now built:**
-- `sparky` is a programmable operator primitive (ADR-0015) — deploy/bench/report/smoke
-  are importable functions, not just a CLI.
-- Fail-safe boot (ADR-0009) means a bad bring-up lands a node **empty and reachable**,
-  not bricked — so an *unattended* risky deploy is recoverable.
-- The smoke gate (ADR-0012 / ADR-0011) fails a corrupt engine **before** it's recorded
-  live; the benchmark regiment (ADR-0012) is the throughput half of "how good is it."
-- Container images are reproducible artifacts (ADR-0013) — a candidate blocked on
-  upstream support can be **built** (a derived image) rather than skipped.
-- This session added the observability an unattended loop needs: a **no-sudo live
-  status** surface (`/status.json`, `sparky status`, exit-code = health) and a **durable
-  deploy-gate breadcrumb** (`last-smoke.json`, written pass *or* fail), plus guards so
-  a deploy is safe while downloads stage (`*.incomplete` skip) and bench no longer
-  crashes on worker-node engines.
+The substrate is built: `sparky` is a programmable primitive (ADR-0015); fail-safe boot
+(ADR-0009) makes an unattended bad bring-up recoverable; the smoke gate + bench regiment +
+label-keyed trend store (ADR-0012) are the correctness and throughput halves of "how good is
+it"; images are reproducible (ADR-0013). And **ADR-0018** gives the loop what it needs to run
+without per-step hand-holding: `deploy` (human, convergent provisioning) + `activate` (the
+unprivileged, agent-drivable operation that swaps the live model), with the security boundary
+that makes agent-driven activation safe.
 
-**What's missing** is the loop itself, and specifically:
-1. **A non-interactive deploy path.** `./sparky.sh deploy` shells `sudo -u deploy …`,
-   which prompts for the human's password — the deliberate automation gate from the
-   three-tier identity model (ADR-0001). An agent cannot cross it. *But* the control
-   panel (ADR-0008) already runs as `User=deploy` (NOPASSWD) and deploys by invoking
-   `ansible-playbook` directly — the un-gated deploy-context already exists; it is just
-   not exposed as a clean, scoped, agent-callable primitive.
-2. **An industry-standard quality signal.** We have multiturn-corruption smoke and
-   throughput bench, but no standardized *quality* eval (MMLU-Pro / LiveBench-class) to
-   put a "how smart, measured here" number next to the tok/s.
-3. **The guardrails** an unattended multi-hour sweep needs: an allowlist of what may be
-   deployed, per-candidate soak, quarantine of a node-killer, and durable breadcrumbs so
-   the sweep resumes after a hang/restart instead of re-running or re-freezing.
-
-The crux is a **trust-boundary decision**: ADR-0001 made `deploy` a password-gated
-context for the human on purpose. A continuous loop requires letting an agent reshape
-serving without that password. That is not a capability gap — the seam exists — it is a
-decision about *how much* autonomy to grant, and *within what envelope*.
+**What's missing is the loop itself:** a way to *represent* an evaluation phase, the missing
+*quality* signal (we have corruption-smoke + throughput bench, but no MMLU-Pro/LiveBench-class
+number), and a runner that executes a phase unattended.
 
 ## Options considered
 
-**A. Stay fully manual (status quo).** A human runs every deploy; the agent only benches
-and reports. Zero new trust surface. Rejected as the end state: it makes keeping the
-fleet current an open-ended human chore (hours of hand-holding per candidate) and
-squanders the fail-safe + smoke + breadcrumb substrate that exists precisely to make
-unattended deploys safe. It remains the fallback when no sweep is authorized.
+**A. Stay manual.** A human drives every activation and reads every number. Zero new surface,
+but it keeps fleet-currency an open-ended chore and wastes the fail-safe/smoke/trend substrate
+built to make unattended runs safe. Remains the fallback; rejected as the end state.
 
-**B. Give the agent the deploy password / broad NOPASSWD sudo.** Simplest to wire, and
-catastrophic: it dissolves the three-tier identity model (ADR-0001) — an agent with
-unrestricted root is exactly what that separation prevents. An agent bug or bad prompt
-could do anything to either node. Rejected outright.
+**B. Bespoke scripts per evaluation.** Write a one-off for each round. Fast to start, but no
+shared representation, no resume, no reuse across rounds — every phase reinvented. Rejected.
 
-**C. A scheduled autonomous daemon.** A service that runs sweeps on a cron with no human
-in the loop per-sweep. Deferred, not rejected — it's a plausible *evolution* of D once
-D is trusted, but starting there over-grants autonomy before the loop's failure modes
-are understood on this hardware.
-
-**D. Human-authorized, agent-driven sweeps through the deploy-context (chosen).** Expose
-a **scoped, allowlisted, non-interactive** deploy primitive that routes through the
-existing `User=deploy` control-panel context (never the human's password, never broad
-sudo). A human **authorizes a sweep** — a candidate queue plus an envelope (which
-profiles, soak duration, which evals) — and the agent is autonomous *within* it: deploy →
-soak → eval → record → next, quarantining failures. The trust boundary is crossed only
-inside a bounded, observable, abortable sweep.
+**C. A declarative CI-style matrix sweep, human-authored and kicked, agent-driven (chosen).**
+The phase is *data* — a matrix of models × variants × regiments — that a human authors,
+reviews, and kicks; the agent runs it to completion, recording as it goes. Planning is forced
+up front; execution is uniform and resumable.
 
 ## Decision
 
-**Option D.** Build a **continuous model-evaluation outer loop**: a human-authorized,
-agent-driven sweep that, per tier and within that tier's hardware envelope, measures
-**quality vs. performance** for a queue of candidate profiles.
+**Option C.** Build a continuous model-evaluation outer loop — a human-authored, agent-driven
+sweep that measures **quality vs. performance** per tier.
 
-Design:
+### The sweep as a CI-style matrix (profile × variant × regiment)
+```yaml
+name: candidate-eval-r1
+matrix:                          # profile × variant = what gets DEPLOYED (sequential)
+  profile:
+    - {name: mistral-medium-3.5-nvfp4, tags: [multimodal, big-shared]}
+    - {name: nemotron-puzzle-75b-single, tags: [reasoning, mtp-capable]}
+  variant: [base, {knob: mtp, needs_tag: mtp-capable}, {knob: fp8-kv+prefix}]
+regiments:                       # what RUNS against each live model (cheap)
+  - smoke
+  - bench:   [latency, throughput, prefix]
+  - quality: [mmlu-pro, livebench]
+  - soak:    {minutes: 10}          # longer only for DEF-0002-risky TP=2/26.06 candidates
+exclude:
+  - {regiment: quality, profile_tag: single-node}
+```
 
-- **Non-interactive deploy primitive.** A `sparky` entrypoint (e.g. `sparky sweep` /
-  a deploy call with an explicit non-interactive flag) that triggers deploy/teardown via
-  the deploy-context — reusing the control panel's `User=deploy` seam (ADR-0008), not
-  `sudo -u deploy`. It accepts **only allowlisted profiles** (never `blocked: true`),
-  and every deploy runs behind fail-safe boot (ADR-0009) and the smoke gate (ADR-0012).
-- **The loop, per candidate:** publish/deploy → **soak** (a multi-hour hold that catches
-  the deadlock class, e.g. DEF-0002, which strikes 35–55 min in — a clean bring-up is
-  necessary but not sufficient) → **quality eval** → **performance bench** (the ADR-0012
-  regiment) → **record** a quality-vs-performance row to the trend store (ADR-0012's
-  SQLite store) → next.
-- **Quality-eval harness (new).** A standardized eval (lm-eval-harness or a curated
-  MMLU-Pro/LiveBench-class set) run against the engine's OpenAI-compatible endpoint,
-  recorded next to the bench numbers so "smart vs. fast within the tier" is one query.
-- **Guardrails:** a **profile allowlist**; a per-candidate **soak timeout**;
-  **quarantine** — a candidate that hangs a node is marked and skipped, and the sweep
-  resumes (rather than re-deploying the node-killer); **durable breadcrumbs** (extending
-  `current-topology.json` / `last-smoke.json`) so a sweep survives a hang/hard-reset and
-  resumes where it left off; and **node-aware benching** (bench any engine on its node,
-  closing the worker-engine gap hit in 2026-07).
-- **Authorization model:** the **human authorizes a sweep** (queue + envelope: profiles,
-  soak length, evals) and can abort it; the **agent is autonomous within that scope**.
-  No standing blanket autonomy. Every action is observable live (no-sudo `/status.json`)
-  and left as a durable breadcrumb, so the sweep is auditable after the fact.
+- **Sequential by activation, unlike CI.** Only one model is live at a time, so profile×variant
+  is the outer, serial loop — each combo is one `activate` (ADR-0018) — and regiments run
+  against the live model (cheap). The runner expands `matrix` → filtered job list
+  (`exclude`/`needs_tag`) → sequential activate-and-regiment loop, with durable **breadcrumbs**
+  to resume after an interruption and **quarantine** a node-killer (mark, skip, continue).
+- **Optimization A/Bs are just the `variant` axis** — no special machinery; since the trend
+  store keys by label, comparison falls out for free (`report base mtp`). The ADR-0014 register
+  becomes "add a variant."
+- **Regiments are pluggable:** `smoke`/`bench` exist; `quality` and `soak` are to build.
+  - **`quality`** — a standardized eval against the endpoint (recorded next to the bench
+    numbers). Note the cost: full MMLU-Pro/LiveBench is *hours per variant*, impractical across
+    a matrix — so it runs a **subset / fast proxy**, sized deliberately, not the whole suite.
+  - **`soak`** — a hold that catches instability a clean bring-up misses. **Default 10 min**;
+    but the DEF-0002 deadlock class strikes **35–55 min in**, so 10 min *cannot* catch it — a
+    longer soak (45–60 min) is a **per-candidate knob** for the DEF-0002-risky TP=2/26.06
+    profiles. A blanket 10 min would pass slow deadlocks through the gate.
+  - **Node-aware benching** (bench any engine on its node) is a prerequisite fix, hit during
+    the MTP-3 A/B.
+
+### How it runs (mechanism → ADR-0018)
+The human authors + kicks a sweep by **adding its `(profile × variant)` set to the allowlist
+and running `deploy`** (convergent, whole-fleet, password-gated — the out-of-band
+authorization). The agent then **`activate`s** across the deployed set, running regiments and
+recording — no privilege, no per-step hand-off. A sweep **commandeers the cluster**: only one
+model is live at a time, so the human-facing serving (Open WebUI / the stable endpoint) is
+**suspended for the sweep's duration** and restored on completion — no collision between eval
+traffic and chat. The deploy/activate control model, the selector, the stable serving surface,
+and the authorization/trust boundary are all in **[ADR-0018](0018-provision-select-split.md)**.
 
 ## Consequences
 
-- **The platform, not a chore.** Keeping the fleet current becomes an authorized sweep
-  the agent runs for hours, instead of a human deploying and reading numbers one model
-  at a time. This is the fleet-orchestrator north star realized.
-- **The trust boundary is crossed deliberately and narrowly.** Autonomy is granted
-  *inside a scoped, time-boxed, allowlisted, observable, abortable sweep* through the
-  existing deploy-context — not by handing the agent the human's password or root
-  (contrast Option B). ADR-0001's separation is preserved for everything outside a sweep.
-- **Operationalizes prior ADRs.** The loop *runs* the ADR-0014 optimization A/Bs (MTP-3,
-  FP8-KV/prefix re-test) automatically; consumes ADR-0012's bench regiment as its perf
-  half; uses ADR-0013 to build-to-unblock candidates; and is fed by the model-discovery
-  sweeps. It stands on ADR-0009 (safe unattended bring-up), ADR-0015 (the programmable
-  primitive), and this session's status/breadcrumb + ingest/bench hardening.
-- **New build surface**, each incremental: the non-interactive deploy trigger +
-  allowlist, the quality-eval harness, quarantine/breadcrumb state, and node-aware
-  benching. Node-aware benching and the deploy primitive are the first concrete items
-  (both were hit as gaps during the 2026-07 MTP-3 A/B).
-- **A new authorization surface to get right.** An allowlist and a scoped sweep are only
-  as safe as their enforcement; the primitive must refuse anything off-allowlist and the
-  quarantine must actually stop a re-freeze. These are the load-bearing details to
-  validate before trusting a long unattended sweep.
+- **The platform, not a chore.** Candidate evals + the ADR-0014 optimization register run as one
+  kicked matrix-sweep instead of dozens of hand-offs. The fleet-orchestrator north star realized.
+- **Planning is designed-in.** Authoring the matrix forces up-front reasoning about which models,
+  variants, and regiments apply.
+- **Reuse over rebuild.** The trend store gives free comparison; ADR-0018 gives deploy/activate;
+  the discovery sweeps feed the queue; ADR-0013 builds-to-unblock candidates.
+- **New build surface:** the matrix expander + sweep runner (breadcrumbs, quarantine); the
+  quality-eval harness; the soak monitor; node-aware benching. (The control model — selector,
+  stable endpoint, no-sudo `activate` — is ADR-0018's build.)
+- **Relationships.** Depends on ADR-0018 (the how) and ADR-0012 (bench + trend store); stands on
+  ADR-0009 (safe unattended bring-up) and ADR-0015 (programmable primitive); operationalizes
+  ADR-0014 (runs its A/Bs) and the model-discovery sweeps.
 
-Implementation lands incrementally; this ADR flips to **Accepted** when the first
-end-to-end sweep (authorize → deploy → soak → eval → bench → record → next, with
-quarantine) runs unattended. Build/progress tracking lives in the README / TODO, not in
-this status.
+## Test plan (following ADR-0011's layered regiment)
+
+- **Layer 2/3 (no hardware):** the **matrix expander** (`matrix × exclude × needs_tag → job
+  list`); the **quarantine/resume** breadcrumb logic (a node-killer is marked and skipped; a
+  sweep resumes at the right job after an interruption); regiment selection per profile tags.
+- **Integration:** a 2-job dry sweep on already-deployed profiles — `activate` → smoke → bench →
+  record → next — asserting the trend-store rows and resume-after-interrupt.
+- **Per regiment, as built:** `soak` — a hang is detected within the window (and the 10-min
+  default provably *doesn't* catch a >35-min stall, so DEF-0002-class candidates carry the
+  longer knob); `quality` — the subset harness records a score against the endpoint.
+
+Status flips to **Accepted** when a first human-kicked matrix-sweep runs end to end (deploy the
+set → activate → soak → eval → bench → record → next, with quarantine). Build/progress tracking
+lives in README / TODO, not this status.
