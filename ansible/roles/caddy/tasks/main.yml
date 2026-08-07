@@ -3,6 +3,27 @@
 # proxies chat.{{ web_domain }} to Open WebUI. Front-end for the cluster's web
 # services; grows as more roles add routes.
 
+# /admin basic_auth (ADR-0018 turns ADR-0008's seam on). The hash is a runtime
+# secret so it is never committed; without it the panel — which holds the activation
+# grant — would be open, so this refuses rather than degrading quietly.
+- name: Read the /admin basic_auth hash
+  ansible.builtin.slurp:
+    src: "{{ caddy_admin_hash_file }}"
+  register: admin_hash_raw
+  failed_when: false
+
+- name: Settle the /admin basic_auth hash
+  ansible.builtin.set_fact:
+    admin_basic_auth_hash: "{{ (admin_hash_raw.content | default('') | b64decode) | trim }}"
+
+- name: Assert the /admin basic_auth hash is set
+  ansible.builtin.assert:
+    that: admin_basic_auth_hash | length > 0
+    fail_msg: >-
+      /admin has no basic_auth hash at {{ caddy_admin_hash_file }}, and the control
+      panel holds the activation grant — it cannot be served open (ADR-0018).
+      Generate one, once:   ./sparky.sh admin-password
+
 - name: Ensure Caddy directories exist
   ansible.builtin.file:
     path: "{{ item }}"

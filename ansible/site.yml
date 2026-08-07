@@ -1,100 +1,103 @@
 ---
-# Bring the cluster to a profile's desired state.
-#   ./sparky.sh deploy step-3.5-fp8
-#   (or: ansible-playbook site.yml -e @profiles/step-3.5-fp8.yml)
+# Converge the FLEET to the allowlist (ADR-0018). No profile argument — `deploy`
+# means *deploy the fleet*, not *deploy one profile*:
 #
-# Plays run in order so services come up cleanly: prerequisites + models on all
-# nodes, then every vLLM engine in the profile's serving_topology is brought up
-# across all nodes, then we wait for each engine's API, then Ollama engines (pull
-# their models), then the front-end (Open WebUI auto-wires to both via the spec).
+#   ./sparky.sh deploy            # provision everything the allowlist declares
+#   ./sparky.sh deploy --evict    # …and reclaim the disk of de-allowlisted weights
+#   ./sparky.sh check             # dry-run (--check --diff); makes nothing
+#
+# This playbook *sets the boundary of what may run*. It is **selection-neutral**: it
+# preserves whatever is currently active if that profile is still allowlisted, and
+# otherwise falls to `empty` — it never auto-promotes a model. Choosing what serves
+# is `./sparky.sh activate <profile>`, which needs no root and touches none of this.
+#
+# Ansible is the `deploy` engine only — human-initiated and password-gated. It is
+# never the activation engine, and no web API can reach it.
 
-- name: Prerequisites and model (all nodes)
+- name: The fleet definition — every profile is the allowlist (all nodes)
+  hosts: all
+  gather_facts: true
+  roles:
+    - role: fleet
+      tags: [always]
+
+# Before anything touches weights or units: settle what stays selected. A profile
+# that left the allowlist is stopped here, so the store can be converged safely.
+- name: Preserve or fall back the current selection (sparky)
+  hosts: head
+  roles:
+    - role: selection
+      tags: [always]
+
+- name: Prerequisites, weights, and images (all nodes)
   hosts: all
   roles:
     - common
+    # Convergent, per-node: mirrors the models each node runs, plans (and with
+    # --evict, deletes) the ones no profile keeps any more.
     - role: model
       tags: [model]
-    # Container images (ADR-0013): guarantee every image a profile may select is
-    # present on every node — before the vllm play docker-runs any unit.
+    # Container images (ADR-0013): every image any profile may select, on every node.
+    # Left to Docker's GC on removal — shared base layers make convergent image
+    # deletion unsafe.
     - role: images
       tags: [images]
 
-- name: vLLM engines — configure and bring up (all nodes)
+# The serving surface: one template unit + one env file per allowlisted engine.
+# Installs, never starts.
+- name: vLLM engine surface (all nodes)
   hosts: all
   roles:
     - role: vllm
       tags: [vllm]
 
-- name: vLLM engines — wait for APIs to report ready (all nodes)
-  hosts: all
-  tasks:
-    - name: Wait for each engine's API where this host is the API node
-      ansible.builtin.include_role:
-        name: vllm
-        tasks_from: wait
-      tags: [vllm]
-
-- name: Ollama engines — configure, bring up, pull models (all nodes)
+# The activation boundary: the fixed reconciler and its two bounded triggers.
+- name: Activation reconciler and its grants (all nodes)
   hosts: all
   roles:
-    - role: ollama
-      tags: [ollama]
+    - role: activate
+      tags: [activate]
 
 - name: Open WebUI front-end (sparky)
   hosts: head
   roles:
     - role: open-webui
       tags: [webui]
-      when: enable_open_webui | default(true)
 
 - name: Control panel (sparky)
   hosts: head
   roles:
     - role: control-panel
       tags: [control-panel]
-      when: enable_control_panel | default(true)
 
 - name: Reverse proxy + landing page (sparky)
   hosts: head
   roles:
     - role: caddy
       tags: [proxy]
-      when: enable_reverse_proxy | default(true)
 
 - name: Metrics exporters (all nodes)
   hosts: all
   roles:
     - role: exporters
       tags: [metrics]
-      when: enable_metrics | default(true)
 
 - name: Prometheus (sparky)
   hosts: head
   roles:
     - role: prometheus
       tags: [metrics]
-      when: enable_metrics | default(true)
 
 - name: Grafana (sparky)
   hosts: head
   roles:
     - role: grafana
       tags: [metrics]
-      when: enable_metrics | default(true)
 
-# Quality gate (ADR-0012): probe the in-flight engines for readiness, the tool-call
-# shape Open WebUI sends, and multiturn output quality — BEFORE topology-state, so a
-# corrupt engine fails the deploy before it's recorded as the live topology.
-- name: Post-deploy smoke gate (sparky)
+# Last: record the fleet, then converge to the preserved selection without ever
+# restarting a healthy engine.
+- name: Record the fleet and converge the selection (sparky)
   hosts: head
   roles:
-    - role: smoke
-      tags: [smoke]
-
-# Record what was just deployed so the control panel (and "which profile is live?")
-# can read it. Last, so it reflects a fully brought-up topology.
-- name: Record deployed topology (state file)
-  hosts: head
-  roles:
-    - role: topology-state
-      tags: [topology, control-panel]
+    - role: fleet-state
+      tags: [always]

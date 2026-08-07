@@ -13,12 +13,16 @@
 # prompted for your password) and reaches snoopy over your existing SSH
 # (you'll be prompted for snoopy's sudo password too). Both are expected.
 #
-# Identity model (see also the conversation that produced this):
-#   geoff   — human admin, password sudo. Stays "just a user".
-#   deploy  — automation identity. NOPASSWD:ALL, owns the SSH keys + project.
-#             geoff enters this context via `sudo -u deploy …` (password-gated);
-#             a future dashboard runs as a systemd service with User=deploy.
-#   cluster — shared group so geoff + deploy can both edit /opt/cluster.
+# Identity model (ADR-0001, tightened by ADR-0018):
+#   geoff     — human admin, password sudo. Stays "just a user".
+#   deploy    — automation identity. NOPASSWD:ALL, owns the SSH keys + project.
+#               geoff enters this context via `sudo -u deploy …` (password-gated),
+#               and since ADR-0018 that is the ONLY way in: no service runs as
+#               deploy, so no web API can reach passwordless root.
+#   activator — the low-privilege activation identity: runs the control panel and is
+#               what an agent acts as. Created by the `activate` ROLE, not here — it
+#               needs nothing that Ansible can't do, so it stays out of bootstrap.
+#   cluster   — shared group so geoff + deploy can both edit /opt/cluster.
 #
 # What it sets up on BOTH nodes:
 #   - user `deploy` (home + /bin/bash)
@@ -169,4 +173,6 @@ log "  • Source of truth: the git repo at $SCRIPT_DIR."
 log "  • $CLUSTER_DIR/ansible is the published runtime copy deploy runs from."
 log "  • Log out and back in (or run: newgrp $CLUSTER_GROUP) to pick up the"
 log "    '$CLUSTER_GROUP' group so './sparky.sh deploy' can publish to $CLUSTER_DIR."
-log "  • Then: cd $SCRIPT_DIR && ./sparky.sh deploy"
+log "  • Then: cd $SCRIPT_DIR && ./sparky.sh admin-password && ./sparky.sh deploy"
+log "  • That first deploy creates the 'activate' group; log out/in once more (or"
+log "    newgrp activate) so './sparky.sh activate <profile>' needs no password."

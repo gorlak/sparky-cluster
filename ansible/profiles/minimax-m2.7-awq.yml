@@ -39,7 +39,3 @@ serving_topology:
     worker_extra_args:
       - --enable-chunked-prefill
 
-enable_open_webui: true
-enable_reverse_proxy: true
-enable_control_panel: true
-enable_metrics: true

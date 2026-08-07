@@ -1,9 +1,13 @@
 <div id="actionarea">
   <h2>Actions</h2>
-  <p class="hint">Deployed: <code>{{ profile }}</code> · runs as <code>deploy</code></p>
+  <p class="hint">
+    Live: <code>{{ profile }}</code> · runs as <code>activator</code> —
+    the only privileged action here is <em>activate</em>, and it can only choose from
+    what a deploy already installed.
+  </p>
 
   <div style="display:flex; align-items:center; gap:.6rem; margin:.6rem 0 1rem">
-    <label for="profile-select" style="font-size:.9rem; opacity:.7; white-space:nowrap">Target profile</label>
+    <label for="profile-select" style="font-size:.9rem; opacity:.7; white-space:nowrap">Activate profile</label>
     <select id="profile-select" name="profile" class="btn" style="padding:.35rem .6rem">
       {% for p in profiles %}
         <option value="{{ p }}"{% if p == profile %} selected{% endif %}>{{ p }}</option>
@@ -18,15 +22,26 @@
     {% endfor %}
   </div>
 
-  {% if engines %}
-  <h3>Restart an engine</h3>
-  <p class="hint">Restarts one engine across its nodes (worker first, API node last).</p>
-  <div class="actions">
-    {% for e in engines %}
-      <button class="btn danger"
-              onclick="document.getElementById('dlg-eng-{{ e.name }}').showModal()">{{ e.name }}</button>
+  {% if fleet %}
+  <h3>Deployed fleet</h3>
+  <p class="hint">
+    What <code>deploy</code> installed — the boundary of what may run. Adding or
+    removing a model, or changing a profile's flags, is a deploy (human,
+    password-gated), not something this panel can do.
+    {% if fleet.deployed_at %}<span class="ts">Last deploy: {{ fleet.deployed_at }}</span>{% endif %}
+  </p>
+  <table>
+    <thead><tr><th>Node</th><th>Engines</th><th>Weights held</th></tr></thead>
+    <tbody>
+    {% for n in fleet.nodes %}
+      <tr>
+        <td><code>{{ n.node }}</code></td>
+        <td>{{ n.engines | join(', ') or '—' }}</td>
+        <td class="ts">{{ n.models | join(', ') or '—' }}</td>
+      </tr>
     {% endfor %}
-  </div>
+    </tbody>
+  </table>
   {% endif %}
 
   {% for a in actions %}
@@ -38,20 +53,6 @@
         <button class="btn {{ 'danger' if a.danger }}"
                 hx-post="{{ root }}/run/{{ a.name }}"
                 hx-include="#profile-select"
-                hx-target="#actionarea" hx-swap="outerHTML"
-                onclick="this.closest('dialog').close()">Confirm</button>
-      </menu>
-    </dialog>
-  {% endfor %}
-
-  {% for e in engines %}
-    <dialog id="dlg-eng-{{ e.name }}">
-      <h3>Restart {{ e.name }}?</h3>
-      <p>Restart <code>{{ e.unit }}</code> on {{ e.nodes | join(', ') }} (worker first, API node last). Briefly interrupts serving.</p>
-      <menu class="modal-actions">
-        <button class="btn" onclick="this.closest('dialog').close()">Cancel</button>
-        <button class="btn danger"
-                hx-post="{{ root }}/run/engine/{{ e.name }}"
                 hx-target="#actionarea" hx-swap="outerHTML"
                 onclick="this.closest('dialog').close()">Confirm</button>
       </menu>

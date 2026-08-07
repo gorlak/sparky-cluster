@@ -1,0 +1,101 @@
+---
+# `deploy` is SELECTION-NEUTRAL (ADR-0018): it sets the boundary of what may run, it
+# does not choose. This role reads the current selection and does exactly one thing
+# with it — preserve it if its profile is still in the allowlist, otherwise fall to
+# `empty`. It never auto-promotes another model.
+#
+# Falling to `empty` here is also what makes convergent weight removal safe: the
+# live model is stopped, and its engine confirmed down, BEFORE the model role can
+# consider evicting anything (`systemctl stop` blocks until the unit is stopped, so
+# "waits for the engine to stop" needs no extra polling).
+#
+# Runs on the head, then publishes `active_profile` / `active_profile_models` to
+# every host so the model role's active-model assertion can see them.
+
+- name: Read the current activation request
+  ansible.builtin.slurp:
+    src: "{{ desired_profile_file }}"
+  register: desired_raw
+  failed_when: false
+
+- name: Read the live topology (only used to seed a first-ever selection)
+  ansible.builtin.slurp:
+    src: "{{ cluster_topology_file }}"
+  register: live_topology_raw
+  failed_when: false
+
+- name: Check whether the reconciler is installed yet
+  ansible.builtin.stat:
+    path: "{{ activate_bin }}"
+  register: reconciler
+
+# Before ADR-0018 there was no request file — what served was whatever the last
+# `deploy <profile>` had brought up, recorded in current-topology.json. On the first
+# run after the split that file is the only record of the operator's intent, so it
+# seeds the request. Without this, a cluster that has been happily serving for weeks
+# would read as "nothing selected" and this deploy would quietly leave it empty —
+# precisely the surprise "selection-neutral" exists to prevent.
+- name: Seed the selection from the live topology (first run after ADR-0018)
+  when: live_topology_raw.content is defined
+  block:
+    - name: Read the last recorded profile
+      ansible.builtin.set_fact:
+        seeded_selection: "{{ (live_topology_raw.content | b64decode | from_json).profile | default('', true) }}"
+  rescue:
+    - name: Unreadable topology — seed nothing rather than guess
+      ansible.builtin.set_fact:
+        seeded_selection: ""
+
+- name: Determine the current selection
+  ansible.builtin.set_fact:
+    current_selection: "{{ _request if _request else (seeded_selection | default('') or cluster_profile) }}"
+  vars:
+    _request: >-
+      {{ ((desired_raw.content | default('') | b64decode).splitlines() | first | default('')) | trim }}
+
+- name: Note the selection this deploy inherits
+  ansible.builtin.debug:
+    msg: >-
+      selection: '{{ current_selection }}'
+      {{ '(seeded from the live topology — no request file yet)'
+         if desired_raw.content is not defined and current_selection == seeded_selection | default('')
+         else '' }}
+      {{ '— still allowlisted, preserved untouched.' if current_selection in fleet_allowlist
+         else "— NOT in the allowlist any more; falling to 'empty' (deploy never auto-promotes)." }}
+
+# The profile left the allowlist (its .yml was deleted, or it was blocked). Drive
+# the fleet to `empty` before anything else in this run touches weights or units.
+- name: Fall the fleet to 'empty' — the selected profile is no longer allowlisted
+  when:
+    - current_selection not in fleet_allowlist
+    - reconciler.stat.exists
+    - not ansible_check_mode
+  block:
+    - name: Record 'empty' as the request
+      ansible.builtin.copy:
+        content: "empty\n"
+        dest: "{{ desired_profile_file }}"
+        owner: "{{ activate_user }}"
+        group: "{{ activate_group }}"
+        mode: "0664"
+
+    - name: Reconcile the fleet to 'empty' (stops and waits)
+      ansible.builtin.command:
+        cmd: "{{ activate_bin }} empty"
+      changed_when: true
+
+- name: Settle the active profile for this run
+  ansible.builtin.set_fact:
+    active_profile: "{{ current_selection if current_selection in fleet_allowlist else 'empty' }}"
+
+- name: Publish the active profile to every host
+  ansible.builtin.set_fact:
+    active_profile: "{{ active_profile }}"
+    active_profile_models: >-
+      {{ fleet_engines | selectattr('_profile', 'equalto', active_profile)
+         | map(attribute='model') | unique | sort | list }}
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ groups['all'] }}"
+  loop_control:
+    label: "{{ item }}"

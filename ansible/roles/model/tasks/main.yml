@@ -1,14 +1,27 @@
 ---
-# Models live canonically in {{ vllm_models_dir }} on the head node (sparky). New
-# weights are downloaded into the inbox ({{ model_cache_dir }}, head only); this
-# role MOVES any inbox model into the canonical dir (owned by the vllm user), then
-# MIRRORS the whole canonical dir to every other node — so any node holds every
-# model and engine placement is free. See docs/serving-topology.md.
+# Converge this node's weight store to the allowlist (ADR-0018). One mechanism
+# handles add and remove: the profiles directory says what the fleet keeps, and
+# `deploy` makes {{ vllm_models_dir }} match — per node.
 #
-# Idempotent: inbox moves skip models already canonical; the mirror is rsync with
+#   `host_models` (fleet role) is what THIS node must hold:
+#     * workers  — exactly the models their engines serve. Per-node disk tracks what
+#       the node actually runs, not the whole fleet: a snoopy-only model is never
+#       mirrored to sparky's shard budget, a TP=2 model goes to both.
+#     * the head — every allowlisted model. It is the canonical store: `sparky
+#       download` stages into its inbox and it is the rsync SOURCE every other node
+#       mirrors from, so evicting a snoopy-only model here would leave no way to
+#       repair snoopy's copy short of re-downloading.
+#
+# Removal is guarded three ways: it PLANS first (prints what it would delete; only
+# `-e evict_weights=true` — `./sparky.sh deploy --evict` — actually deletes), it can
+# never delete the ACTIVE model (the selection play has already driven the fleet to
+# `empty` when the live profile leaves the allowlist, and the assertion below is the
+# backstop), and it converges WEIGHTS only — images are left to Docker's GC, since
+# shared base layers make convergent image-deletion unsafe.
+#
+# Idempotent: inbox moves skip models already canonical; mirrors use rsync
 # --size-only (immutable weights — same-size files are skipped without re-reading),
-# so re-runs are a fast metadata scan with ~zero transfer. No --delete: a model is
-# only removed by hand, never by a sync glitch.
+# so a re-run is a fast metadata scan with ~zero transfer.
 
 # --- head (canonical node): ingest newly-downloaded models from the inbox -------
 - name: Ensure the model inbox exists (head)
@@ -28,15 +41,59 @@
   register: inbox_models
   when: inventory_hostname in groups['head']
 
-- name: Ingest each inbox model into the canonical dir (head)
+# Only ADOPT what a profile actually references. The inbox is the staging area; the
+# store is the fleet. A candidate downloaded ahead of its profile — which is the whole
+# model-discovery → evaluation pipeline — stays staged until you write the profile
+# that claims it.
+#
+# This is load-bearing, not tidiness. If un-referenced weights were ingested, they
+# would land in the store, immediately read as "no longer in the allowlist", and
+# `deploy --evict` would delete a model you downloaded minutes ago and hadn't profiled
+# yet. Staged weights are never evicted, because eviction only ever looks at the store.
+- name: Select the inbox models a profile claims (head)
+  ansible.builtin.set_fact:
+    inbox_claimed: "{{ _inbox | select('in', fleet_models) | list }}"
+    inbox_unclaimed: "{{ _inbox | reject('in', fleet_models) | list }}"
+  vars:
+    _inbox: "{{ inbox_models.files | default([]) | map(attribute='path') | map('basename') | sort | list }}"
+  when: inventory_hostname in groups['head']
+
+- name: Note the models left staged (head)
+  ansible.builtin.debug:
+    msg: >-
+      {{ inbox_unclaimed | length }} model(s) staged in {{ model_cache_dir }} that no
+      profile claims — {{ inbox_unclaimed }}. Left in the inbox on purpose: write a
+      profile for one and the next deploy adopts it. Staged weights are never evicted.
+  when:
+    - inventory_hostname in groups['head']
+    - inbox_unclaimed | length > 0
+
+- name: Ingest each claimed inbox model into the canonical dir (head)
   ansible.builtin.include_tasks: install_one.yml
-  loop: "{{ inbox_models.files | default([]) | map(attribute='path') | map('basename') | list }}"
+  loop: "{{ inbox_claimed | default([]) }}"
   loop_control:
     loop_var: model
     label: "{{ model }}"
   when: inventory_hostname in groups['head']
 
-# --- other nodes: mirror the whole canonical dir from the head ------------------
+# --- what is actually on disk here -------------------------------------------
+- name: List the models present on this node
+  ansible.builtin.find:
+    paths: "{{ vllm_models_dir }}"
+    file_type: directory
+    recurse: false
+  register: present_models
+
+- name: Compute this node's weight delta
+  ansible.builtin.set_fact:
+    node_present_models: "{{ present_models.files | map(attribute='path') | map('basename') | sort | list }}"
+    node_missing_models: >-
+      {{ host_models | reject('in', present_models.files | map(attribute='path') | map('basename') | list) | sort | list }}
+    node_evictions: >-
+      {{ present_models.files | map(attribute='path') | map('basename')
+         | reject('in', host_models) | sort | list }}
+
+# --- add: mirror only the models this node runs, from the head ----------------
 # Runs ON the head (delegate_to), as deploy (become: false) so it uses deploy's own
 # SSH key; --rsync-path="sudo rsync" lets the remote side write the vllm-owned dir
 # (and preserve vllm:vllm ownership, uid 996 on both nodes). Uses the host's
@@ -46,15 +103,62 @@
 # --timeout=600 is rsync's I/O timeout: it keeps running as long as bytes flow, but
 # aborts if the link goes dead silent for 10 min (instead of hanging forever); a
 # re-deploy then resumes mid-file thanks to --partial.
-- name: Mirror all canonical models from the head to this node
+- name: Mirror the models this node runs from the head
   ansible.builtin.command:
     cmd: >-
       rsync -a --size-only --partial --timeout=600 --itemize-changes
       -e "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=30"
       --rsync-path="sudo rsync"
-      {{ vllm_models_dir }}/ deploy@{{ vllm_host_ip }}:{{ vllm_models_dir }}/
+      {{ vllm_models_dir }}/{{ item }}/ deploy@{{ vllm_host_ip }}:{{ vllm_models_dir }}/{{ item }}/
   delegate_to: "{{ groups['head'][0] }}"
   become: false
+  loop: "{{ host_models }}"
+  loop_control:
+    label: "{{ item }}"
   register: model_mirror
   changed_when: model_mirror.stdout | trim | length > 0
   when: inventory_hostname not in groups['head']
+
+- name: Fail clearly if a model this node must run is nowhere to be found
+  ansible.builtin.fail:
+    msg: >-
+      {{ node_missing_models }} are declared by a profile that runs on
+      {{ inventory_hostname }}, but the weights are neither here nor on the head.
+      Stage them first: ./sparky.sh download <hf-repo>
+  when:
+    - inventory_hostname in groups['head']
+    - node_missing_models | length > 0
+
+# --- remove: converge the store to the allowlist ------------------------------
+- name: Plan the weight evictions on this node
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: {{ node_evictions | length }} model(s) in the store that
+      no profile on this node claims — {{ node_evictions }}.
+      {{ 'DELETING now (evict_weights=true).' if evict_weights | bool
+         else 'NOT deleted — this is a plan.' }}
+      Each is here because its profile was deleted, or because it was ingested before
+      the allowlist gated adoption. READ THIS LIST before running with --evict: if one
+      of these is a candidate you staged for evaluation, write its profile first (or
+      move it back to {{ model_cache_dir }}), because --evict will delete it.
+  when: node_evictions | length > 0
+
+# The backstop for "never delete the active model". By the time this runs the
+# selection play has already driven the fleet to `empty` if the live profile left the
+# allowlist, so a hit here means that guard did not fire — refuse rather than pull
+# the weights out from under a serving engine.
+- name: Assert no eviction belongs to the profile that is currently active
+  ansible.builtin.assert:
+    that: "node_evictions | intersect(active_profile_models | default([])) | length == 0"
+    fail_msg: >-
+      Refusing to evict {{ node_evictions | intersect(active_profile_models | default([])) }}
+      — those weights belong to '{{ active_profile | default('?') }}', which is the
+      ACTIVE profile. Run `./sparky.sh activate empty` first.
+  when: evict_weights | bool
+
+- name: Evict weights that are no longer in this node's allowlist
+  ansible.builtin.file:
+    path: "{{ vllm_models_dir }}/{{ item }}"
+    state: absent
+  loop: "{{ node_evictions }}"
+  when: evict_weights | bool

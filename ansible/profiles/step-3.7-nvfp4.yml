@@ -1,11 +1,9 @@
 ---
 # Profile: step-3.7-nvfp4 — Step-3.7-Flash-NVFP4, big-shared TP=2 across sparky + snoopy.
-# The successor candidate to `step-3.5-fp8` (deploy each in turn to A/B; both are
+# The successor candidate to `step-3.5-fp8` (activate each in turn to A/B; both are
 # full-cluster TP=2, so the comparison is sequential).
 #
-# ⛔ BLOCKED — DO NOT DEPLOY (parked, `blocked: true` below). Tracked as DEF-0006
-# (docs/defects.md). It is hidden from the control-panel deploy UI. A deliberate CLI
-# `./sparky.sh deploy step-3.7-nvfp4` still works for re-testing when the fix lands.
+# ⛔ PARKED (`blocked: true` below) — tracked as DEF-0006 (docs/defects.md).
 #
 #   What we proved (2026-07-02): the hard part WORKS — **NVFP4 loads + runs on 26.06
 #   with no hang** (per-profile 26.06 pin; the Marlin/AWQ load hang was model-specific).
@@ -21,8 +19,11 @@
 
 profile_name: step-3.7-nvfp4
 
-# Parked candidate: hidden from the control-panel deploy dropdown. Ansible ignores
-# this field; only the panel reads it (see roles/control-panel main.py).
+# Parked (ADR-0018). Every `deploy` still installs this profile's weights and engine
+# env files — so re-testing when the fix lands costs no download — but it is left OUT
+# of the allowlist the reconciler validates against, so `activate` refuses it on every
+# node. Drop this line and re-deploy to un-park. *Block to park it; delete the file to
+# evict it.*
 blocked: true
 
 # Per-profile container override: 26.06 is needed for the NVFP4 (modelopt) FP4
@@ -58,11 +59,3 @@ serving_topology:
       - --kv-cache-dtype fp8
       - --enable-expert-parallel
       - --enable-chunked-prefill
-
-# Front-end
-enable_open_webui: true
-enable_reverse_proxy: true
-enable_control_panel: true
-
-# Observability
-enable_metrics: true

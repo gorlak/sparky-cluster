@@ -26,10 +26,10 @@ serving_topology:
       - --enable-auto-tool-choice
       - --tool-call-parser qwen3_xml
       - --reasoning-parser qwen3
-      - "--speculative-config '{\"method\": \"mtp\", \"num_speculative_tokens\": 3}'"
+      # Written UNSPACED and UNQUOTED on purpose (ADR-0018): serve flags travel
+      # through the engine env file as one single-quoted value that systemd re-splits
+      # on whitespace with no quote processing, so JSON must carry no spaces and no
+      # outer quotes. The fleet role rejects a flag that would mis-split.
+      - --speculative-config {"method":"mtp","num_speculative_tokens":3}
     worker_extra_args: []
 
-enable_open_webui: true
-enable_reverse_proxy: true
-enable_control_panel: true
-enable_metrics: true

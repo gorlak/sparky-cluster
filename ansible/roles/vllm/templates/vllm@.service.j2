@@ -1,0 +1,101 @@
+# {{ ansible_managed }}
+# Generated from roles/vllm/templates/vllm@.service.j2 — do NOT edit on the host.
+#
+# ONE systemd TEMPLATE unit for every vLLM engine on this node (ADR-0018). `%i` is
+# the engine name; everything that varies per engine — image, model, rank, ports,
+# flags — lives in that engine's env file, rendered by `deploy`:
+#
+#     {{ vllm_engines_dir }}/%i.env
+#
+# So the unit LOGIC (the two boot gates, the ADR-0009 marker lifecycle, the docker
+# invocation) lives in exactly one rarely-changing file, and `activate` is pure
+# activation — `systemctl start vllm@<engine>` — never rendering.
+[Unit]
+Description=vLLM engine %i
+Documentation=file://{{ vllm_engines_dir }}/%i.env
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+# ---- the two boot gates (ADR-0018 extends ADR-0009) ------------------------
+# A unit boots iff  DESIRED  and  CLEANLY-STOPPED-LAST-TIME.
+#
+# 1. Desired — the PER-NODE active marker, written by this node's reconciler
+#    during an `activate` (never shared over a filesystem, so there is no
+#    head-only path a worker can't see). On a clean reboot systemd attempts every
+#    enabled unit and this condition skips all but the last-activated profile, so
+#    serving auto-restores with NO reconciler involvement: the reconciler needn't
+#    even exist at boot, the markers carry the decision.
+ConditionPathExists={{ vllm_active_dir }}/%i
+# 2. Cleanly stopped (ADR-0009, unchanged) — the marker below is touched at start
+#    and removed on any CLEAN stop (ExecStopPost), so it only survives to a
+#    subsequent boot after an UNCLEAN shutdown: a hang / hard-reset / power cut
+#    mid-run. When it survives, this condition skips auto-start so the node comes
+#    up EMPTY and reachable rather than re-attempting the risky load unattended.
+#    `activate` clears it before starting (activation is explicit and operator- or
+#    agent-initiated), so recovery is just an activate.
+ConditionPathExists=!{{ vllm_state_dir }}/vllm-%i.running
+
+# Crash-loop breaker (idiomatic, complements the marker): if the unit fails more
+# than 5 times in 15 min, stop retrying and stay failed+reachable instead of
+# restarting forever. Does NOT cover a host hang (a wedged process is never
+# counted as a failed start) — that's what the marker above is for.
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile={{ nccl_conf_path }}
+EnvironmentFile={{ vllm_engines_dir }}/%i.env
+
+ExecStartPre=-/usr/bin/docker rm -f vllm-%i
+# Arm the fail-safe marker (see [Unit] ConditionPathExists). mkdir is defensive;
+# the common role already creates {{ vllm_state_dir }}.
+ExecStartPre=/usr/bin/mkdir -p {{ vllm_state_dir }}
+ExecStartPre=/usr/bin/touch {{ vllm_state_dir }}/vllm-%i.running
+
+# $VLLM_SERVE_ARGS is deliberately UNBRACED: systemd splits an unbraced variable
+# on whitespace into separate argv words. The fleet role asserts no flag carries a
+# single quote or newline, so the round-trip through the env file is exact.
+ExecStart=/usr/bin/docker run --rm --name vllm-%i \
+    --network=host \
+    --gpus all \
+    --cgroupns=host \
+    --ipc=host \
+    --device=/dev/infiniband \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    --shm-size={{ vllm_shm_size }} \
+    --memory={{ vllm_container_memory }} \
+    -v {{ vllm_models_dir }}:/models:ro \
+    -v {{ nccl_conf_path }}:/etc/nccl-env.conf:ro \
+    --env-file {{ nccl_conf_path }} \
+    -e HF_HOME=/tmp/hf \
+    -e VLLM_HOST_IP=${VLLM_HOST_IP} \
+    -e VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 \
+    ${VLLM_IMAGE} \
+    vllm serve /models/${ENGINE_MODEL} $VLLM_SERVE_ARGS
+
+ExecStop=/usr/bin/docker stop --time=120 vllm-%i
+# Disarm the fail-safe marker on any clean stop (activate, teardown, clean reboot).
+# Runs for a crash-exit too — so only an UNCLEAN shutdown leaves it behind.
+ExecStopPost=/usr/bin/rm -f {{ vllm_state_dir }}/vllm-%i.running
+
+MemoryMax={{ vllm_systemd_memory_max }}
+OOMPolicy=stop
+
+# One template unit means one RestartSec for head and worker alike. {{ vllm_restart_sec }}s
+# suits the worker (it retries until the head's rendezvous is up) and is fine for
+# the head, which rarely hits this path: a head waiting on a peer blocks inside
+# TimeoutStartSec rather than failing. With StartLimitBurst=5 a genuinely broken
+# head reaches its stable failed+reachable state in ~{{ vllm_restart_sec * 5 }}s.
+Restart=on-failure
+RestartSec={{ vllm_restart_sec }}
+
+# Peer-join timeout, not hang (ADR-0018 invariant): a TP=2 activation whose peer
+# never joins fails within this bound and the fleet falls to empty.
+TimeoutStartSec={{ vllm_start_timeout_sec }}
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

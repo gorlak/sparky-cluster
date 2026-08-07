@@ -6,7 +6,7 @@ reconciler with bounded triggers** (single-command sudoers + forced-command SSH)
 per-variant rendered units became a **systemd template unit + per-engine env files**, and
 the persisted Caddy rewrite became **static health-checked upstreams**. Same boundary and
 invariants; fewer invented parts.)
-**Status:** Proposed
+**Status:** Accepted (implemented 2026-08-04)
 
 ## Context
 
@@ -78,7 +78,11 @@ reconciler, not in how the request is transported.)
 - builds/pulls images (ADR-0013) and stages weights (ADR-0003) **only on the nodes each
   profile runs on** — a single-node/snoopy model isn't mirrored to the head (beyond the
   head's canonical download copy); a TP=2 model goes to both. Per-node disk tracks what each
-  node actually runs, not the whole fleet;
+  node actually runs, not the whole fleet. (Settled in implementation: "the head's canonical
+  download copy" means the head keeps **every** allowlisted model. It is the rsync *source*
+  every other node mirrors from, so evicting a worker-only model there would leave no way to
+  repair that worker's copy short of re-downloading. Workers hold exactly what they serve —
+  which is where the disk asymmetry that motivated this actually is.);
 - **convergent — including removal.** A model no longer in the allowlist has its **weights
   deleted** on the nodes that held it (the store is made to match the allowlist; no litter).
   Three guards make that safe: it **plans and confirms** deletions (`check`/dry-run surfaces
@@ -234,6 +238,13 @@ activate. A one-line statement of the whole model: **the agent gets `activate`; 
   identity's NOPASSWD is only enterable via geoff's password. The activation grants belong to
   a **dedicated low-privilege activation identity** (the panel service / the agent) — not
   geoff — so sudo/sshd logs distinguish human, automation, and agent actions for free.
+  **And geoff's own NOPASSWD grant goes too** (settled in implementation): he carried
+  `systemctl, docker, journalctl, install` passwordless, each of them a route to a root
+  shell, and *anything running as geoff inherits that* — an agent most of all. The claim
+  "the agent gets `activate` and nothing privileged" is simply false on a machine where
+  the agent can `sudo docker`, so the grant is retired and the deploy asserts on every
+  node that the reconciler is geoff's only passwordless entry. He keeps `(ALL:ALL) ALL`
+  behind his password; reading the journal needs only `adm` membership.
 - **Turns on ADR-0008's auth seam.** A human-only panel behind the firewall could defer auth;
   a panel that is deliberately agent-drivable and holds the activation grant cannot — the
   Caddy `basic_auth` seam (built for exactly this moment) is enabled as part of this work.
@@ -246,6 +257,12 @@ activate. A one-line statement of the whole model: **the agent gets `activate`; 
 - **Rejects ADR-0017 (`sparky prune`).** Convergent `deploy` subsumes model removal —
   *"take it out of the allowlist, `deploy`"* — so there is no separate `prune` command or
   per-node `sudo rm`. One mechanism handles add and remove.
+- **Moves the smoke gate from `deploy` to `activate` (ADR-0012).** A selection-neutral
+  `deploy` brings nothing up, so there is nothing for a post-deploy gate to probe. The gate
+  now runs after an activation — which is also where it belongs, since activation is what a
+  sweep repeats. `deploy` instead *reports* engines whose definition it re-rendered under a
+  live model ("pending"), and applies them on the next `activate`: dropping serving is not a
+  side effect a provisioning run gets to have.
 - **Cost.** `deploy` is heavier (renders all variants' env files, stages weights, builds
   images) and **loses automation** — no panel-triggered infra deploys, by design. Per-node disk
   tracks what each node runs (the allowlist sizes the fleet, not every node). A new per-node
@@ -293,3 +310,58 @@ nodes**.
 Status flips to **Accepted** when `deploy`/`activate` are implemented — the per-node
 reconciler with its two bounded triggers, a working no-sudo `activate`, the panel off the
 `deploy` identity (with `basic_auth` on), convergent `deploy`, and Open WebUI vanilla.
+
+## Errata (2026-08-06) — `bench` is knowingly left in a hole
+
+*Written with the implementation, not after it. Retiring geoff's passwordless sudo (see the
+ADR-0001 consequence above) breaks something this ADR does not fix, and the decision to
+leave it broken is deliberate enough to be worth the record.*
+
+**What breaks.** `sparky bench` shells `sudo docker exec <container> vllm bench serve` —
+that is the only place the `vllm` CLI and the tokenizer exist. With the `docker` grant gone
+it now prompts for a password. Interactive benching is unaffected; **unattended benching is
+not possible**, which is precisely what ADR-0016's sweep needs.
+
+**The fix we did not build.** The obvious answer is a second bounded trigger on the
+`vllm-activate` pattern: one fixed, root-owned, input-validating script that can only
+`docker exec <known engine> vllm bench serve`. It would work, and it is the *right answer to
+the wrong question* — the prior question is whether bench needs root at all.
+
+It does not. It needs root by **accident**, because `vllm bench serve` happens to live
+inside the container. This ADR removed both reasons that accident was tolerable:
+
+- a **fixed, model-agnostic endpoint** that routes to whichever node currently serves —
+  which is exactly what a load generator wants, and
+- weights staged on disk world-readable, so a model's **`tokenizer.json` can be read with no
+  privilege at all** (`/opt/vllm/models/<model>/tokenizer.json`, mode 0664).
+
+A bench regiment built on those two needs no root, no docker, no SSH, and no new trusted
+script — and, as a bonus, no node-awareness. So the boundary this ADR draws does not need a
+second door cut into it; the thing that wanted the door needs rebuilding instead.
+
+**The hole is older than this ADR; this ADR only makes it visible.** `sparky bench` already
+skips any engine whose container is not head-local, so it refuses **every single-node
+profile** — it cannot measure the model that has actually been serving. "Node-aware
+benching" was carried as an ADR-0016 prerequisite for exactly this reason. Against a fixed
+endpoint the question does not arise, so that prerequisite is retired rather than built.
+
+**Who fixes it: [ADR-0016](0016-continuous-evaluation-outer-loop.md).** Its `bench` regiment
+is rebuilt HTTP-native against the stable endpoint, as part of the sweep that needs it.
+Until then bench stays password-gated and interactive-only, and that is an accepted,
+time-boxed cost of closing the boundary — not an oversight.
+
+**Comparability, and why the objection is weaker than it looks.** An HTTP-native method
+will not reproduce `vllm bench serve`'s absolute numbers, and the ADR-0012 trend store has
+history. But the sweep's use of bench is **direction-aware A/B on paired rows**
+(`report base mtp`) — a comparison *within* one method. Absolute cross-method numbers matter
+for deep dives and for quoting against published figures, both of which are interactive,
+where a password prompt costs nothing. Keeping the container-bound method as the reference
+and tagging the method in the trend store preserves both and stops them silently mixing.
+
+**What is argued but not demonstrated.** TTFT, ITL/TPOT and throughput all fall out of a
+streaming response plus `stream_options.include_usage`. The two genuinely uncertain parts
+are **request-rate shaping (Poisson arrivals)** and the **prefix-cache scenario's
+token-exact shared prefixes**. ADR-0016 gates the rebuild on a spike proving those. If
+either truly needs the container, the fallback is the bounded trigger described above — and
+that would be a boundary decision, deserving its own ADR rather than a line item in the
+sweep's.

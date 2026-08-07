@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# Activatable profiles (ADR-0018). The allowlist IS ansible/profiles/*.yml;
+# `blocked: true` profiles keep their weights + env files but are absent here.
+# Re-validated by {{ activate_bin }} on every activation, on every node.
+{% for p in fleet_allowlist %}
+{{ p }}
+{% endfor %}

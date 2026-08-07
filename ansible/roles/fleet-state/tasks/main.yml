@@ -1,0 +1,55 @@
+---
+# Record what `deploy` provisioned, then converge to the preserved selection.
+#
+# Two state files, two owners, two questions (ADR-0018):
+#   {{ fleet_state_file }}        — what MAY run: the allowlist, and which engines
+#                                   and weights landed on which node. Deploy-written.
+#   /opt/cluster/current-topology.json — what IS running. RECONCILER-written, because
+#                                   the reconciler is what makes a topology live;
+#                                   `deploy` no longer knows what is serving.
+
+- name: Summarize what landed on each node
+  ansible.builtin.set_fact:
+    fleet_node_summary: "{{ fleet_node_summary | default([]) + [_node] }}"
+  vars:
+    _node:
+      node: "{{ item }}"
+      engines: "{{ hostvars[item].host_engines | map(attribute='name') | sort | list }}"
+      models: "{{ hostvars[item].host_models }}"
+  loop: "{{ groups['all'] | sort }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Record the fleet definition
+  ansible.builtin.copy:
+    content: "{{ _fleet | to_nice_json }}\n"
+    dest: "{{ fleet_state_file }}"
+    owner: deploy
+    group: cluster
+    mode: "0644"
+  vars:
+    _fleet:
+      deployed_at: "{{ ansible_date_time.iso8601 }}"
+      allowlist: "{{ fleet_allowlist }}"
+      stable_model_name: "{{ stable_model_name }}"
+      model_endpoint: "{{ model_endpoint_url }}"
+      active_profile: "{{ active_profile }}"
+      profiles: "{{ fleet_profiles }}"
+      nodes: "{{ fleet_node_summary }}"
+
+# The final convergence. `--preserve` is what keeps `deploy` selection-neutral: it
+# writes the markers, starts anything that should be serving but isn't, stops
+# anything that shouldn't — and never restarts a HEALTHY engine, even when this
+# deploy rendered it a new definition. Dropping serving is not a side effect a
+# provisioning run gets to have; the pending engines are REPORTED instead, and
+# `./sparky.sh activate <profile>` applies them when you choose.
+- name: Converge to the preserved selection (never restarts a healthy engine)
+  ansible.builtin.command:
+    cmd: "{{ activate_bin }} --preserve {{ active_profile }}"
+  register: preserve_run
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Report the convergence
+  ansible.builtin.debug:
+    msg: "{{ preserve_run.stdout_lines | default(['(check mode — nothing reconciled)']) }}"

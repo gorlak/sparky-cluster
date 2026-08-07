@@ -1,40 +1,50 @@
 # {{ ansible_managed }}
-{% set vllm_engines = serving_topology | selectattr('kind', 'equalto', 'vllm') | list %}
-{% set ollama_engines = serving_topology | selectattr('kind', 'equalto', 'ollama') | list %}
-{% set openai_urls = [] %}
-{% for e in vllm_engines %}
-{% set _ = openai_urls.append('http://' ~ hostvars[e.nodes[0]].vllm_host_ip ~ ':' ~ e.port ~ '/v1') %}
-{% endfor %}
-{% set ollama_urls = [] %}
-{% for e in ollama_engines %}
-{% set _ = ollama_urls.append('http://' ~ hostvars[e.nodes[0]].vllm_host_ip ~ ':' ~ e.port) %}
-{% endfor %}
+# Open WebUI is a **vanilla, model-agnostic OpenAI client** (ADR-0018). It points at
+# the ONE fixed model endpoint, configured once at deploy time, and `activate` never
+# touches it — which is what makes activation a no-privilege operation and keeps
+# conversations portable across model switches.
+#
+# The bet behind that simplification is evidence, not hope: a transcript scan across
+# six sessions found every "garbage output" fix to be serving-side (vLLM flags in
+# profiles) and every Open WebUI env var to be auth/infrastructure only, never model
+# behaviour. Model config belongs in profiles. Per-model Open WebUI settings are
+# deferred; a per-model connection is the escape hatch if that bet ever breaks.
 services:
   open-webui:
     image: {{ webui_image }}
     container_name: open-webui
-    # host networking so Open WebUI can reach every engine on either node by IP
+    # host networking so Open WebUI can resolve + reach the Caddy-fronted endpoint
     network_mode: host
     volumes:
       - {{ webui_install_dir }}/data:/app/backend/data
     environment:
       - PORT={{ webui_port }}
-      # Connections are generated from the profile's serving_topology: one OpenAI
-      # endpoint per vLLM engine (its API node + port), one Ollama endpoint per
-      # ollama engine. ENABLE_PERSISTENT_CONFIG=false makes every config env var
-      # below authoritative on EVERY start — otherwise these are seeded only on a
-      # fresh data volume and then the DB wins (see README "Known Shortcomings").
+      # ENABLE_PERSISTENT_CONFIG=false makes every value here authoritative on EVERY
+      # start — otherwise these are seeded only on a fresh data volume and then the DB
+      # wins (see README "Known Shortcomings"). Post-ADR-0018 the set is small and
+      # constant, so the trade-off costs much less than it used to.
       - ENABLE_PERSISTENT_CONFIG=false
-      - ENABLE_OPENAI_API={{ 'true' if openai_urls else 'false' }}
-{% if openai_urls %}
-      - OPENAI_API_BASE_URLS={{ openai_urls | join(';') }}
-      - OPENAI_API_KEYS={{ ([webui_api_key] * (openai_urls | length)) | join(';') }}
-{% endif %}
-      - ENABLE_OLLAMA_API={{ 'true' if ollama_urls else 'false' }}
-{% if ollama_urls %}
-      - OLLAMA_BASE_URLS={{ ollama_urls | join(';') }}
-{% endif %}
+      - ENABLE_OPENAI_API=true
+      # Caddy resolves this to whichever node currently serves — a static
+      # health-checked upstream list, no rewrite on activation.
+      - OPENAI_API_BASE_URLS={{ model_endpoint_url }}/v1
+      - OPENAI_API_KEYS={{ webui_api_key }}
+      - ENABLE_OLLAMA_API=false
+      # Per-user "Direct Connections" let a logged-in user point chat at their own
+      # OpenAI-compatible endpoint, bypassing the upstream above entirely. That is the
+      # one way a reply here could come from somewhere other than this cluster, which
+      # makes "the fixed model endpoint" (ADR-0018) an aspiration rather than a fact.
+      # Off explicitly: an unset default is not a decision.
+      - ENABLE_DIRECT_CONNECTIONS=false
+      # Every engine advertises this stable name alongside its real one, so chat
+      # targets a name that survives activation. The real names stay visible for
+      # bench/eval; this is what the picker lands on.
+      - DEFAULT_MODELS={{ stable_model_name }}
       - WEBUI_AUTH={{ webui_auth }}
       - ENABLE_SIGNUP={{ webui_enable_signup }}
       - DEFAULT_USER_ROLE={{ webui_default_user_role }}
+    extra_hosts:
+      # Belt-and-braces: the endpoint is a *.{{ web_domain }} wildcard record, but a
+      # DNS hiccup must not take chat down when the proxy is on this very host.
+      - "{{ model_endpoint_host }}:127.0.0.1"
     restart: always

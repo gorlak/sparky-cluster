@@ -1,0 +1,114 @@
+---
+# The fleet definition (ADR-0018). **The allowlist IS the profiles directory** —
+# implicit, not a separate manifest: a deployable/keepable model *is* an
+# `ansible/profiles/*.yml`. This role loads every one of them and derives the facts
+# the convergent `deploy` needs. It is READ-ONLY — it changes nothing on a host.
+#
+# Two gestures follow from "the .yml files are the policy":
+#   * `blocked: true`  — keep the weights + the rendered env file, but the profile
+#                        cannot be ACTIVATED (excluded from the allowlist file).
+#   * delete the .yml  — it leaves the allowlist, so the next deploy EVICTS its
+#                        weights (behind plan-and-confirm; see roles/model).
+#
+# Facts published to every host:
+#   fleet_profiles     — [{name, file, blocked, image, engines[], models[], nodes[]}]
+#   fleet_engines      — every vLLM engine across every profile, each carrying
+#                        `_profile` / `_image` / `_blocked`
+#   fleet_allowlist    — ACTIVATABLE profile names (non-blocked), sorted
+#   fleet_models       — every model name the fleet keeps, sorted
+#   host_engines       — the engines whose `nodes` include this host
+#   host_models        — the weights THIS node must hold (see below)
+
+- name: Reset the fleet accumulators
+  ansible.builtin.set_fact:
+    fleet_profiles: []
+    fleet_engines: []
+
+- name: Load every profile (the allowlist)
+  ansible.builtin.include_tasks: load_one.yml
+  loop: "{{ query('fileglob', playbook_dir ~ '/profiles/*.yml') | sort }}"
+  loop_control:
+    loop_var: profile_path
+    label: "{{ profile_path | basename }}"
+
+- name: Derive the fleet facts for this host
+  ansible.builtin.set_fact:
+    fleet_allowlist: "{{ fleet_profiles | selectattr('blocked', 'falsy') | map(attribute='name') | sort | list }}"
+    fleet_models: "{{ fleet_engines | map(attribute='model') | unique | sort | list }}"
+    host_engines: "{{ fleet_engines | selectattr('nodes', 'contains', inventory_hostname) | list }}"
+
+# Per-node disk tracks what each node actually RUNS, not the whole fleet — with one
+# deliberate exception: the head is the CANONICAL store. `sparky download` stages
+# into the head's inbox and the head is the rsync SOURCE every other node mirrors
+# from, so it must hold every allowlisted model; evicting a snoopy-only model from
+# the head would leave no way to repair snoopy's copy short of re-downloading.
+# Workers hold exactly the models their engines serve.
+- name: Compute the weights this node must hold
+  ansible.builtin.set_fact:
+    host_models: >-
+      {{ (fleet_models if inventory_hostname in groups['head']
+          else host_engines | map(attribute='model') | unique | list) | sort | list }}
+
+# --- validation: fail the deploy before anything is written ------------------
+# These are fleet-wide invariants, so they run once, on the control node.
+
+- name: Fleet invariants
+  run_once: true
+  block:
+    - name: Assert profile names are unique
+      ansible.builtin.assert:
+        that: "fleet_profiles | map(attribute='name') | list | unique | length == fleet_profiles | length"
+        fail_msg: >-
+          Two profiles declare the same `profile_name`. A profile name is the
+          activation key — it must be unique across ansible/profiles/.
+
+    - name: Assert engine names are unique across the whole fleet
+      ansible.builtin.assert:
+        that: "fleet_engines | map(attribute='name') | list | unique | length == fleet_engines | length"
+        fail_msg: >-
+          Two engines across the fleet share a name. An engine name is the systemd
+          instance (vllm@<name>.service) and its env file
+          ({{ vllm_engines_dir }}/<name>.env), so it must be unique fleet-wide —
+          not just within a profile. Engines seen:
+          {{ fleet_engines | map(attribute='name') | list | sort }}
+
+    - name: Assert every engine serves on the one well-known front port
+      ansible.builtin.assert:
+        that: "fleet_engines | rejectattr('port', 'equalto', vllm_api_port) | list | length == 0"
+        fail_msg: >-
+          Every engine must listen on {{ vllm_api_port }} (ADR-0018): the stable
+          endpoint is a STATIC health-checked upstream list, which works because at
+          most one engine is ever live per port fleet-wide. Offenders:
+          {{ fleet_engines | rejectattr('port', 'equalto', vllm_api_port)
+             | map(attribute='name') | list }}
+          If simultaneously-live engines are ever wanted, give each engine class its
+          own port/hostname route — and write that decision down first.
+
+    # The rendered env file carries the serve flags as ONE single-quoted value that
+    # systemd re-splits into argv ($VLLM_SERVE_ARGS in the template unit). That split
+    # is POSIX-style and performs QUOTE REMOVAL, so engine.env.j2 escapes every `"` on
+    # the way out — double quotes therefore work (JSON args are fine) but a single
+    # quote would terminate the env value early, and a newline would truncate it.
+    - name: Assert no serve flag carries a single quote or newline
+      ansible.builtin.assert:
+        that: "_bad | length == 0"
+        fail_msg: >-
+          These serve flags cannot be carried through an engine env file: {{ _bad }}.
+          The env file wraps the whole flag string in single quotes, so a flag may
+          contain spaces (they become separate argv words, which is what you want) and
+          double quotes (escaped for you on the way out), but never a single quote or a
+          newline. Write JSON arguments with no spaces and no outer quoting, e.g.
+          --speculative-config {"method":"mtp","num_speculative_tokens":3}
+      vars:
+        _quote_re: "['\n]"
+        _args: "{{ fleet_engines | map(attribute='head_extra_args', default=[]) | flatten
+                   + fleet_engines | map(attribute='worker_extra_args', default=[]) | flatten }}"
+        _bad: "{{ _args | select('search', _quote_re) | list }}"
+
+    - name: Show the fleet
+      ansible.builtin.debug:
+        msg: >-
+          fleet: {{ fleet_profiles | length }} profiles
+          ({{ fleet_allowlist | length }} activatable{% if fleet_profiles | length > fleet_allowlist | length %},
+          parked: {{ fleet_profiles | selectattr('blocked', 'truthy') | map(attribute='name') | list }}{% endif %}),
+          {{ fleet_engines | length }} engines, {{ fleet_models | length }} models

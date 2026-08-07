@@ -1,7 +1,8 @@
 ---
-# Control panel: a FastAPI status app run on-host as the deploy user (it needs
-# native access to ansible-core / the deploy SSH key / sudo in later phases).
-# Bound to 127.0.0.1; Caddy fronts it at /admin. See docs/control-interface.md.
+# Control panel: a FastAPI status app run on-host. `deploy` installs it (it needs
+# apt + a venv + a systemd unit); it RUNS as the low-privilege activation identity
+# (ADR-0018), so the served process holds no path to root. See
+# docs/control-interface.md.
 
 - name: Ensure python venv tooling is present
   ansible.builtin.apt:
@@ -12,7 +13,8 @@
   become: true
 
 # /opt/cluster is deploy:cluster (2775) — deploy owns it, so these run without
-# become (as the connection user, deploy), keeping the files deploy-owned.
+# become (as the connection user, deploy), keeping the files deploy-owned. The app
+# tree is deliberately NOT writable by the identity that runs it.
 - name: Create control-panel directory
   ansible.builtin.file:
     path: "{{ control_panel_dir }}"
@@ -44,6 +46,16 @@
     mode: "0644"
   become: false
   notify: restart control-panel
+
+# The one thing the panel's own identity must be able to write: its run records.
+- name: Create the run directory owned by the activation identity
+  ansible.builtin.file:
+    path: "{{ control_panel_dir }}/runs"
+    state: directory
+    owner: "{{ activate_user }}"
+    group: "{{ activate_group }}"
+    mode: "2775"
+  become: true
 
 - name: Install the control-panel systemd unit
   ansible.builtin.template:

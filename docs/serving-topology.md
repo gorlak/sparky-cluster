@@ -4,14 +4,41 @@
 > `gpu_memory_utilization` and `max_model_len` for a given workflow, with the
 > per-model math and the GB10 unified-memory accounting quirk.
 
-**Status:** T1–T5 built and deployed. The full profile family
+**Status:** T1–T5 built and deployed; **substantially revised by
+[ADR-0018](adr/0018-provision-select-split.md)** — see "What ADR-0018 changed" below
+before relying on the projection table. The full profile family
 ([`profiles.md`](profiles.md)) lives on this design: `step-3.5-fp8` and `minimax-m2.7-awq` are
 big-shared TP=2; `qwen3-coder-nvfp4-*` and `qwen3.6-35b-nvfp4-*` are per-node single-engine; `empty` takes
 the cluster down to bare. Co-residency of vLLM engines on one node was attempted
 (retired `multi` profile) and abandoned — see decisions log + operational
 gotcha #8 (rank-asymmetric CUDA graphs under co-residency). The Ollama role is
-GPU-verified on GB10 but unused by any current profile. Talkie is deferred to
-a custom-runtime follow-on (see TODO.md).
+GPU-verified on GB10 but unused by any current profile — the role was **removed** by
+ADR-0018, since `deploy` is whole-fleet and no longer has a per-profile serving
+topology for it to project from; re-add it from git history if an Ollama engine is
+ever wanted. Talkie is deferred to a custom-runtime follow-on (see TODO.md).
+
+## What ADR-0018 changed
+
+The **schema below is unchanged** — a profile still declares `serving_topology` once,
+and every derived fact (rank, API host, master_addr, unit/container name) is still
+computed from the node list rather than authored. What changed is *how far the
+projection reaches*, and *who* is allowed to run it.
+
+| | Before | Now |
+|---|---|---|
+| Deploy takes | one profile | **no argument** — every profile is the allowlist |
+| vLLM units | one rendered unit per (engine, node) | **one template unit** `vllm@.service` + one env file per engine |
+| What starts an engine | the deploy | **`activate`** — an unprivileged reconciler |
+| Open WebUI / Prometheus / Caddy | re-templated per profile | pointed once at a **fixed, model-agnostic endpoint** |
+| "which profile is live" | written by the deploy | written by the **reconciler** |
+| Pruning | stale `vllm-*` units removed on switch | stale **env files + markers** removed on deploy; units are stopped by activation |
+
+The load-bearing move is the third and fourth rows together. Projecting all the way
+out to the dependents is what forced a model switch to be a whole-config, privileged
+operation; removing the model-dependence of those dependents is what lets `activate`
+touch nothing but systemd units and marker files — and therefore need no root.
+The projection table below still describes the *pre-0018* fan-out; read it as history
+plus the schema, not as current wiring for the front-end rows.
 
 ## Motivation (the pre-T1 problem this design solved)
 
@@ -203,8 +230,21 @@ skill and run a memory-profiled bring-up before committing a dense profile.
   list (idempotent). GPU offload verified on GB10/sm_121 (CUDA v13, 100% offload,
   co-resident with vLLM). `OLLAMA_CONTEXT_LENGTH` capped because Ollama's
   vram-based default is sized to TOTAL unified memory. No Prometheus metrics.
-- **2026-05-25 (T5)** — Added `current-topology.json` (written by the new
-  `topology-state` role at the end of a deploy; cleared by teardown) as the single
+- **2026-08-04 (ADR-0018)** — Split `deploy` (convergent, whole-fleet, privileged)
+  from `activate` (selection, unprivileged). The per-(engine, node) rendered unit
+  became **one systemd template unit** plus **one env file per engine** — the env file
+  is now the whole per-variant surface, and the unit logic lives in exactly one
+  rarely-changing file. Boot gained a **second `ConditionPathExists`**: a per-node
+  desired marker written by the reconciler, so systemd stays the boot authority and a
+  clean reboot restores serving with the reconciler absent. The front-end projections
+  (Open WebUI, Prometheus, Caddy) were **removed** in favour of a fixed
+  health-checked endpoint over a static upstream list — the projection was the thing
+  making a model switch privileged. `current-topology.json` moved from deploy-written
+  to reconciler-written, joined by `fleet.json` (what may run) — two files, two owners,
+  two questions. The `ollama` role was removed as unreachable under the new model.
+- **2026-05-25 (T5)** — Added `current-topology.json` (then written by a
+  `topology-state` role at the end of a deploy, and cleared by teardown; since
+  ADR-0018 it is written by the reconciler and that role is gone) as the single
   record of "which profile is live + its engines, with each engine's unit and API
   URL". The control panel reads it for topology-driven status (per-engine, per-node
   health + API check) and per-engine restart buttons (worker-first, API node last),

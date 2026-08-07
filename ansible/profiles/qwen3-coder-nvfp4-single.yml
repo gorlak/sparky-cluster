@@ -25,7 +25,3 @@ serving_topology:
       - --tool-call-parser qwen3_coder
     worker_extra_args: []
 
-enable_open_webui: true
-enable_reverse_proxy: true
-enable_control_panel: true
-enable_metrics: true

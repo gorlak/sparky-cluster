@@ -3,7 +3,9 @@
 **Date:** 2026-07-27 (scoped 2026-07-29: the deploy/activate mechanism and authorization
 model moved to ADR-0018; this ADR keeps the loop, the sweep representation, and the eval
 regiments. Revised 2026-08-03, while Proposed: the CI-style matrix DSL was dropped for a
-flat, literal job list — see Options.)
+flat, literal job list — see Options. Revised 2026-08-06, while Proposed: the `bench`
+regiment is **rebuilt here**, HTTP-native, rather than inheriting today's container-bound
+one — see ADR-0018's errata for why that hole exists and why it is left open.)
 **Status:** Proposed
 
 ## Context
@@ -85,7 +87,8 @@ jobs:                            # explicit, reviewed as-is — what you read is
 - **Optimization A/Bs are just paired rows** — no special machinery; since the trend store
   keys by label, comparison falls out for free (`report base mtp`). The ADR-0014 register
   becomes "add a row."
-- **Regiments are pluggable:** `smoke`/`bench` exist; `quality` and `soak` are to build.
+- **Regiments are pluggable:** `smoke` exists as-is; `bench` is **rebuilt** (below);
+  `quality` and `soak` are new.
   - **`quality`** — a standardized eval against the endpoint (recorded next to the bench
     numbers). Note the cost: full MMLU-Pro/LiveBench is *hours per variant*, impractical across
     a sweep — so it runs a **subset / fast proxy**, sized deliberately, not the whole suite.
@@ -93,8 +96,18 @@ jobs:                            # explicit, reviewed as-is — what you read is
     but the DEF-0002 deadlock class strikes **35–55 min in**, so 10 min *cannot* catch it — a
     longer soak (45–60 min) is a **per-candidate knob** for the DEF-0002-risky TP=2/26.06
     profiles. A blanket 10 min would pass slow deadlocks through the gate.
-  - **Node-aware benching** (bench any engine on its node) is a prerequisite fix, hit during
-    the MTP-3 A/B.
+  - **`bench`** — **rebuilt HTTP-native**, against ADR-0018's fixed model endpoint, with
+    input lengths controlled from the model's `tokenizer.json` (readable on disk, no
+    privilege). Today's regiment shells `sudo docker exec … vllm bench serve` inside the
+    engine's container, which costs the sweep two things it cannot pay: **root** (ADR-0018
+    retired the passwordless `docker` grant that made it free) and **head-locality** —
+    bench currently refuses every single-node profile, so it cannot measure the model that
+    has actually been serving. Both are accidents of `vllm bench serve` living in the
+    container, and both dissolve against a stable endpoint rather than needing to be
+    solved. The reasoning, and the fidelity risk that could still overturn it, are recorded
+    in **[ADR-0018's errata](0018-provision-select-split.md#errata-2026-08-06--bench-is-knowingly-left-in-a-hole)**.
+    *Node-aware benching* — previously listed here as a prerequisite — is retired by the
+    same move: against a fixed endpoint the question does not arise.
 
 ### How it runs (mechanism → ADR-0018)
 The human authors + kicks a sweep by **adding its `(profile × variant)` set to the allowlist
@@ -115,9 +128,10 @@ and the authorization/trust boundary are all in **[ADR-0018](0018-provision-sele
 - **Reuse over rebuild.** The trend store gives free comparison; ADR-0018 gives deploy/activate;
   the discovery sweeps feed the queue; ADR-0013 builds-to-unblock candidates.
 - **New build surface:** the sweep runner (job-list validation, breadcrumbs, quarantine — no
-  expander; jobs are literal); the quality-eval harness; the soak monitor; node-aware
-  benching. (The control model — reconciler, stable endpoint, no-sudo `activate` — is
-  ADR-0018's build.)
+  expander; jobs are literal); the quality-eval harness; the soak monitor; and the
+  **rebuilt HTTP-native `bench` regiment** (above), which is what takes `bench` out of the
+  hole ADR-0018 knowingly left it in. (The control model — reconciler, stable endpoint,
+  no-sudo `activate` — is ADR-0018's build.)
 - **Relationships.** Depends on ADR-0018 (the how) and ADR-0012 (bench + trend store); stands on
   ADR-0009 (safe unattended bring-up) and ADR-0015 (programmable primitive); operationalizes
   ADR-0014 (runs its A/Bs) and the model-discovery sweeps.
@@ -133,7 +147,14 @@ and the authorization/trust boundary are all in **[ADR-0018](0018-provision-sele
   record → next — asserting the trend-store rows and resume-after-interrupt.
 - **Per regiment, as built:** `soak` — a hang is detected within the window (and the 10-min
   default provably *doesn't* catch a >35-min stall, so DEF-0002-class candidates carry the
-  longer knob); `quality` — the subset harness records a score against the endpoint.
+  longer knob); `quality` — the subset harness records a score against the endpoint;
+  `bench` — **the fidelity spike gates the rebuild**: TTFT / ITL / throughput reproduce from
+  a streaming response plus `stream_options.include_usage`, and the two genuinely uncertain
+  parts — Poisson arrival shaping and the prefix-cache scenario's token-exact shared
+  prefixes — are demonstrated before the container-bound method is retired. If either needs
+  the container after all, the fallback is a bounded privileged trigger on the
+  `vllm-activate` pattern, and *that* is a boundary decision needing its own ADR, not a line
+  item here.
 
 Status flips to **Accepted** when a first human-kicked sweep runs end to end (deploy the
 set → activate → soak → eval → bench → record → next, with quarantine). Build/progress tracking

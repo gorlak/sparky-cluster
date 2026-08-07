@@ -49,37 +49,97 @@ nccl_conf_path: /opt/vllm/nccl-env.conf
 # persistent disk (NOT /run or /tmp, which are cleared on boot).
 vllm_state_dir: /opt/vllm/state
 
+# --- deploy / activate split (ADR-0018) --------------------------------------
+# `deploy` (this playbook, human, password-gated) renders ONE env file per
+# allowlisted engine into {{ vllm_engines_dir }} and installs a single systemd
+# TEMPLATE unit (vllm@.service). `activate` (unprivileged, agent-drivable) writes
+# a desired profile and runs the fixed reconciler, which writes the PER-NODE
+# desired markers in {{ vllm_active_dir }} and drives systemd to match.
+#
+# A unit boots iff  desired (marker in {{ vllm_active_dir }})  AND  cleanly
+# stopped last time (no marker in {{ vllm_state_dir }}) — two ConditionPathExists
+# gates, so boot never depends on the reconciler existing.
+vllm_engines_dir: /opt/vllm/engines
+vllm_active_dir: /opt/vllm/active
+# The activatable-profile allowlist the reconciler re-validates every request
+# against (one profile name per line; `blocked: true` profiles are excluded —
+# their weights and env files are kept, but they cannot be activated).
+vllm_allowlist_file: "{{ vllm_engines_dir }}/allowlist"
+
+# The reconciler: a small, fixed, root-owned ONESHOT script (not a daemon).
+# Invoked through two bounded triggers — a single-command sudoers entry locally,
+# and forced-command SSH cross-node. See roles/activate.
+activate_bin: /usr/local/sbin/vllm-activate
+activate_conf: /opt/vllm/activate.conf
+# The dedicated LOW-PRIVILEGE activation identity (the control panel service and
+# the agent). It holds the two trigger grants and nothing else — no sudo beyond
+# {{ activate_bin }}, no docker group, no ansible. `activate_group` also carries
+# geoff, so `./sparky.sh activate` needs no password.
+activate_user: activator
+activate_group: activate
+activate_ssh_key: "/home/{{ activate_user }}/.ssh/id_ed25519"
+# The activation REQUEST: group-writable, written with no sudo at all.
+desired_profile_file: /opt/cluster/desired-profile
+# What `deploy` provisioned (the allowlist, per-node engines + weights). Read by
+# the control panel and agents; the counterpart of current-topology.json ("what is
+# live"), which the reconciler writes.
+fleet_state_file: /opt/cluster/fleet.json
+
+# The stable, model-agnostic served name every engine ALSO advertises (vLLM takes
+# several `--served-model-name` values). Chat targets this; bench/eval target the
+# engine's real `served_as`. Makes conversations portable across activations.
+stable_model_name: sparky
+# The one well-known front port. At most ONE live engine per port fleet-wide (the
+# reconciler stops-then-starts), which is what lets Caddy carry a STATIC
+# health-checked upstream list and follow activation with no config rewrite.
+# The fleet role asserts every engine declares this port.
+vllm_api_port: 8000
+# The fixed model endpoint Open WebUI + Prometheus point at, configured once at
+# deploy time. Caddy resolves it to whichever node is currently serving.
+model_endpoint_host: "api.{{ web_domain }}"
+model_endpoint_url: "http://api.{{ web_domain }}"
+
+# Convergent weight removal: a model no longer in the allowlist is EVICTED from
+# the nodes that held it. Plan-by-default (deploy prints what it would delete);
+# pass `-e evict_weights=true` (`./sparky.sh deploy --evict`) to actually delete.
+evict_weights: false
+
 # Service identity that owns the weights (not the deploy automation user)
 vllm_user: vllm
 vllm_group: vllm
 
 # Download inbox for new model weights (head/control node only). `./sparky.sh download`
-# (scripts/download.py) stages into {{ model_cache_dir }}/<MODEL>; the model role MOVES it into the canonical
-# store ({{ vllm_models_dir }}) on the head, then rsync-mirrors the whole store to
-# every other node. The inbox is transient (emptied on deploy) and snoopy is a
-# pure mirror — no manual cross-node copy. See roles/model.
+# (scripts/download.py) stages into {{ model_cache_dir }}/<MODEL>; the model role MOVES it
+# into the canonical store ({{ vllm_models_dir }}) on the head, then rsync-mirrors to each
+# node **the models that node actually runs** (ADR-0018) — per-node disk tracks its own
+# workload, not the whole fleet. The head keeps every allowlisted model: it is the mirror
+# SOURCE, so evicting a worker-only model here would leave no way to repair that worker's
+# copy short of re-downloading. The inbox is transient (emptied on deploy) and workers are
+# pure mirrors — no manual cross-node copy. See roles/model.
 model_cache_dir: /opt/cluster/model-cache
 
 # Multi-node rendezvous (vLLM 0.19 native multinode, no Ray) is per-engine:
-# each engine's master_addr is computed from its first node's vllm_host_ip
-# (see roles/vllm/templates/vllm.service.j2). Default master port (29500) is
-# used implicitly. Nothing to set globally here.
+# each engine's master_addr is computed from its first node's vllm_host_ip and baked
+# into that engine's rendered env file (roles/vllm/templates/engine.env.j2). Default
+# master port (29500) is used implicitly. Nothing to set globally here.
 
 # Docker run / systemd memory knobs shared by all engines.
 vllm_shm_size: 32g
 vllm_container_memory: 120g
 vllm_systemd_memory_max: 124G
+# One TEMPLATE unit (ADR-0018) means these are cluster constants, not per-rank
+# values. RestartSec suits the worker (it retries the rendezvous until the head is
+# up); the head rarely fails fast — waiting on a peer blocks inside
+# TimeoutStartSec, which is sized for a full multi-node weight load.
+vllm_restart_sec: 20
+vllm_start_timeout_sec: 1200
 
-# Ollama (per-node standalone engines — see roles/ollama + docs/serving-topology.md).
-# Verified on GB10/sm_121 with --gpus all --cgroupns=host (CUDA v13, 100% offload,
-# co-resides with vLLM). One ollama engine = one server on one node; multiple on
-# the same node need distinct ports.
-ollama_image: ollama/ollama:latest
-ollama_data_dir: /opt/ollama          # per-engine model cache: {{ ollama_data_dir }}/<engine>
-ollama_keep_alive: "5m"               # idle-unload models → frees the GPU
-# Cap the context: Ollama's vram-based default is computed from TOTAL unified
-# memory (huge) and would OOM a GPU shared with vLLM. Override per engine if needed.
-ollama_context_length: 8192
+# Ollama: the role was removed by ADR-0018 — `deploy` is whole-fleet and no longer has
+# a per-profile serving topology for an Ollama engine to project from, and no profile
+# had declared one since the role was built. It was GPU-verified on GB10/sm_121
+# (CUDA v13, 100% offload, co-resident with vLLM); recover it from git history if an
+# Ollama engine is ever wanted, and give it the same env-file + template-unit shape the
+# vLLM engines now have. teardown.yml still sweeps any leftover `ollama-*` unit.
 
 # Metrics stack (P2) — see docs/control-interface.md. Exporters run on every node;
 # Prometheus + Grafana on the head. (GB10 reports no GPU memory via nvidia-smi —
@@ -127,25 +187,34 @@ webui_default_user_role: "user"
 web_domain: sparky.flummoxed.net
 caddy_image: caddy:2
 caddy_dir: /opt/caddy
+# /admin basic_auth (ADR-0008's seam, TURNED ON by ADR-0018 — the panel is now
+# deliberately agent-drivable and holds the activation grant, so it can't stay
+# open). The hash is a RUNTIME secret, never in git: generate it once with
+# `./sparky.sh admin-password`, which writes this file on the head.
+caddy_admin_hash_file: /opt/cluster/admin-basic-auth.hash
+admin_basic_auth_user: admin
 
-# Control panel (status + control actions) — see docs/control-interface.md.
-# Runs on-host as User=deploy, bound to 127.0.0.1; Caddy fronts it at /admin.
+# Control panel (status + activation) — see docs/control-interface.md.
+# Runs on-host as User={{ activate_user }} (ADR-0018 took it OFF the `deploy`
+# identity: no web-API path to root), bound to 127.0.0.1; Caddy fronts it at
+# /admin behind basic_auth. Its only privileged action is `activate`, and that
+# runs through the fixed reconciler, never ansible.
 control_panel_dir: /opt/cluster/control-panel
 control_panel_port: 8088
-# The published (live) playbook tree the panel runs actions from, and the profile
-# its deploy/teardown actions target. (cluster_ansible_dir mirrors sparky/ansible.py's
-# LIVE; cluster_profile is the panel's default — profile switching is future work.)
-cluster_ansible_dir: /opt/cluster/ansible
-cluster_profile: step-3.5-fp8
-# Live serving-topology state file: the topology-state role writes it at the end of
-# a deploy (and teardown clears it); the control panel reads it for topology-aware
-# status + per-engine actions. See docs/serving-topology.md (T5).
+# The fallback selection when nothing has been activated yet. (`cluster_ansible_dir`
+# went with ADR-0018: the panel no longer runs ansible, so nothing but `sparky deploy`
+# needs to know where the published tree lives.)
+cluster_profile: empty
+# What IS running. Written by the RECONCILER when an activation lands (ADR-0018) —
+# `deploy` no longer knows what is serving, so it can't be the author. The control
+# panel and the harness read it. Its counterpart is {{ fleet_state_file }} (what MAY
+# run, deploy-written). See docs/serving-topology.md.
 cluster_topology_file: /opt/cluster/current-topology.json
-# Deploy-gate breadcrumb: the smoke role runs `sparky smoke --report` here, so the
-# last gate result (per-engine ready/tool-shape/quality + overall ok, with a timestamp)
-# is durable and readable — written even when the gate FAILS (the smoke play runs
-# before topology-state, so a failed gate aborts the deploy but still leaves this).
-# See docs/control-interface.md.
+# Activation-gate breadcrumb: `./sparky.sh activate` runs the smoke gate after the
+# reconciler returns and records the result here (per-engine ready/tool-shape/quality
+# + overall ok, with a timestamp) — written pass OR fail. The reconciler DELETES it at
+# the start of every activation, so a stale breadcrumb can never be mistaken for a
+# result about the live model. See docs/control-interface.md.
 cluster_smoke_report: /opt/cluster/last-smoke.json
 
 # Links shown on the landing page (sparky.flummoxed.net/).

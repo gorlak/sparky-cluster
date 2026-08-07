@@ -1,73 +1,197 @@
 ---
-# Topology-driven vLLM engines. The profile's `serving_topology` is the source
-# of truth; this role templates one systemd unit per (engine, node) for every
-# vllm engine that includes this host, and prunes any vllm-* unit that's no
-# longer desired (including the legacy vllm.service / vllm-worker.service from
-# before the refactor). Node identity — rank, API host, master_addr — is
-# COMPUTED from the engine's node list. See docs/serving-topology.md.
+# Provision the vLLM serving SURFACE on this node (ADR-0018) — and nothing else.
+# This role is **selection-neutral**: it installs the template unit, renders one env
+# file per allowlisted engine that lands on this host, publishes the allowlist, and
+# enables the instances. It never starts, stops, or restarts an engine — that is
+# `activate`'s job alone (roles/activate + the reconciler).
 #
-# Bring-up only. API readiness waits run in a later play (tasks_from: wait) so
-# all workers are configured before any head blocks on rendezvous.
+#   /etc/systemd/system/vllm@.service        one template unit; %i = engine name
+#   {{ vllm_engines_dir }}/<engine>.env      the whole per-variant surface
+#   {{ vllm_allowlist_file }}                activatable profile names, one per line
+#   {{ vllm_active_dir }}/<engine>           the desired marker — RECONCILER-owned,
+#                                            never written here (that would change
+#                                            what's serving)
 
-- name: Select the vLLM engines that run on this host
-  ansible.builtin.set_fact:
-    host_vllm_engines: "{{ host_vllm_engines | default([]) + [item] }}"
-  loop: "{{ serving_topology | default([]) | selectattr('kind', 'equalto', 'vllm') | list }}"
+- name: Ensure the engine + active-marker directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ vllm_engines_dir }}"
+    - "{{ vllm_active_dir }}"
+
+- name: Install the vllm@.service template unit
+  ansible.builtin.template:
+    src: vllm@.service.j2
+    dest: /etc/systemd/system/vllm@.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: vllm_template_unit
+
+- name: Render each allowlisted engine's env file
+  ansible.builtin.template:
+    src: engine.env.j2
+    dest: "{{ vllm_engines_dir }}/{{ engine.name }}.env"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ host_engines | default([]) }}"
   loop_control:
-    label: "{{ item.name }}"
-  when: inventory_hostname in item.nodes
+    loop_var: engine
+    label: "{{ engine.name }} ({{ engine._profile }}, rank {{ engine.nodes.index(inventory_hostname) }})"
 
-- name: Compute the desired unit names for this host
+# --- converge: drop engines this node should no longer be able to run --------
+- name: Find installed engine env files
+  ansible.builtin.find:
+    paths: "{{ vllm_engines_dir }}"
+    patterns: ["*.env"]
+  register: installed_engine_envs
+
+- name: Compute the engine env files that are no longer desired here
   ansible.builtin.set_fact:
-    desired_vllm_units: >-
-      {{ host_vllm_engines | default([]) | map(attribute='name')
-         | map('regex_replace', '^', 'vllm-') | map('regex_replace', '$', '.service')
+    stale_engines: >-
+      {{ installed_engine_envs.files | map(attribute='path') | map('basename')
+         | map('regex_replace', '\.env$', '') | reject('in', host_engines | default([]) | map(attribute='name') | list)
          | list }}
 
-# --- prune: drop vLLM units this host should no longer run -------------------
-- name: Find existing vLLM unit files
+# Stopping a stale engine is a SELECTION change, so it is not ours to make — but a
+# stale engine can only be running if its profile is still the active one, and the
+# selection play has already driven the fleet to `empty` in that case. Removing the
+# marker + env file here is what makes the leftover unit unstartable and boot-inert.
+- name: Remove the desired markers of no-longer-installed engines
+  ansible.builtin.file:
+    path: "{{ vllm_active_dir }}/{{ item }}"
+    state: absent
+  loop: "{{ stale_engines }}"
+
+- name: Disable no-longer-installed engine instances
+  ansible.builtin.systemd:
+    name: "vllm@{{ item }}.service"
+    enabled: false
+  loop: "{{ stale_engines }}"
+  failed_when: false
+
+- name: Remove no-longer-installed engine env files
+  ansible.builtin.file:
+    path: "{{ vllm_engines_dir }}/{{ item }}.env"
+    state: absent
+  loop: "{{ stale_engines }}"
+
+# An ADR-0009 `.running` sentinel for an engine that no longer exists can never gate
+# anything (its unit can't start either way), but it IS read by the status surface —
+# so left behind it is a permanent source of phantom fail-safe reports. Strictly
+# namespaced to engines this node has no env file for.
+- name: Find orphaned unclean-shutdown markers
+  ansible.builtin.find:
+    paths: "{{ vllm_state_dir }}"
+    patterns: ["vllm-*.running"]
+  register: state_markers
+
+- name: Remove unclean-shutdown markers for engines that no longer exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ state_markers.files | map(attribute='path')
+       | reject('search', '/vllm-(' ~ (host_engines | default([]) | map(attribute='name')
+                | map('regex_escape') | join('|')) ~ ')\.running$')
+       | list }}
+  when: host_engines | default([]) | length > 0
+
+# --- migration: retire the pre-ADR-0018 per-engine units ---------------------
+# Before ADR-0018 each engine had its own rendered unit (vllm-<engine>.service, and
+# before that a bare vllm.service / vllm-worker.service). The template unit replaces
+# all of them; strictly namespaced so this can never touch an unmanaged unit.
+- name: Find legacy per-engine vLLM unit files
   ansible.builtin.find:
     paths: /etc/systemd/system
-    patterns: ['vllm.service', 'vllm-*.service']
-  register: vllm_unit_files
+    patterns: ["vllm.service", "vllm-*.service"]
+  register: legacy_vllm_units
 
-- name: Stop and disable pruned vLLM units
+- name: Stop and disable each legacy per-engine unit
   ansible.builtin.systemd:
     name: "{{ item.path | basename }}"
     state: stopped
     enabled: false
-  loop: "{{ vllm_unit_files.files }}"
+  loop: "{{ legacy_vllm_units.files }}"
   loop_control:
     label: "{{ item.path | basename }}"
-  when: (item.path | basename) not in desired_vllm_units
   failed_when: false
 
-- name: Remove pruned vLLM containers
+- name: Remove each legacy per-engine container
   ansible.builtin.command: "docker rm -f {{ item.path | basename | regex_replace('\\.service$', '') }}"
-  loop: "{{ vllm_unit_files.files }}"
+  loop: "{{ legacy_vllm_units.files }}"
   loop_control:
     label: "{{ item.path | basename }}"
-  when: (item.path | basename) not in desired_vllm_units
   changed_when: false
   failed_when: false
 
-- name: Remove pruned vLLM unit files
+- name: Remove each legacy per-engine unit file
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: absent
-  loop: "{{ vllm_unit_files.files }}"
+  loop: "{{ legacy_vllm_units.files }}"
   loop_control:
     label: "{{ item.path | basename }}"
-  when: (item.path | basename) not in desired_vllm_units
 
-- name: Reload systemd after pruning
+- name: Reload unit definitions
   ansible.builtin.systemd:
     daemon_reload: true
 
-# --- bring up the desired engines -------------------------------------------
-- name: Configure and start each vLLM engine on this host
-  ansible.builtin.include_tasks: engine.yml
-  loop: "{{ host_vllm_engines | default([]) }}"
+# Units stay ENABLED so systemd — not the reconciler — is the boot authority: on a
+# clean reboot it attempts every enabled instance and the two ConditionPathExists
+# gates decide which one actually comes up (ADR-0018 / ADR-0009).
+- name: Enable each allowlisted engine instance on this node
+  ansible.builtin.systemd:
+    name: "vllm@{{ item }}.service"
+    enabled: true
+  loop: "{{ host_engines | default([]) | map(attribute='name') | list }}"
+
+# A node's env files describe what IT can run — a snoopy-only engine has no env file
+# on sparky, which is exactly what makes the per-node marker set honest. But the head
+# still has to record the whole live topology, including engines it doesn't host, so
+# `sparky status` / smoke / bench can reach a worker-only engine. This index is that
+# fleet-wide view: deploy-written, identical on every node, read-only for everyone.
+- name: Reset the engine index accumulator
+  ansible.builtin.set_fact:
+    engine_index: []
+
+- name: Build the fleet-wide engine index
+  ansible.builtin.set_fact:
+    engine_index: "{{ engine_index + [_entry] }}"
+  vars:
+    _entry:
+      name: "{{ item.name }}"
+      profile: "{{ item._profile }}"
+      nodes: "{{ item.nodes }}"
+      api_node: "{{ item.nodes[0] }}"
+      api_addr: "{{ hostvars[item.nodes[0]].vllm_host_ip }}"
+      port: "{{ item.port }}"
+      model: "{{ item.model }}"
+      served_as: "{{ item.served_as }}"
+      stable_name: "{{ stable_model_name }}"
+  loop: "{{ fleet_engines }}"
   loop_control:
-    loop_var: engine
-    label: "{{ engine.name }} (rank {{ engine.nodes.index(inventory_hostname) }})"
+    label: "{{ item.name }} ({{ item._profile }})"
+
+- name: Publish the fleet-wide engine index
+  ansible.builtin.copy:
+    content: "{{ engine_index | to_nice_json }}\n"
+    dest: "{{ vllm_engines_dir }}/index.json"
+    owner: root
+    group: root
+    mode: "0644"
+
+# The reconciler re-validates every activation request against this file, on the
+# node it is reconciling — so a worker never takes a profile the head invented.
+- name: Publish the activatable-profile allowlist
+  ansible.builtin.template:
+    src: allowlist.j2
+    dest: "{{ vllm_allowlist_file }}"
+    owner: root
+    group: root
+    mode: "0644"

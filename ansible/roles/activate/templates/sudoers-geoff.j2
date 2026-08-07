@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Intentionally grants nothing (ADR-0018). This file used to carry
+#   geoff ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/docker,
+#                             /usr/bin/journalctl, /usr/bin/install
+# — four passwordless routes to a root shell, inherited by anything running as
+# geoff, an agent included. geoff remains a normal sudoer via the `sudo` group
+# (password required). The two things that used it are gone: reading the journal
+# needs only `adm` membership, and activating a model goes through the
+# reconciler's single-command grant in /etc/sudoers.d/{{ activate_group }}.
+#
+# Kept as a comment-only file rather than deleted so that re-adding the grant by
+# hand is a visible edit to a managed file, not a quiet new one.

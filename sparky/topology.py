@@ -49,8 +49,20 @@ class Engine:
 
     @property
     def unit(self) -> str:
-        """systemd unit — one name, identical on every node it spans (ADR-0003)."""
-        return f"vllm-{self.name}.service"
+        """systemd unit — ONE template unit, instanced per engine (ADR-0018), with
+        the same name on every node it spans (ADR-0003)."""
+        return f"vllm@{self.name}.service"
+
+    @property
+    def env_file(self) -> str:
+        """The engine's whole per-variant surface, rendered by `deploy`."""
+        return f"/opt/vllm/engines/{self.name}.env"
+
+    @property
+    def active_marker(self) -> str:
+        """The PER-NODE desired marker the reconciler writes; one of the two
+        `ConditionPathExists` gates that decide whether this unit boots."""
+        return f"/opt/vllm/active/{self.name}"
 
     @property
     def container(self) -> str:
@@ -63,15 +75,19 @@ class Engine:
 
 @dataclass(frozen=True)
 class Profile:
-    """A profile: its serving topology plus the front-end toggles."""
+    """A profile: its serving topology, and whether it may be activated.
+
+    Since ADR-0018 a profile is an entry in the **allowlist** (the profiles
+    directory) rather than a thing you deploy: `deploy` installs every profile's
+    engines, `activate <name>` picks one to serve. `blocked` parks a profile — its
+    weights and env files are kept, but it cannot be activated.
+    """
 
     name: str
     engines: tuple[Engine, ...]
     vllm_image: str | None = None
-    enable_open_webui: bool = False
-    enable_reverse_proxy: bool = False
-    enable_control_panel: bool = False
-    enable_metrics: bool = False
+    blocked: bool = False
+    path: Path | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -111,21 +127,23 @@ def load_profile(name_or_path: str | Path) -> Profile:
     if path.suffix not in (".yml", ".yaml") and not path.exists():
         path = PROFILES_DIR / f"{name_or_path}.yml"
     data = yaml.safe_load(path.read_text()) or {}
-    engines = tuple(_engine_from_dict(e) for e in (data.get("serving_topology") or []))
+    engines = tuple(
+        _engine_from_dict(e)
+        for e in (data.get("serving_topology") or [])
+        if e.get("kind", "vllm") == "vllm"
+    )
     return Profile(
         name=data.get("profile_name", path.stem),
         engines=engines,
         vllm_image=data.get("vllm_image"),
-        enable_open_webui=bool(data.get("enable_open_webui", False)),
-        enable_reverse_proxy=bool(data.get("enable_reverse_proxy", False)),
-        enable_control_panel=bool(data.get("enable_control_panel", False)),
-        enable_metrics=bool(data.get("enable_metrics", False)),
+        blocked=bool(data.get("blocked", False)),
+        path=path,
     )
 
 
-def all_profiles() -> list[Profile]:
-    """Every profile committed under `ansible/profiles/`, name-sorted."""
-    return [load_profile(p) for p in sorted(PROFILES_DIR.glob("*.yml"))]
+def all_profiles(profiles_dir: Path = PROFILES_DIR) -> list[Profile]:
+    """Every profile committed under `ansible/profiles/` — the allowlist, name-sorted."""
+    return [load_profile(p) for p in sorted(profiles_dir.glob("*.yml"))]
 
 
 def load_current_topology(path: Path = CURRENT_TOPOLOGY) -> dict | None:

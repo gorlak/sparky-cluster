@@ -1,32 +1,44 @@
 # {{ ansible_managed }}
 [Unit]
-Description=Cluster control panel (FastAPI status; runs as deploy)
-After=network-online.target docker.service
+Description=Cluster control panel (FastAPI status + activate; low-privilege)
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=deploy
+# ADR-0018: the panel runs as the LOW-PRIVILEGE activation identity, not as
+# `deploy`. That is the whole point — a web API can no longer invoke NOPASSWD root.
+# Everything it can do is either read-only or goes through {{ activate_bin }}.
+# Deliberately NOT in the docker group: docker group membership is root-equivalent.
+User={{ activate_user }}
+Group={{ activate_group }}
 WorkingDirectory={{ control_panel_dir }}
-# Config via env so the app hardcodes nothing. Worker host + this node's name come
-# from inventory; the topology state file feeds the topology-aware status/actions.
-Environment=WORKER_SSH=deploy@{{ hostvars[groups['worker'][0]].vllm_host_ip }}
+# Config via env so the app hardcodes nothing.
 Environment=PANEL_NODE={{ inventory_hostname }}
 Environment=CLUSTER_TOPOLOGY={{ cluster_topology_file }}
-Environment=DEPLOY_SSH_KEY=/home/deploy/.ssh/id_ed25519
-# Control actions (P3): the panel runs ansible-playbook from the published live
-# tree against this profile, and records runs here.
-Environment=ANSIBLE_DIR={{ cluster_ansible_dir }}
+Environment=CLUSTER_FLEET={{ fleet_state_file }}
 Environment=CLUSTER_PROFILE={{ cluster_profile }}
+Environment=ACTIVATE_BIN={{ activate_bin }}
+Environment=DESIRED_PROFILE={{ desired_profile_file }}
+Environment=ALLOWLIST_FILE={{ vllm_allowlist_file }}
+Environment=ACTIVATE_SSH_KEY={{ activate_ssh_key }}
+Environment=ACTIVATE_SSH_USER={{ activate_user }}
+# Worker reachability for the read-only `status` verb of the forced command.
+Environment=NODE_ADDRS={% for node in groups['all'] | sort if node != inventory_hostname %}{{ node }}={{ hostvars[node].vllm_host_ip }} {% endfor %}
+
+Environment=WEBUI_URL=http://127.0.0.1:{{ webui_port }}/health
+Environment=PROXY_URL=http://127.0.0.1:80/
+Environment=MODEL_ENDPOINT={{ model_endpoint_url }}
+# Past this, "unit up, API down" stops being a weight load and becomes a fault.
+Environment=LOAD_TIMEOUT={{ vllm_start_timeout_sec }}
 Environment=RUNS_DIR={{ control_panel_dir }}/runs
 ExecStart={{ control_panel_dir }}/venv/bin/uvicorn app.main:app \
     --host 127.0.0.1 --port {{ control_panel_port }} --root-path /admin
 Restart=on-failure
 RestartSec=5
-# A control action is a detached child (own session) that writes its result to
-# disk. KillMode=process means restarting the panel (e.g. a deploy action that
-# re-runs this role) kills only uvicorn, so an in-flight run survives and a
-# fresh panel reconstructs its status from $RUNS_DIR.
+# An activation is a detached child (own session) that writes its result to disk.
+# KillMode=process means restarting the panel kills only uvicorn, so an in-flight
+# run survives and a fresh panel reconstructs its status from $RUNS_DIR.
 KillMode=process
 
 [Install]

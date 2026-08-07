@@ -1,0 +1,191 @@
+---
+# The activation boundary (ADR-0018): the reconciler, its two bounded triggers, and
+# the identity that holds them. `deploy` installs all of it — which is exactly why
+# the boundary is real: the agent gets `activate` and cannot rewrite the grants,
+# because it cannot `deploy`.
+#
+#   {{ activate_bin }}                     the fixed oneshot reconciler (root-owned)
+#   {{ activate_conf }}                    per-node wiring (root-owned)
+#   /etc/sudoers.d/{{ activate_group }}    the LOCAL trigger: one command, no password
+#   ~{{ activate_user }}/.ssh/authorized_keys  the CROSS-NODE trigger: forced command
+#   {{ desired_profile_file }}             the REQUEST: group-writable, no sudo
+#
+# The real control is who may write the request and hold the two grants. That ACL
+# is installed here, and it is the activation boundary.
+
+- name: Ensure the activation group exists
+  ansible.builtin.group:
+    name: "{{ activate_group }}"
+    system: true
+
+# A real (if low-privilege) login user: sshd runs a forced command through the
+# account's shell, so `nologin` would break the cross-node trigger. It holds no sudo
+# beyond {{ activate_bin }}, and deliberately NOT the docker group — docker group
+# membership is root-equivalent and would re-open the hole this ADR closes.
+- name: Ensure the activation identity exists
+  ansible.builtin.user:
+    name: "{{ activate_user }}"
+    group: "{{ activate_group }}"
+    system: true
+    shell: /bin/bash
+    home: "/home/{{ activate_user }}"
+    create_home: true
+
+# geoff joins two groups, and that is the whole of his standing privilege:
+#   activate — trigger the reconciler with no password (the point of ADR-0018)
+#   adm      — READ the journal with no privilege at all, which is what makes the
+#              old `NOPASSWD: journalctl` grant dead weight (and journalctl is a
+#              pager escape to a root shell, so it was never a read-only grant).
+- name: Put geoff in the activation and log-reading groups
+  ansible.builtin.user:
+    name: geoff
+    groups: "{{ activate_group }},adm"
+    append: true
+  failed_when: false
+
+# --- retire geoff's passwordless root ---------------------------------------
+# `geoff ALL=(ALL) NOPASSWD: /usr/bin/systemctl, /usr/bin/docker, /usr/bin/journalctl,
+# /usr/bin/install` was a hand-made convenience from before ADR-0018. Every one of
+# those four is a passwordless escalation to full root:
+#
+#   docker      `run -v /:/host` — the host filesystem, as root
+#   systemctl   `edit --full` runs $EDITOR as root; any editor escapes to a shell
+#   journalctl  pages through less by default; `!sh` is a root shell
+#   install     writes an arbitrary file with arbitrary ownership — e.g. a sudoers
+#               file, or a systemd unit
+#
+# It has to go, and not because geoff shouldn't have root — he's the admin, and he
+# keeps `(ALL : ALL) ALL` behind his password. It has to go because **anything running
+# as geoff inherits it**, an agent most of all. ADR-0018's claim is "the agent gets
+# `activate` and nothing privileged"; that claim is simply false while this line
+# exists, and a boundary that a `docker run` walks around is theatre.
+#
+# Left in place, deliberately: `deploy ALL=(ALL) NOPASSWD: ALL`. That identity has to
+# hold root to provision, and it is enterable only through `sudo -u deploy`, which
+# prompts for geoff's password. Nothing runs *as* deploy any more.
+- name: Retire geoff's passwordless-root grant
+  ansible.builtin.template:
+    src: sudoers-geoff.j2
+    dest: /etc/sudoers.d/geoff-cluster
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+
+# The grant may have been copied somewhere else on some node; a boundary you only
+# *believe* in is worth nothing, so check rather than assume.
+- name: Read back what geoff may run without a password
+  ansible.builtin.command: sudo -l -U geoff
+  changed_when: false
+  failed_when: false
+  register: geoff_sudo
+
+- name: Assert the reconciler is geoff's ONLY passwordless grant
+  ansible.builtin.assert:
+    that: _unexpected | length == 0
+    fail_msg: >-
+      geoff still has passwordless sudo beyond the reconciler on {{ inventory_hostname }}:
+      {{ _unexpected }}.
+      Anything running as geoff — an agent included — inherits that, which defeats the
+      ADR-0018 boundary. Find and remove it:
+      sudo grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/
+    success_msg: "geoff's only passwordless grant is {{ activate_bin }} — the boundary holds."
+  vars:
+    _unexpected: >-
+      {{ geoff_sudo.stdout_lines | default([]) | select('search', 'NOPASSWD')
+         | reject('search', activate_bin | regex_escape) | list }}
+
+- name: Install the reconciler
+  ansible.builtin.copy:
+    src: vllm-activate
+    dest: "{{ activate_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install this node's reconciler wiring
+  ansible.builtin.template:
+    src: activate.conf.j2
+    dest: "{{ activate_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the single-command sudoers entry (the local trigger)
+  ansible.builtin.template:
+    src: sudoers-activate.j2
+    dest: "/etc/sudoers.d/{{ activate_group }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+
+# --- the cross-node trigger: a dedicated key + a forced command --------------
+- name: Ensure the activation identity's .ssh directory exists
+  ansible.builtin.file:
+    path: "/home/{{ activate_user }}/.ssh"
+    state: directory
+    owner: "{{ activate_user }}"
+    group: "{{ activate_group }}"
+    mode: "0700"
+
+- name: Generate the activation keypair (head)
+  ansible.builtin.command:
+    cmd: >-
+      ssh-keygen -t ed25519 -N '' -f {{ activate_ssh_key }}
+      -C '{{ activate_user }}@{{ inventory_hostname }}'
+    creates: "{{ activate_ssh_key }}"
+  when: inventory_hostname in groups['head']
+
+- name: Own the activation keypair
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ activate_user }}"
+    group: "{{ activate_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ activate_ssh_key }}", mode: "0600"}
+    - {path: "{{ activate_ssh_key }}.pub", mode: "0644"}
+  when: inventory_hostname in groups['head']
+
+- name: Read the head's activation public key
+  ansible.builtin.slurp:
+    src: "{{ activate_ssh_key }}.pub"
+  register: activate_pubkey
+  delegate_to: "{{ groups['head'][0] }}"
+  run_once: true
+
+# The forced command is a FIXED string — SSH_ORIGINAL_COMMAND is never interpolated
+# into it, so a client cannot smuggle a second command past the shell sshd uses to
+# run it. The reconciler reads and validates that variable itself, against a
+# four-token grammar, and re-checks the profile against THIS node's allowlist.
+#
+# Written as the whole file (not appended) so the authorized set is exactly what
+# `deploy` intends — one key, one command, nothing accumulated.
+- name: Authorize the head's key with a forced command (workers)
+  ansible.builtin.template:
+    src: authorized_keys.j2
+    dest: "/home/{{ activate_user }}/.ssh/authorized_keys"
+    owner: "{{ activate_user }}"
+    group: "{{ activate_group }}"
+    mode: "0600"
+  when: inventory_hostname not in groups['head']
+
+# --- the request: group-writable, written with no sudo at all ----------------
+- name: Ensure the activation request file exists (head)
+  ansible.builtin.copy:
+    content: "{{ cluster_profile }}\n"
+    dest: "{{ desired_profile_file }}"
+    owner: "{{ activate_user }}"
+    group: "{{ activate_group }}"
+    mode: "0664"
+    force: false
+  when: inventory_hostname in groups['head']
+
+- name: Keep the request file's ownership and mode correct (head)
+  ansible.builtin.file:
+    path: "{{ desired_profile_file }}"
+    owner: "{{ activate_user }}"
+    group: "{{ activate_group }}"
+    mode: "0664"
+  when: inventory_hostname in groups['head']

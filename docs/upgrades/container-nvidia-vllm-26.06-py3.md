@@ -113,12 +113,26 @@ When a completion criterion is met:
 ### Per-profile container pinning
 
 `vllm_image` is an ordinary var: a profile that sets it overrides the `group_vars/all.yml`
-default (extra-vars precedence). No code change needed — the `vllm.service.j2` template already
+default (extra-vars precedence). No code change needed — the engine env file already
 renders `{{ vllm_image }}` per engine. This is the mechanism that lets `minimax-m2.7-awq` stay on 26.04
 while the `step-3.7-nvfp4` profile runs 26.06 on the same cluster.
 
 ## Re-assessment log
 
+- **2026-08-06** — **First sustained 26.06 TP=2 serving run — no DEF-0002 deadlock in 90
+  minutes.** `minimax-m2.7-nvfp4` (modelopt NVFP4, TP=2 across both nodes, 26.06) was
+  activated and soaked at 1 completion/min for 90 min: **87 probes, zero non-200,
+  latency 0.9–6.3 s with no upward drift.** Serving began ~01:22 and the soak ran
+  01:31→03:00, so it covered **9→99 min in** — the 35–55 min deadlock window fully
+  bracketed with margin either side. NCCL 2.30.5 initialised cleanly with the NVLS
+  killswitch (DEF-0001 holding); bring-up was clean on the first attempt, no hard reset.
+  **Does not clear DEF-0002.** The load was light (one small request per minute, no
+  concurrency), 90 min is short of the "hours" the clears-when asks for, and it is a
+  single run. What it does establish is that the deadlock is **not** reliably reproduced
+  by light sustained traffic across the stated window — so the next test should raise
+  *concurrency* rather than only duration. Worth noting the earlier Marlin reframe held:
+  this is the NVFP4/`modelopt` kernel path, and it neither hung at load (DEF-0004 is
+  indeed orthogonal) nor deadlocked in serving.
 - **2026-07-02** — Upgrade opened. 26.06 bump hard-hung both nodes at TP=2
   bring-up; root-caused to NCCL 2.30.4+ NVLS regression (nccl#2167). Rolled back to
   26.04. Fail-safe boot (ADR-0009) and NVLS killswitch staged. All upstream issues

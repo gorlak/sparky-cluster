@@ -1,23 +1,24 @@
 ---
-# Bare cluster — no local vLLM or Ollama engines on either node. Both GPUs and the
-# bulk of each node's RAM are free for: (a) Geoff's day-job/dev work, or (b) using
-# cloud AI (Claude, etc.) where Open WebUI / direct API access is plenty.
+# Bare cluster — nothing serving on either node. Both GPUs and the bulk of each
+# node's RAM are free for: (a) Geoff's day-job/dev work, or (b) using cloud AI
+# (Claude, etc.) where Open WebUI / direct API access is plenty.
 #
-# `serving_topology: []` is the signal: the model role mirror is a no-op (weights
-# stay on disk); the vllm + ollama roles prune EVERY managed unit on both nodes
-# (strict `vllm-*` / `ollama-*` namespace — nothing else is touched); Open WebUI's
-# compose re-templates with no `OPENAI_API_BASE_URLS` / `OLLAMA_BASE_URLS` (i.e.
-# ENABLE_*_API=false), so the UI starts clean rather than pointing at dead URLs
-# from a previous profile.
+#   ./sparky.sh activate empty
 #
-# Infrastructure (Caddy, control panel, Prometheus, Grafana, node/GPU exporters)
-# stays up — the cluster remains observable and reachable through /admin and the
-# metrics dashboards. Use this when you want the hardware mostly to yourself.
+# `empty` is also the **fail-safe target** (ADR-0018): any uncertainty — an
+# unreadable request, an unknown profile, a node that fails to reconcile — lands
+# here rather than guessing a model onto the GPU. It is always activatable, even
+# if the allowlist file is missing, so recovery never depends on a file being right.
+#
+# `serving_topology: []` is the signal: it declares no engines, so activating it
+# stops every engine fleet-wide and clears every desired marker. Nothing is
+# uninstalled — the weights, env files, and enabled units all stay, so the next
+# activation is just a start.
+#
+# Infrastructure (Caddy, control panel, Open WebUI, Prometheus, Grafana, node/GPU
+# exporters) stays up regardless of what's activated — it is deploy-time, not
+# profile-driven, so the cluster remains observable and reachable through /admin
+# and the metrics dashboards.
 
 profile_name: empty
 serving_topology: []
-
-enable_open_webui: true       # kept up so its compose re-templates cleanly (empty URLs)
-enable_reverse_proxy: true
-enable_control_panel: true
-enable_metrics: true

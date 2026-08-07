@@ -1,0 +1,31 @@
+---
+# Read one profile into the fleet accumulators. `profile_path` is the loop var.
+# Everything is read with lookup('file', …) on the CONTROL node, so every host
+# sees byte-identical fleet facts (the allowlist is a property of the fleet, not
+# of a node).
+
+- name: Parse {{ profile_path | basename }}
+  ansible.builtin.set_fact:
+    _p: "{{ lookup('file', profile_path) | from_yaml }}"
+
+- name: Register {{ profile_path | basename }} in the fleet
+  ansible.builtin.set_fact:
+    fleet_profiles: "{{ fleet_profiles | default([]) + [_entry] }}"
+    fleet_engines: "{{ fleet_engines | default([]) + _engines }}"
+  vars:
+    _pname: "{{ _p.profile_name | default(profile_path | basename | regex_replace('\\.ya?ml$', '')) }}"
+    _blocked: "{{ _p.blocked | default(false) | bool }}"
+    _image: "{{ _p.vllm_image | default(vllm_image) }}"
+    _vllm: "{{ _p.serving_topology | default([]) | selectattr('kind', 'defined') | selectattr('kind', 'equalto', 'vllm') | list }}"
+    # Per-engine provenance: which profile selects it, which image it runs, and
+    # whether that profile is parked. Carried on the engine so the vllm role can
+    # render an env file from the engine alone.
+    _engines: "{{ _vllm | map('combine', {'_profile': _pname, '_image': _image, '_blocked': _blocked}) | list }}"
+    _entry:
+      name: "{{ _pname }}"
+      file: "{{ profile_path | basename }}"
+      blocked: "{{ _p.blocked | default(false) | bool }}"
+      image: "{{ _image }}"
+      engines: "{{ _vllm | map(attribute='name') | list }}"
+      models: "{{ _vllm | map(attribute='model') | unique | sort | list }}"
+      nodes: "{{ _vllm | map(attribute='nodes') | flatten | unique | sort | list }}"

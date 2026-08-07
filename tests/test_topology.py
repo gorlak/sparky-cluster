@@ -32,7 +32,12 @@ def test_empty_profile_has_no_engines():
     p = topology.load_profile("empty")
     assert p.is_empty
     assert p.engines == ()
-    assert p.enable_control_panel is True  # infra toggles still parse
+    assert p.blocked is False
+
+
+def test_blocked_profile_parses_as_parked():
+    # `blocked: true` is the park gesture (ADR-0018): weights kept, not activatable.
+    assert topology.load_profile("step-3.7-nvfp4").blocked is True
 
 
 def test_big_shared_tp2():
@@ -43,8 +48,11 @@ def test_big_shared_tp2():
     assert e.api_node == "sparky"
     assert e.rank_of("sparky") == 0
     assert e.rank_of("snoopy") == 1
-    assert e.unit == "vllm-minimax-m2.7-awq.service"
+    # ONE template unit, instanced per engine (ADR-0018) — same name on every node.
+    assert e.unit == "vllm@minimax-m2.7-awq.service"
     assert e.container == "vllm-minimax-m2.7-awq"
+    assert e.env_file == "/opt/vllm/engines/minimax-m2.7-awq.env"
+    assert e.active_marker == "/opt/vllm/active/minimax-m2.7-awq"
     assert e.served_as == "minimax-m2"
 
 

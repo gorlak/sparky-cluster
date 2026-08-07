@@ -32,10 +32,12 @@ as slash commands). When a task matches one, read its `SKILL.md` and follow it:
   commit ownership, staging, ADR-in-same-commit. Read before making changes or
   preparing commits. **Geoff runs all git commits** — never run `git commit`
   unless explicitly asked.
-- **`skills/operations/SKILL.md`** — verify a deploy and read live cluster status
-  the **no-sudo** way (`./sparky.sh status [--json]` reads the control panel; exit
-  code = health) plus the deploy-gate breadcrumb (`/opt/cluster/last-smoke.json`).
-  Read when asked "is the cluster up/healthy", or to confirm a deploy/restart worked.
+- **`skills/operations/SKILL.md`** — drive and verify the cluster the **no-sudo** way:
+  `./sparky.sh activate <profile>` (the unprivileged operation an agent *can* run —
+  `deploy` is Geoff's, password-gated), `./sparky.sh status [--json]` (reads the control
+  panel; exit code = health), and the activation-gate breadcrumb
+  (`/opt/cluster/last-smoke.json`). Read when asked "is the cluster up/healthy", to
+  switch which model serves, or to confirm an activation worked.
 
 ---
 
@@ -45,7 +47,7 @@ Significant decisions shipped to this cluster are documented in `docs/adr/` (one
 file per decision). When implementing something new, write the ADR alongside the
 implementation and commit both together.
 
-**Before an update** (bumping a container, adding a model/role/profile), read
-`docs/updating.md` — it lists every place that must move together and ends by
+**Before an update** (bumping a container, adding or removing a model/role/profile),
+read `docs/updating.md` — it lists every place that must move together and ends by
 consulting `docs/defects.md`, the register of open defects the cluster carries (each
 with a *clears-when* condition, so a bump knows what to re-test).

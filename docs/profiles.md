@@ -1,9 +1,14 @@
-# Profiles — the deployable cluster configurations
+# Profiles — the allowlist, and what each entry serves
 
-A *profile* is a YAML file under `ansible/profiles/<name>.yml` that fully
-describes what the cluster serves: which model(s), on which node(s), at what
-TP and `gmu`, with what context length, plus which front-end services run.
-Deploy with `./sparky.sh deploy <name>` from the repo root.
+A *profile* is a YAML file under `ansible/profiles/<name>.yml` that fully describes
+one serving configuration: which model(s), on which node(s), at what TP and `gmu`,
+with what context length.
+
+**The profiles directory *is* the allowlist** (ADR-0018). A profile file means "keep
+these weights, install these engines" — `./sparky.sh deploy` (no argument) converges
+the whole fleet to it, and `./sparky.sh activate <name>` then picks which one serves.
+Adding a profile and *running* it are separate acts at separate privilege levels: the
+first is a password-gated deploy, the second needs no root at all.
 
 **Naming.** Profile names are the `<model>-<version>-<quant>` triple
 (e.g. `step-3.5-fp8`, `minimax-m2.7-nvfp4`). A `-single` / `-dual` **topology
@@ -25,7 +30,7 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
 | Profile | Shape | gmu | `max_model_len` | Outside headroom (per node) | Workflow archetype |
 |---|---|---|---|---|---|
 | [`step-3.5-fp8`](#step-35-fp8) | TP=2 big-shared | 0.90 | 32768 | ~5 GiB | fully-committed |
-| [`step-3.7-nvfp4`](#step-37-nvfp4) | TP=2 big-shared (**26.06**) | 0.75 | 32768 | ~30 GiB | ⛔ **BLOCKED** — upstream vLLM VL bug; hidden from deploy UI |
+| [`step-3.7-nvfp4`](#step-37-nvfp4) | TP=2 big-shared (**26.06**) | 0.75 | 32768 | ~30 GiB | ⛔ **PARKED** (`blocked: true`) — upstream vLLM VL bug |
 | [`minimax-m2.7-awq`](#minimax-m27-awq) | TP=2 big-shared | 0.75 | 131072 | ~30 GiB | big-shared with dev headroom |
 | [`minimax-m2.7-nvfp4`](#minimax-m27-nvfp4) | TP=2 big-shared (**26.06**) | 0.80 | 131072 | ~24 GiB | NVFP4 A/B candidate vs the AWQ profile |
 | [`qwen3-coder-nvfp4-single`](#qwen3-coder-nvfp4-single) | snoopy TP=1 (**26.06**) | 0.55 | 262144 | sparky free + ~55 GiB on snoopy | coder, sparky-free for dev |
@@ -44,9 +49,11 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
 - **Model:** `Step-3.7-Flash-NVFP4` (~129 GiB total, ~64.5 GiB per shard); **pins container 26.06**
   (per-profile override — NVFP4/modelopt needs it).
 - **Serves as:** `step-3.7-flash` at `sparky:8000` (TP=2 across sparky + snoopy)
-- **Status:** ⛔ **BLOCKED / parked** (`blocked: true` in the profile → hidden from the
-  control-panel deploy UI; a deliberate CLI `./sparky.sh deploy step-3.7-nvfp4` still works to
-  re-test). **NVFP4 loaded + ran on 26.06 with no hang** (2026-07-02) — the hard part works
+- **Status:** ⛔ **PARKED** — `blocked: true`, so it stays out of the allowlist file the
+  reconciler validates against: its weights and engine env files are installed by every
+  deploy (re-testing costs no download), but `activate` refuses it on every node. Drop
+  the `blocked:` line and deploy to re-test when the fix lands.
+  **NVFP4 loaded + ran on 26.06 with no hang** (2026-07-02) — the hard part works
   and per-profile pinning is validated. The remaining blocker is an upstream vLLM bug, not
   NVFP4/the container: Step-3.7's `Step3VLProcessor` crash-loops on startup (missing
   `_get_num_multimodal_tokens`). **Unblock when** vLLM ships the fix. See
@@ -102,36 +109,57 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
   free. Drop to ~0.45 for more dev headroom — KV is already overkill.
 
 ### empty
-- **What it serves:** nothing. No vLLM or Ollama engines anywhere; only the
-  always-on services (Caddy, control panel, Open WebUI, Prometheus, Grafana,
-  exporters).
-- **What it does on deploy:** prunes everything in the `vllm-*` / `ollama-*`
-  namespaces; re-templates Open WebUI with empty `OPENAI_API_BASE_URLS` (UI
-  loads clean, not pointing at dead endpoints); writes
-  `{profile: empty, engines: []}` to `current-topology.json`.
+- **What it serves:** nothing. Only the always-on services (Caddy, control panel,
+  Open WebUI, Prometheus, Grafana, exporters) — the cluster stays observable and
+  reachable while both GPUs are free.
+- **What activating it does:** declares no engines, so the reconciler clears every
+  desired marker fleet-wide and stops every engine. Nothing is *uninstalled* — weights,
+  env files and enabled units all stay, so the next activation is just a start.
+- **Also the fail-safe target.** Any uncertainty — an unreadable request, an unknown
+  profile, a node that fails to reconcile — lands here rather than guessing a model
+  onto the GPU. It is always activatable, even if the allowlist file is missing, so
+  recovery never depends on a file being right.
 - **Workflow:** working with cloud AI (Claude etc.), running the cluster as a
   build farm, or just freeing the hardware.
 
-## Switching profiles
+## Switching what serves
 
 ```sh
-./sparky.sh deploy <name>     # apply
-./sparky.sh check <name>      # dry-run (--check --diff) to preview
-./sparky.sh teardown          # stop all engines (keeps front-end)
+./sparky.sh activate <name>   # make it live — no root; waits, then runs the smoke gate
+./sparky.sh activate          # what's live, and what's activatable
+./sparky.sh activate empty    # stop serving
+./sparky.sh fleet             # the allowlist: deployed / live / parked, and where the weights are
 ```
 
-The deploy publishes the repo to `/opt/cluster/ansible`, runs
-`ansible-playbook site.yml -e @profiles/<name>.yml`, and:
+`activate` writes the requested profile to `/opt/cluster/desired-profile` (a
+group-writable file — **no sudo**), then triggers the fixed reconciler through its
+single-command sudoers entry. The reconciler:
 
-- the `vllm` and `ollama` roles **prune** any unit in the `vllm-*` /
-  `ollama-*` namespace that the new profile doesn't declare (strict-namespace,
-  never touches unmanaged units),
-- Open WebUI re-templates its connection list to match the new engines,
-- `current-topology.json` is written at the end so the control panel
-  (`/admin`) reflects the new state.
+- **re-validates** the request against the allowlist and the installed env files **on
+  every node** — a worker never takes a profile the head invented;
+- writes each node's desired markers (`/opt/vllm/active/<engine>`) as an
+  all-or-nothing transaction, *then* drives systemd to match. The markers are the
+  source of truth, so a run killed mid-flight is repaired by simply re-driving to them;
+- **stops fleet-wide before starting anywhere**, then starts workers before the head —
+  otherwise a new worker rank would attach to the outgoing head's rendezvous store;
+- fails the whole fleet to `empty` if any node errors, and reports why.
 
-For the **live** state: see `/admin`, or `cat /opt/cluster/current-topology.json`,
-or `./sparky.sh status`.
+Nothing else moves. Open WebUI, Prometheus and Caddy point at a fixed, model-agnostic
+endpoint, so they need no reconfiguration when the model changes — which is exactly
+what lets this operation be unprivileged.
+
+For the **live** state: `/admin`, `./sparky.sh status`, or
+`cat /opt/cluster/current-topology.json`. For what a deploy *installed*:
+`./sparky.sh fleet` or `cat /opt/cluster/fleet.json`.
+
+## Removing a profile
+
+Delete its `.yml` and `./sparky.sh deploy`. The deploy reports the weights that are
+now unreferenced and leaves them; `./sparky.sh deploy --evict` deletes them, per node.
+It will never delete the model that is currently serving — if the live profile is the
+one leaving the allowlist, the deploy drives the fleet to `empty` and waits for the
+engine to stop first. To keep the weights but stop it being activatable, set
+`blocked: true` instead. *Block to park it; delete the file to evict it.*
 
 ## Adding a new profile
 
@@ -148,7 +176,23 @@ or `./sparky.sh status`.
 3. **Pick `gpu_memory_utilization` and `max_model_len`** per
    [`profile-tuning.md`](profile-tuning.md) — decide your *outside-headroom*
    target first, give vLLM the rest.
-4. **`./sparky.sh check <name>`** to dry-run, then **`./sparky.sh deploy <name>`**.
+4. **`./sparky.sh lint`** (validates the whole allowlist — fleet-wide-unique engine
+   names, the one front port, flags that survive the env-file round trip), then
+   **`./sparky.sh check`** to dry-run and **`./sparky.sh deploy`** to install it.
+5. **`./sparky.sh activate <name>`** to serve it.
+
+Two constraints the fleet enforces, worth knowing before you write the file:
+
+- **Engine names are unique fleet-wide**, not just within a profile — an engine name
+  is its systemd instance (`vllm@<name>.service`) *and* its env file path.
+- **Every engine listens on port 8000.** At most one is live fleet-wide, which is what
+  lets the stable endpoint be a static health-checked upstream list. If you ever want
+  two models live at once, that needs its own port/hostname route — and a written
+  decision first.
+- A serve flag may contain spaces and double quotes but **not a single quote**: flags
+  travel to systemd as one single-quoted value that is re-split on whitespace with no
+  quote processing. Write JSON args unspaced and unquoted —
+  `--speculative-config {"method":"mtp","num_speculative_tokens":3}`.
 
 See [`serving-topology.md`](serving-topology.md) for the full schema (every
 field an engine entry can take).

@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+# The LOCAL bounded trigger (ADR-0018). Unlike a scoped-`systemctl` grant — which
+# is still a family of general-purpose commands, i.e. a shell-shaped hole reachable
+# from a web API — the only invocable thing here is ONE fixed, input-validating
+# program that can do nothing but activate a deployed, allowlisted profile.
+#
+# Members of `{{ activate_group }}` are the activation identity: the control-panel
+# service ({{ activate_user }}) and geoff. `deploy`'s NOPASSWD: ALL is NOT reachable
+# from any service — it is enterable only through geoff's password.
+%{{ activate_group }} ALL=(root) NOPASSWD: {{ activate_bin }}
+
+# The cross-node trigger arrives as forced-command SSH; sshd puts the request in
+# SSH_ORIGINAL_COMMAND, and sudo's env_reset would otherwise drop it. The value
+# never reaches a shell (the forced command is a fixed string) and the reconciler
+# validates it against a four-token grammar before acting.
+Defaults:{{ activate_user }} env_keep += "SSH_ORIGINAL_COMMAND"

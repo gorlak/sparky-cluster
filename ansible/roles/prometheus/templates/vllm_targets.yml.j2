@@ -1,17 +1,13 @@
 # {{ ansible_managed }}
-# vLLM scrape targets generated from the profile's serving_topology. Prometheus
-# reads this via file_sd and hot-reloads on change, so deploying a profile with a
-# different set of engines re-points Prometheus with no restart. One entry per
-# vLLM engine = its API node (nodes[0]) on its port. Each engine's metrics already
-# carry a model_name label, which is what the Grafana dashboard groups by; the
-# extra node label below just makes the target's host readable (instance is an IP).
-{% set vllm_engines = serving_topology | selectattr('kind', 'equalto', 'vllm') | list %}
-{% if vllm_engines %}
-{% for e in vllm_engines %}
-- targets: ["{{ hostvars[e.nodes[0]].vllm_host_ip }}:{{ e.port }}"]
+# One STATIC vLLM scrape target: the fixed model endpoint (ADR-0018). Prometheus is
+# configured once at deploy time and never re-pointed by an activation — Caddy's
+# health-checked upstream list already routes to whichever node is serving, so the
+# scrape follows the live engine for free.
+#
+# The series stay separable because vLLM's metrics carry a `model_name` label, which
+# is what the Grafana dashboard groups by; a switch shows up as one series ending and
+# another beginning. `up` goes to 0 for the window where nothing is activated — that
+# is the honest reading of "the fleet is serving nothing", not a fault.
+- targets: ["{{ model_endpoint_host }}:80"]
   labels:
-    node: "{{ e.nodes[0] }}"
-{% endfor %}
-{% else %}
-[]
-{% endif %}
+    endpoint: "{{ stable_model_name }}"

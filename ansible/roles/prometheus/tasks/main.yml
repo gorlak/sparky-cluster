@@ -25,7 +25,7 @@
   become: true
   notify: restart prometheus
 
-- name: Template vLLM scrape targets from serving_topology (file_sd)
+- name: Template the vLLM scrape target — the fixed model endpoint (file_sd)
   ansible.builtin.template:
     src: vllm_targets.yml.j2
     dest: "{{ prometheus_dir }}/etc/vllm_targets.yml"
@@ -33,8 +33,9 @@
     group: root
     mode: "0644"
   become: true
-  # No restart/notify: Prometheus file_sd hot-reloads this file on change, so a
-  # profile switch that changes the engine set re-points scraping on its own.
+  # No restart/notify: Prometheus file_sd hot-reloads this file on change. Since
+  # ADR-0018 the target is a deploy-time constant, so an activation moves nothing
+  # here — Caddy's health-checked upstreams already route the scrape at the live node.
 
 - name: Template the Prometheus compose file
   ansible.builtin.template:

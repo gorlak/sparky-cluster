@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# Per-node wiring for {{ activate_bin }} (ADR-0018). The reconciler's PATHS are
+# hardcoded on purpose — its whole security value is that it cannot be pointed
+# somewhere else — so this file carries only "who am I, and how do I reach the
+# others". Root-owned: the activation identity can trigger the reconciler but
+# cannot re-aim it.
+THIS_NODE={{ inventory_hostname }}
+IS_HEAD={{ 1 if inventory_hostname in groups['head'] else 0 }}
+NODES='{{ groups['all'] | sort | join(' ') }}'
+{% for node in groups['all'] | sort %}
+ADDR_{{ node }}={{ hostvars[node].vllm_host_ip }}
+{% endfor %}
+# The forced-command channel: the key IS the credential, the forced command on the
+# far side IS the bound. Only root reads the key on the head; the activation
+# identity reaches workers for read-only `status` with its own copy.
+SSH_USER={{ activate_user }}
+SSH_KEY={{ activate_ssh_key }}
+# A worker that never answers must fail the activation rather than hang it — the
+# fleet then falls to `empty` (ADR-0018's peer-join invariant).
+REMOTE_TIMEOUT=300

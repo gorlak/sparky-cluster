@@ -1,37 +1,56 @@
 ---
-# Stop the cluster and free GPU memory. Discovers every vLLM and Ollama engine
-# unit on each node (vllm.service / vllm-*.service, ollama.service /
-# ollama-*.service) and stops + disables + removes it — so it works regardless of
-# which engines a profile defined. Open WebUI is CPU-only and is left running
-# unless you explicitly ask for it:
+# BREAK-GLASS teardown. The normal way to stop serving is `./sparky.sh activate
+# empty` — unprivileged, marker-transactional, and it leaves the fleet in a state
+# the reconciler and systemd agree on. This playbook is the privileged fallback for
+# when the reconciler itself is broken or missing: it stops every managed engine
+# unit directly and clears the markers so nothing comes back on the next boot.
 #
-#   ./sparky.sh teardown                 # stops all vLLM + Ollama engines on both nodes
-#   ansible-playbook teardown.yml --tags webui   # also stops Open WebUI + Caddy
+#   ./sparky.sh teardown            # activate empty (preferred; no sudo)
+#   ansible-playbook teardown.yml   # break-glass, as deploy
+#   ansible-playbook teardown.yml --tags webui   # also stop Open WebUI + Caddy
 
-- name: Stop all vLLM + Ollama engines (all nodes)
+- name: Stop every vLLM engine (all nodes)
   hosts: all
   tasks:
-    - name: Find vLLM unit files
+    - name: Find the active-marker set
       ansible.builtin.find:
-        paths: /etc/systemd/system
-        patterns: ['vllm.service', 'vllm-*.service']
-      register: vllm_units
+        paths: "{{ vllm_active_dir }}"
+        file_type: file
+      register: active_markers
+      failed_when: false
 
-    - name: Stop and disable each vLLM unit
+    # Markers first, units second — the same order the reconciler uses, so an
+    # interrupted teardown still converges to "nothing desired" rather than
+    # resurrecting an engine at the next boot.
+    - name: Clear every desired marker
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ active_markers.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: Stop each engine instance
       ansible.builtin.systemd:
-        name: "{{ item.path | basename }}"
+        name: "vllm@{{ item.path | basename }}.service"
         state: stopped
-        enabled: false
-      loop: "{{ vllm_units.files }}"
+      loop: "{{ active_markers.files | default([]) }}"
       loop_control:
         label: "{{ item.path | basename }}"
       failed_when: false
 
-    - name: Remove each vLLM container
-      ansible.builtin.command: "docker rm -f {{ item.path | basename | regex_replace('\\.service$', '') }}"
-      loop: "{{ vllm_units.files }}"
-      loop_control:
-        label: "{{ item.path | basename }}"
+    # Catch anything running that had no marker (e.g. a hand-started unit) plus the
+    # pre-ADR-0018 per-engine units, then drop their containers. Strict namespace.
+    - name: Stop any remaining vLLM units
+      ansible.builtin.shell: >-
+        systemctl list-units --type=service --all --plain --no-legend 'vllm@*.service' 'vllm-*.service'
+        | awk '{print $1}' | xargs -r systemctl stop
+      changed_when: false
+      failed_when: false
+
+    - name: Remove any remaining vLLM containers
+      ansible.builtin.shell: >-
+        docker ps -aq --filter 'name=^vllm-' | xargs -r docker rm -f
       changed_when: false
       failed_when: false
 
@@ -59,23 +78,29 @@
       changed_when: false
       failed_when: false
 
-- name: Clear the topology state file (nothing deployed)
+- name: Record that nothing is selected (sparky)
   hosts: head
   tasks:
+    - name: Set the activation request to 'empty'
+      ansible.builtin.copy:
+        content: "empty\n"
+        dest: "{{ desired_profile_file }}"
+        owner: "{{ activate_user }}"
+        group: "{{ activate_group }}"
+        mode: "0664"
+
     - name: Overwrite current-topology.json with an empty topology
       ansible.builtin.copy:
-        content: "{{ {'profile': none, 'deployed_at': ansible_date_time.iso8601, 'engines': []} | to_nice_json }}\n"
+        content: "{{ {'profile': 'empty', 'activated_at': ansible_date_time.iso8601, 'deployed_at': ansible_date_time.iso8601, 'engines': []} | to_nice_json }}\n"
         dest: "{{ cluster_topology_file }}"
         owner: deploy
         group: cluster
         mode: "0644"
-      become: true
 
-    - name: Clear the deploy-gate breadcrumb (stale once nothing is deployed)
+    - name: Clear the gate breadcrumb (stale once nothing is serving)
       ansible.builtin.file:
         path: "{{ cluster_smoke_report }}"
         state: absent
-      become: true
 
 - name: Stop front-end — Open WebUI + Caddy (only with --tags webui)
   hosts: head

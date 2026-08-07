@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# The cross-node activation trigger (ADR-0018). Every key here is bound to the
+# reconciler and nothing else; the transport and its audit trail (sshd, auth.log)
+# already exist, so there is no new protocol and no token store.
+#
+# The forced command is a FIXED string — SSH_ORIGINAL_COMMAND is never interpolated
+# into it, so a client cannot smuggle a second command past the shell sshd uses to
+# run it. The reconciler reads and validates that variable itself, against a
+# four-token grammar, and re-checks the profile against THIS node's allowlist.
+command="sudo -n {{ activate_bin }}",no-pty,no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc {{ activate_pubkey.content | b64decode | trim }}

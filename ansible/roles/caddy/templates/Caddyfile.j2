@@ -6,6 +6,33 @@
 	admin localhost:2019
 }
 
+# The fixed model endpoint (ADR-0018). Open WebUI and Prometheus point HERE, once,
+# at deploy time — never at an engine's node.
+#
+# The upstream list is STATIC over every node and never rewritten: exactly one
+# engine is ever alive on :{{ vllm_api_port }} fleet-wide (the reconciler
+# stops-then-starts), so `lb_policy first` + active health checks make routing
+# FOLLOW activation with no config rewrite, no reload, and no persisted state. On
+# boot Caddy comes up static and converges the moment the restored engine passes
+# health. Replicas of one model, if ever wanted, are the same mechanism — two
+# healthy upstreams and Caddy balances.
+http://{{ model_endpoint_host }} {
+	reverse_proxy {% for node in groups['all'] | sort %}{{ hostvars[node].vllm_host_ip }}:{{ vllm_api_port }} {% endfor %}{
+		lb_policy first
+		health_uri /health
+		health_interval 5s
+		health_timeout 2s
+		health_status 2xx
+		fail_duration 10s
+		# A cold engine can take many minutes to load weights; don't cut the request
+		# that arrives while it finishes.
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 600s
+		}
+	}
+}
+
 # Open WebUI — its own hostname, served at root (avoids Open WebUI's subpath issues).
 http://chat.{{ web_domain }} {
 	reverse_proxy 127.0.0.1:{{ webui_port }}
@@ -19,13 +46,23 @@ http://metrics.{{ web_domain }} {
 # Landing page + control panel — catch-all for any other host on :80
 # ({{ web_domain }}, bare IP, etc.)
 :80 {
-	# Control panel at /admin (prefix stripped before proxying). It's open today
-	# (cluster is behind the firewall); to gate it later, uncomment basic_auth and
-	# supply a hash from a gitignored var (e.g. `caddy hash-password`).
+	# The one unauthenticated sliver of the panel: the landing page's fail-safe
+	# banner (ADR-0009). Read-only, three booleans, no actions — worth keeping open
+	# so "is the cluster in recovery?" is answerable without a login.
+	handle /cluster-health.json {
+		rewrite * /health.json
+		reverse_proxy 127.0.0.1:{{ control_panel_port }}
+	}
+
+	# Control panel at /admin (prefix stripped before proxying). ADR-0008 built this
+	# auth seam and deferred it while the panel was human-only behind the firewall;
+	# ADR-0018 turns it ON — the panel is now deliberately agent-drivable and holds
+	# the activation grant, so it can't stay open. The hash is a runtime secret
+	# ({{ caddy_admin_hash_file }}), never in git: `./sparky.sh admin-password`.
 	handle_path /admin* {
-		# basic_auth {
-		# 	admin {{ admin_basic_auth_hash | default('REPLACE_ME') }}
-		# }
+		basic_auth {
+			{{ admin_basic_auth_user }} {{ admin_basic_auth_hash }}
+		}
 		reverse_proxy 127.0.0.1:{{ control_panel_port }}
 	}
 

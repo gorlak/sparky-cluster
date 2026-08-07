@@ -1,7 +1,0 @@
----
-# Where `./sparky.sh deploy` publishes the sparky harness (see sparky/ansible.py). The gate
-# builds a stdlib venv here and runs the CLI from it.
-harness_dir: /opt/cluster/sparky
-# In-flight topology the gate probes (current-topology.json isn't written until the
-# end of the deploy, so the gate renders this from serving_topology).
-smoke_topology_file: "{{ harness_dir }}/.smoke-topology.json"

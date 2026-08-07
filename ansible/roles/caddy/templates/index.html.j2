@@ -40,8 +40,9 @@
   </ul>
   <script>
     // Reveal the banner if the control panel reports the fail-safe recovery
-    // state (ADR-0009). Same-origin via Caddy's /admin route; fails silently.
-    fetch('/admin/health.json')
+    // state (ADR-0009). Caddy exposes this one read-only sliver of the panel
+    // outside /admin's basic_auth (ADR-0018); fails silently.
+    fetch('/cluster-health.json')
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         if (d && d.failsafe) document.getElementById('failsafe-banner').style.display = 'block';

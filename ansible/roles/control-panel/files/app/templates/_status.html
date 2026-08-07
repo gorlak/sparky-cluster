@@ -4,28 +4,62 @@
     <strong>⚠ Fail-safe recovery</strong>
     <p>An engine was skipped at boot — the last shutdown was unclean (hang / hard-reset),
        so the node came up empty and reachable instead of re-running the risky load
-       (ADR-0009). Recover to the deployed configuration:</p>
+       (ADR-0009). Recovery is an activation: it clears the marker and starts the engines.</p>
     <div class="actions">
       {% if s.profile and s.profile != 'empty' %}
       <button class="btn"
-              hx-post="{{ root }}/run/deploy" hx-vals='{"profile": "{{ s.profile }}"}'
+              hx-post="{{ root }}/run/reactivate"
               hx-target="#actionarea" hx-swap="outerHTML"
-              hx-confirm="Retry the deployed profile '{{ s.profile }}'? Clears the fail-safe markers and brings the topology back up.">
-        Retry PROFILE={{ s.profile }}
+              hx-confirm="Re-activate '{{ s.profile }}'? Clears the fail-safe markers and brings its engines back up.">
+        Re-activate {{ s.profile }}
       </button>
       {% endif %}
       <button class="btn danger"
-              hx-post="{{ root }}/run/deploy" hx-vals='{"profile": "empty"}'
+              hx-post="{{ root }}/run/activate" hx-vals='{"profile": "empty"}'
               hx-target="#actionarea" hx-swap="outerHTML"
-              hx-confirm="Deploy PROFILE=empty? Brings the cluster to the safe empty state (nothing serving).">
-        Deploy PROFILE=empty
+              hx-confirm="Activate 'empty'? Brings the cluster to the safe state — nothing serving.">
+        Activate empty
       </button>
     </div>
   </div>
 {% endif %}
+{% if s.switching %}
+  <div class="banner loading">
+    <strong>⏳ Switching to <code>{{ s.requested }}</code></strong>
+    <p>An activation is in flight. The outgoing engines are stopping and the new ones
+       are starting; the table below still describes <code>{{ s.profile }}</code>,
+       because what's live is only recorded once the switch lands. Chat is unavailable
+       until it finishes. This is expected — nothing is wrong.</p>
+  </div>
+{% elif s.phase == 'loading' %}
+  <div class="banner loading">
+    <strong>⏳ Loading weights — not serving yet</strong>
+    <p>An activation is in flight. The engines are up; the model is still reading its
+       weights, which takes minutes for a large model and longer across two nodes.
+       Chat is unavailable until it finishes. This is expected — nothing is wrong.</p>
+  </div>
+{% elif s.phase == 'stalled' %}
+  <div class="banner">
+    <strong>✗ Stalled</strong>
+    <p>The engines are up but never became ready, and have been that way longer than a
+       weight load should take. Check <code>./sparky.sh logs</code>, then re-activate.</p>
+  </div>
+{% endif %}
+{% if s.pending %}
+  <div class="failsafe-banner" style="border-color:#ef6c00; background:#ef6c0014">
+    <strong style="color:#ef6c00">Pending definition change</strong>
+    <p>A deploy re-rendered {{ s.pending | join(', ') }} while it was serving. Deploy is
+       selection-neutral — it never drops a healthy engine — so the new definition is
+       installed but not running. Re-activate to apply it.</p>
+  </div>
+{% endif %}
 {% if s.has_topology %}
-  <p>Profile: <code>{{ s.profile or 'none' }}</code>
-     {% if s.deployed_at %}<span class="ts">· deployed {{ s.deployed_at }}</span>{% endif %}</p>
+  <p>Live: <code>{{ s.profile or 'none' }}</code>
+     <span class="badge {{ s.phase }}">{{ s.phase }}</span>
+     {% if s.requested and s.requested != s.profile %}
+       <span class="ts">· requested <code>{{ s.requested }}</code></span>
+     {% endif %}
+     {% if s.deployed_at %}<span class="ts">· activated {{ s.deployed_at }}</span>{% endif %}</p>
   {% if s.engines %}
   <table>
     <thead><tr><th>Engine</th><th>Kind</th><th>Model</th><th>API</th><th>Nodes</th></tr></thead>
@@ -36,7 +70,12 @@
         <td>{{ e.kind }}</td>
         <td>{{ e.model }}</td>
         <td>
-          {% if e.api_ok %}<span class="ok">up</span>{% else %}<span class="bad">down</span>{% endif %}
+          {% if e.phase == 'serving' %}<span class="ok">up</span>
+          {% elif e.phase == 'loading' %}<span class="loading">loading{% if e.elapsed %} · {{ (e.elapsed // 60) }}m{{ '%02d'|format(e.elapsed % 60) }}s{% endif %}</span>
+          {% elif e.phase == 'switching' %}<span class="loading">switching…</span>
+          {% elif e.phase == 'stalled' %}<span class="bad">stalled</span>
+          {% elif e.phase == 'failsafe' %}<span class="bad">fail-safe</span>
+          {% else %}<span class="bad">down</span>{% endif %}
           {% if e.api_model %}<span class="ts">{{ e.api_model }}</span>{% endif %}
         </td>
         <td>
@@ -49,10 +88,10 @@
     </tbody>
   </table>
   {% else %}
-  <p>No engines deployed.</p>
+  <p>Nothing serving — the cluster is <code>empty</code> and the hardware is free.</p>
   {% endif %}
 {% else %}
-  <p class="hint">No topology state recorded — showing discovered units.</p>
+  <p class="hint">Nothing has been activated yet — showing each node's installed engines.</p>
   <table>
     <thead><tr><th>Unit</th><th>State</th></tr></thead>
     <tbody>

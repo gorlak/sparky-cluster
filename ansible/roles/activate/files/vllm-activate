@@ -1,0 +1,695 @@
+#!/usr/bin/env python3
+"""vllm-activate — the fixed activation reconciler (ADR-0018).
+
+`deploy` sets the boundary of what may run; **this** is the only thing that changes
+what *is* running. It is a **oneshot script, not a daemon**: nothing runs until an
+activation is requested, so there is no resident process to keep alive, monitor, or
+trust while idle — and a missing or broken copy means you cannot *change* the model,
+while boot, recovery, and the currently-serving model all keep working (systemd is
+the boot authority; the markers carry the decision).
+
+It does exactly one narrow thing: **activate a deployed, allowlisted profile**,
+re-validating the request against the installed env files before it acts. It never
+renders config, never runs ansible, never runs an arbitrary command.
+
+    Request   {desired_profile}  — group-writable, written with NO sudo
+    Allowlist {allowlist}  — deploy-written, root-owned
+    Surface   {engines_dir}/<engine>.env       — deploy-written, root-owned
+    Gate      {active_dir}/<engine>            — PER-NODE, written here
+
+Invoked through two bounded triggers, both stock idioms — no protocol, no token
+store, and their audit trails (sudo, sshd, auth.log) already exist:
+
+  * local  — a single-command sudoers entry for the activation identity;
+  * cross-node — forced-command SSH to the same identity on each worker, with the
+    request arriving in SSH_ORIGINAL_COMMAND and **re-validated on the worker**.
+
+Usage (local; all forms require root):
+    vllm-activate                  orchestrate the fleet to {desired_profile}
+    vllm-activate --force          … restarting target engines even if unchanged
+    vllm-activate --preserve       … but never restart a healthy engine; report
+                                     engines whose definition moved under them
+    vllm-activate <profile>        orchestrate to <profile> (records the request)
+    vllm-activate --status         this node's engine states, as JSON
+    vllm-activate --node <profile> --phase (stop|start|all) [--force] [--preserve]
+                                   reconcile THIS node only (the worker entry point)
+
+Over the forced-command channel, SSH_ORIGINAL_COMMAND is one of:
+    status
+    <phase> <profile> [force] [preserve]
+
+Safety contract (the ADR-0018 invariants):
+  * **Fail to `empty` on any uncertainty** — an unreadable/unparseable request, an
+    unknown profile, or a failure on any node activates *nothing*; never a guess.
+  * **Reachability is never gated on a model** — only vllm@ units are touched.
+  * **The markers are the source of truth** — each node writes its marker set as an
+    all-or-nothing transaction, *then* drives systemd to match; any mid-run failure
+    re-drives systemd back to the markers, and a reconciler killed mid-run is
+    recovered the same way by the next run.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+# Paths are fixed on purpose: this program's whole security value is that it cannot
+# be pointed somewhere else. Per-node wiring (who am I, how do I reach the others)
+# comes from CONF, which only `deploy` can write.
+ENGINES_DIR = Path("/opt/vllm/engines")
+ACTIVE_DIR = Path("/opt/vllm/active")
+STATE_DIR = Path("/opt/vllm/state")
+ALLOWLIST = ENGINES_DIR / "allowlist"
+CONF = Path("/opt/vllm/activate.conf")
+DESIRED_PROFILE = Path("/opt/cluster/desired-profile")
+TOPOLOGY_FILE = Path("/opt/cluster/current-topology.json")
+SMOKE_REPORT = Path("/opt/cluster/last-smoke.json")
+LOCK_FILE = Path("/run/vllm-activate.lock")
+
+EMPTY = "empty"
+# The one grammar the forced-command channel accepts. Profile names are
+# <model>-<version>-<quant> triples, so dots are in; nothing else is.
+TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+PHASES = ("stop", "start", "all")
+
+
+class ActivateError(Exception):
+    """A refusal or a failure. Always ends in fail-to-empty at the fleet level."""
+
+
+# --------------------------------------------------------------------------
+# reading the world
+# --------------------------------------------------------------------------
+
+def parse_env(text: str) -> dict[str, str]:
+    """Parse a systemd-style env file the same way systemd's EnvironmentFile does
+    for the subset we render: `KEY=value`, `KEY='value'`, `KEY="value"`, blank
+    lines and `#` comments. Quotes are stripped only when they wrap the value."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        out[key] = value
+    return out
+
+
+def read_engines(engines_dir: Path | None = None) -> dict[str, dict[str, str]]:
+    """Every engine `deploy` installed on THIS node: name -> its env vars, plus a
+    `_hash` of the file. The hash is what a marker records, so the reconciler can
+    tell "already serving this" from "serving an older definition of this"."""
+    engines_dir = engines_dir or ENGINES_DIR
+    engines: dict[str, dict[str, str]] = {}
+    if not engines_dir.is_dir():
+        return engines
+    for path in sorted(engines_dir.glob("*.env")):
+        raw = path.read_bytes()
+        env = parse_env(raw.decode("utf-8", "replace"))
+        env["_hash"] = _digest(raw)
+        engines[path.stem] = env
+    return engines
+
+
+def _digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def read_allowlist(path: Path | None = None) -> list[str]:
+    """Activatable profile names. `empty` is always activatable — it is the
+    fail-safe target and must never depend on a file being right."""
+    path = path or ALLOWLIST
+    names = [EMPTY]
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and line not in names:
+                names.append(line)
+    except OSError:
+        pass
+    return names
+
+
+def read_conf(path: Path | None = None) -> dict[str, str]:
+    path = path or CONF
+    try:
+        return parse_env(path.read_text())
+    except OSError:
+        return {}
+
+
+def read_markers(active_dir: Path | None = None) -> dict[str, str]:
+    """This node's desired set: engine -> the env-file hash recorded when it was
+    activated. Existence is what systemd's ConditionPathExists gates on; the
+    content is what tells us whether the definition has moved since."""
+    active_dir = active_dir or ACTIVE_DIR
+    markers: dict[str, str] = {}
+    if not active_dir.is_dir():
+        return markers
+    for path in sorted(active_dir.iterdir()):
+        # Dotfiles are this function's own write-and-rename scratch, never a marker.
+        if path.is_file() and not path.name.startswith("."):
+            markers[path.name] = path.read_text().strip()
+    return markers
+
+
+# --------------------------------------------------------------------------
+# the decision — pure, and the part the test regiment exercises
+# --------------------------------------------------------------------------
+
+class Plan:
+    """(requested profile x installed env files x markers x live units) -> the
+    marker set and the unit start/stop plan. No I/O; see tests/test_activate.py."""
+
+    def __init__(self, markers, drop_markers, stop, start, restart, pending, leave):
+        self.markers = markers          # engine -> hash, the node's new desired set
+        self.drop_markers = drop_markers  # engines whose marker must go
+        self.stop = stop                # units to stop (stop phase)
+        self.start = start              # units to start (start phase)
+        self.restart = restart          # target units whose definition moved: stop+start
+        self.pending = pending          # --preserve: moved, but left running
+        self.leave = leave              # target units already serving the current definition
+
+    @property
+    def changes(self) -> bool:
+        return bool(self.stop or self.start or self.restart or self.drop_markers)
+
+    def as_dict(self) -> dict:
+        return {"markers": self.markers, "drop_markers": self.drop_markers,
+                "stop": self.stop, "start": self.start, "restart": self.restart,
+                "pending": self.pending, "leave": self.leave}
+
+
+def plan(profile, engines, node, markers, active, *, force=False, preserve=False) -> Plan:
+    """Decide this node's reconcile.
+
+    `engines` is read_engines() output, `markers` read_markers() output, and
+    `active` maps engine -> bool (is its unit running?). `profile` must already be
+    validated against the allowlist by the caller — planning an unknown profile
+    would yield an empty target set, which reads as "activate nothing" and would
+    quietly look like success.
+    """
+    target = sorted(
+        name for name, env in engines.items()
+        if env.get("ENGINE_PROFILE") == profile and node in env.get("ENGINE_NODES", "").split()
+    )
+    # Everything else this node could run — plus any marker with no env file behind
+    # it (an engine `deploy` removed from this node): both must end up stopped and
+    # unmarked, or a reboot would try to start something that no longer exists.
+    others = sorted((set(engines) | set(markers)) - set(target))
+
+    drop_markers = [e for e in others if e in markers]
+    stop = [e for e in others if active.get(e)]
+
+    new_markers, start, restart, pending, leave = {}, [], [], [], []
+    for e in target:
+        current = engines[e]["_hash"]
+        moved = markers.get(e) != current
+        new_markers[e] = current
+        if not active.get(e):
+            start.append(e)
+        elif force or (moved and not preserve):
+            restart.append(e)
+        elif moved:
+            # --preserve leaves it serving the OLDER definition, so its marker must
+            # keep recording that older definition — otherwise the next activate
+            # would see nothing moved and never apply the deploy's changes.
+            new_markers[e] = markers[e]
+            pending.append(e)
+        else:
+            leave.append(e)
+    return Plan(new_markers, drop_markers, stop, start, restart, pending, leave)
+
+
+# --------------------------------------------------------------------------
+# driving one node
+# --------------------------------------------------------------------------
+
+def _systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    proc = subprocess.run(["systemctl", *args], capture_output=True, text=True)
+    if check and proc.returncode != 0:
+        raise ActivateError(f"systemctl {' '.join(args)}: {proc.stderr.strip() or proc.stdout.strip()}")
+    return proc
+
+
+def unit_of(engine: str) -> str:
+    return f"vllm@{engine}.service"
+
+
+def is_active(engine: str) -> bool:
+    return _systemctl("is-active", "--quiet", unit_of(engine), check=False).returncode == 0
+
+
+def live_state(engines) -> dict[str, bool]:
+    return {name: is_active(name) for name in engines}
+
+
+def active_for(engine: str) -> float | None:
+    """Seconds since this engine's unit entered the active state, or None if it is
+    not active. Monotonic, so it survives a clock step.
+
+    This is what lets a reader tell **loading from broken**. A unit is `active` the
+    instant docker forks — a big model then spends ten to twenty minutes loading
+    weights with no API — so "unit up, API down" is the *expected* state for most of
+    an activation, and is indistinguishable from a genuinely stuck engine without
+    knowing how long it has been that way.
+    """
+    raw = _systemctl("show", unit_of(engine), "-p", "ActiveEnterTimestampMonotonic",
+                     "--value", check=False).stdout.strip()
+    try:
+        entered = int(raw) / 1_000_000
+    except ValueError:
+        return None
+    if entered <= 0:
+        return None
+    with open("/proc/uptime") as handle:
+        return max(0.0, float(handle.read().split()[0]) - entered)
+
+
+def write_markers(new: dict[str, str], drop: list[str]) -> dict[str, str]:
+    """Write this node's marker set as an all-or-nothing transaction, returning the
+    previous set so the caller can roll back. Markers are written BEFORE systemd is
+    touched: they are the source of truth, so a crash between the two leaves live
+    state recoverable by simply re-driving to the markers."""
+    ACTIVE_DIR.mkdir(parents=True, exist_ok=True)
+    previous = read_markers()
+    backup = Path(tempfile.mkdtemp(prefix=".markers-", dir=str(ACTIVE_DIR.parent)))
+    try:
+        for name, value in previous.items():
+            (backup / name).write_text(value + "\n")
+        for name, value in new.items():
+            tmp = ACTIVE_DIR / f".{name}.tmp"
+            tmp.write_text(value + "\n")
+            tmp.replace(ACTIVE_DIR / name)
+        for name in drop:
+            (ACTIVE_DIR / name).unlink(missing_ok=True)
+        for name in set(previous) - set(new) - set(drop):
+            (ACTIVE_DIR / name).unlink(missing_ok=True)
+    except Exception:
+        for path in ACTIVE_DIR.iterdir():
+            if path.is_file():
+                path.unlink(missing_ok=True)
+        for path in backup.iterdir():
+            shutil.copyfile(path, ACTIVE_DIR / path.name)
+        raise
+    finally:
+        shutil.rmtree(backup, ignore_errors=True)
+    return previous
+
+
+def stop_engine(engine: str) -> None:
+    _systemctl("stop", unit_of(engine))
+
+
+def start_engine(engine: str) -> None:
+    # Activation is explicit and operator- or agent-initiated, so it must always
+    # proceed — including as the recovery path out of an ADR-0009 fail-safe boot,
+    # where the surviving `.running` marker would otherwise make `start` a silent
+    # no-op via ConditionPathExists.
+    (STATE_DIR / f"vllm-{engine}.running").unlink(missing_ok=True)
+    # …and out of a crash loop. Once StartLimitBurst trips, systemd refuses `start`
+    # with "Start request repeated too quickly" until the unit is reset. Without this,
+    # recovering a crash-looped engine would need root by some other route — which is
+    # precisely what this program exists to avoid.
+    _systemctl("reset-failed", unit_of(engine), check=False)
+    _systemctl("start", unit_of(engine))
+
+
+def drive_from_markers(phase: str = "all") -> None:
+    """Re-drive systemd to whatever the markers currently say. The recovery path:
+    used after a mid-reconcile failure, and equally the way a reconciler killed
+    mid-run is repaired by the next one."""
+    engines = read_engines()
+    markers = read_markers()
+    for name in sorted(engines):
+        want = name in markers
+        live = is_active(name)
+        if phase in ("stop", "all") and live and not want:
+            stop_engine(name)
+        if phase in ("start", "all") and want and not live:
+            start_engine(name)
+
+
+def reconcile_node(profile, *, phase="all", force=False, preserve=False, node=None) -> Plan:
+    """Reconcile THIS node to `profile`. Marker-first, then systemd."""
+    conf = read_conf()
+    node = node or conf.get("THIS_NODE") or os.uname().nodename.split(".")[0]
+    allowlist = read_allowlist()
+    if profile not in allowlist:
+        raise ActivateError(
+            f"refusing to activate {profile!r}: not in the allowlist on {node} "
+            f"({', '.join(allowlist)}). Deploy it first, or un-block its profile."
+        )
+    engines = read_engines()
+    missing = [
+        e for e, env in engines.items()
+        if env.get("ENGINE_PROFILE") == profile and node in env.get("ENGINE_NODES", "").split()
+        and not env.get("ENGINE_MODEL")
+    ]
+    if missing:
+        raise ActivateError(f"engine env files are incomplete on {node}: {missing}")
+
+    p = plan(profile, engines, node, read_markers(), live_state(engines),
+             force=force, preserve=preserve)
+
+    previous = None
+    try:
+        if phase in ("stop", "all"):
+            previous = write_markers(p.markers, p.drop_markers)
+            for engine in p.stop + p.restart:
+                stop_engine(engine)
+        if phase in ("start", "all"):
+            for engine in p.start + p.restart:
+                start_engine(engine)
+    except Exception as exc:
+        # Live state must never be left != the markers. write_markers() already
+        # rolled itself back if IT was what failed, so in every case re-driving to
+        # whatever the markers now say is the repair — the same repair the next run
+        # would apply to a reconciler killed mid-flight.
+        del previous
+        try:
+            drive_from_markers()
+        except Exception:  # noqa: BLE001 — the original failure is the useful one
+            pass
+        raise ActivateError(f"{node}: {exc}") from exc
+    return p
+
+
+def node_status(node: str | None = None) -> dict:
+    """This node's engines: state, marker, and whether its definition has moved.
+    The read-only half of the same bounded channel — it is how the control panel
+    sees a worker without holding any general-purpose remote command."""
+    conf = read_conf()
+    node = node or conf.get("THIS_NODE") or os.uname().nodename.split(".")[0]
+    engines, markers = read_engines(), read_markers()
+    entries = []
+    for name, env in sorted(engines.items()):
+        state = _systemctl("is-active", unit_of(name), check=False).stdout.strip() or "unknown"
+        # ADR-0009's recovery state is NARROW: this engine is desired, systemd left it
+        # stopped, and the unclean-shutdown marker survived to prove why. Everything
+        # else that merely isn't `active` is something in motion, and reporting it as
+        # fail-safe cries wolf about the one state that must never be ignored.
+        #
+        # `deactivating` in particular: ExecStop is `docker stop --time=120`, so a
+        # perfectly clean, deliberate stop sits there for up to two minutes with the
+        # marker still armed (ExecStopPost clears it only once the process is gone).
+        # That window used to render as "⚠ Fail-safe recovery" on every switch.
+        entries.append({
+            "name": name,
+            "profile": env.get("ENGINE_PROFILE"),
+            "unit": unit_of(name),
+            "state": state,
+            "active_for": active_for(name),
+            "desired": name in markers,
+            "pending": name in markers and markers[name] != env["_hash"],
+            "failsafe": (name in markers and state == "inactive"
+                         and (STATE_DIR / f"vllm-{name}.running").exists()),
+        })
+    return {"node": node, "engines": entries}
+
+
+# --------------------------------------------------------------------------
+# orchestrating the fleet (head only)
+# --------------------------------------------------------------------------
+
+def remote_nodes(conf: dict[str, str], this_node: str) -> list[str]:
+    return [n for n in conf.get("NODES", "").split() if n != this_node]
+
+
+def invoke_remote(conf, node, request: list[str]) -> str:
+    """Send one bounded request over the forced-command channel. The key IS the
+    credential and the forced command IS the bound; the request arrives in
+    SSH_ORIGINAL_COMMAND and is re-validated on the far side. Exit code + stdout
+    roll straight back here — synchronous, no polling."""
+    for token in request:
+        if not TOKEN_RE.match(token):
+            raise ActivateError(f"refusing to send malformed request token {token!r}")
+    addr = conf.get(f"ADDR_{node}")
+    if not addr:
+        raise ActivateError(f"no address for node {node!r} in {CONF}")
+    cmd = [
+        "ssh", "-i", conf.get("SSH_KEY", ""), "-l", conf.get("SSH_USER", "activator"),
+        "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+        "-o", "StrictHostKeyChecking=accept-new",
+        addr, " ".join(request),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          timeout=int(conf.get("REMOTE_TIMEOUT", "300")))
+    if proc.returncode != 0:
+        raise ActivateError(
+            f"{node}: {' '.join(request)} failed (rc={proc.returncode}): "
+            f"{proc.stderr.strip() or proc.stdout.strip()}"
+        )
+    return proc.stdout
+
+
+def orchestrate(profile: str, *, force=False, preserve=False) -> dict:
+    """Reconcile the whole fleet, synchronously, in two fleet-wide phases.
+
+    STOP everywhere before START anywhere. Per-node atomicity is not enough for a
+    TP=2 switch: if a worker started its new rank while the outgoing head still held
+    the rendezvous port, it would attach to the dying head's TCPStore and then hold a
+    stale connection when the new head opens a fresh one — the exact stale-worker
+    hang the matched-pair restart exists to prevent. Within START, workers go first
+    so the head's rendezvous finds its peers already retrying.
+    """
+    conf = read_conf()
+    if not conf:
+        # Without the wiring we cannot know which workers exist, and reconciling only
+        # this node would silently leave a worker serving the outgoing model. Refuse.
+        raise ActivateError(f"no {CONF} — this node has never been deployed. "
+                            f"Run ./sparky.sh deploy first.")
+    this_node = conf.get("THIS_NODE") or os.uname().nodename.split(".")[0]
+    allowlist = read_allowlist()
+    if profile not in allowlist:
+        raise ActivateError(
+            f"refusing to activate {profile!r}: not in the allowlist "
+            f"({', '.join(allowlist)}). Deploy it first, or un-block its profile."
+        )
+    workers = remote_nodes(conf, this_node)
+    flags = (["force"] if force else []) + (["preserve"] if preserve else [])
+    results: dict[str, object] = {}
+
+    for phase in ("stop", "start"):
+        order = workers + [this_node] if phase == "start" else [this_node] + workers
+        for node in order:
+            if node == this_node:
+                p = reconcile_node(profile, phase=phase, force=force,
+                                   preserve=preserve, node=this_node)
+                # The stop phase computed the full plan (the start phase re-plans
+                # against markers this run already committed, so it sees no change).
+                results.setdefault(this_node, p.as_dict())
+            else:
+                invoke_remote(conf, node, [phase, profile, *flags])
+                results.setdefault(node, "ok")
+    return results
+
+
+def read_index(path: Path | None = None) -> list[dict]:
+    """The FLEET-WIDE engine index (deploy-written, identical on every node). A node's
+    env files describe only what it can run, so the head — which records the live
+    topology — needs this to see a worker-only engine at all."""
+    try:
+        return json.loads((path or (ENGINES_DIR / "index.json")).read_text())
+    except (OSError, ValueError):
+        return []
+
+
+def topology_entries(profile: str) -> list[dict]:
+    """Every engine of `profile`, fleet-wide. Falls back to this node's own env files
+    if the index is missing — a degraded but honest view rather than an empty one."""
+    index = [e for e in read_index() if e.get("profile") == profile]
+    if not index:
+        index = [
+            {"name": name, "profile": profile, "nodes": env.get("ENGINE_NODES", "").split(),
+             "api_node": env.get("ENGINE_API_NODE"), "api_addr": env.get("ENGINE_API_ADDR"),
+             "port": env.get("ENGINE_PORT"), "model": env.get("ENGINE_MODEL"),
+             "served_as": env.get("ENGINE_SERVED_AS"),
+             "stable_name": env.get("ENGINE_STABLE_NAME")}
+            for name, env in sorted(read_engines().items())
+            if env.get("ENGINE_PROFILE") == profile
+        ]
+    entries = []
+    for e in sorted(index, key=lambda x: x.get("name", "")):
+        name = e["name"]
+        nodes = e.get("nodes") or []
+        entries.append({
+            "name": name,
+            "kind": "vllm",
+            "unit": unit_of(name),
+            "container": f"vllm-{name}",
+            "nodes": nodes,
+            "api_node": e.get("api_node") or (nodes[0] if nodes else None),
+            "port": int(e.get("port") or 0),
+            "api_url": f"http://{e.get('api_addr')}:{e.get('port')}",
+            "served_as": e.get("served_as") or "",
+            "stable_name": e.get("stable_name") or "",
+            "model": e.get("model") or "",
+            "marker": str(STATE_DIR / f"vllm-{name}.running"),
+        })
+    return entries
+
+
+def record_topology(profile: str) -> None:
+    """Write the live topology the control panel and the harness read. The
+    reconciler owns it because the reconciler is what makes a topology live —
+    `deploy` no longer knows what is serving."""
+    entries = topology_entries(profile)
+    payload = {
+        "profile": profile,
+        "engines": entries,
+        "activated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    payload["deployed_at"] = payload["activated_at"]  # back-compat with readers
+    tmp = TOPOLOGY_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n")
+    os.chmod(tmp, 0o644)
+    tmp.replace(TOPOLOGY_FILE)
+
+
+def read_request() -> str:
+    """The requested profile, from the group-writable request file. Unreadable or
+    unparseable means uncertainty, and uncertainty means `empty`."""
+    try:
+        value = DESIRED_PROFILE.read_text().strip().splitlines()[0].strip()
+    except (OSError, IndexError):
+        return EMPTY
+    return value if TOKEN_RE.match(value) else EMPTY
+
+
+def record_request(profile: str) -> None:
+    """Keep the request in step with what actually happened (notably: recording
+    `empty` when we failed to it). Truncated in place — the inode's group ownership is
+    what lets the unprivileged activation identity write this file, and rewriting it
+    as root would take that away."""
+    try:
+        with open(DESIRED_PROFILE, "w") as handle:
+            handle.write(profile + "\n")
+    except OSError:
+        pass
+
+
+def run_fleet(profile: str, *, force=False, preserve=False) -> int:
+    """Orchestrate, and fail to `empty` on any error."""
+    # A stale gate result must never be mistaken for a result about the live model.
+    SMOKE_REPORT.unlink(missing_ok=True)
+    try:
+        results = orchestrate(profile, force=force, preserve=preserve)
+    except ActivateError as exc:
+        print(f"activate {profile}: {exc}", file=sys.stderr)
+        if profile != EMPTY:
+            print("falling back to `empty` — activating nothing.", file=sys.stderr)
+            record_request(EMPTY)
+            try:
+                orchestrate(EMPTY)
+                record_topology(EMPTY)
+            except ActivateError as fallback:
+                print(f"fail-safe to empty ALSO failed: {fallback}", file=sys.stderr)
+        return 1
+
+    record_request(profile)
+    record_topology(profile)
+    local = results.get(read_conf().get("THIS_NODE", ""), {})
+    if isinstance(local, dict) and local.get("pending"):
+        print(f"note: {', '.join(local['pending'])} are running an OLDER definition "
+              f"than the last deploy rendered — re-run activate (without --preserve) "
+              f"to apply it.")
+    print(json.dumps({"profile": profile, "nodes": results}, indent=2))
+    return 0
+
+
+# --------------------------------------------------------------------------
+# entry point
+# --------------------------------------------------------------------------
+
+def parse_ssh_request(original: str) -> list[str]:
+    """Validate SSH_ORIGINAL_COMMAND against the one grammar this channel accepts.
+    The value never reaches a shell — the forced command is a fixed string and this
+    is an env var — so validation is about refusing nonsense, not escaping it."""
+    tokens = original.split()
+    if not tokens or len(tokens) > 4 or not all(TOKEN_RE.match(t) for t in tokens):
+        raise ActivateError(f"malformed request: {original!r}")
+    if tokens[0] == "status":
+        if len(tokens) != 1:
+            raise ActivateError(f"malformed request: {original!r}")
+        return tokens
+    if tokens[0] not in PHASES or len(tokens) < 2:
+        raise ActivateError(f"malformed request: {original!r}")
+    if any(t not in ("force", "preserve") for t in tokens[2:]):
+        raise ActivateError(f"malformed request: {original!r}")
+    return tokens
+
+
+def main(argv: list[str]) -> int:
+    original = os.environ.get("SSH_ORIGINAL_COMMAND")
+    if original is not None and not argv:
+        # Arrived over the forced-command channel: the request is the env var.
+        try:
+            tokens = parse_ssh_request(original)
+        except ActivateError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if tokens[0] == "status":
+            print(json.dumps(node_status()))
+            return 0
+        phase, profile = tokens[0], tokens[1]
+        argv = ["--node", profile, "--phase", phase] + [f"--{t}" for t in tokens[2:]]
+
+    force = "--force" in argv
+    preserve = "--preserve" in argv
+    if "--status" in argv:
+        print(json.dumps(node_status(), indent=2))
+        return 0
+
+    if os.geteuid() != 0:
+        print(f"{sys.argv[0]} must run as root — it is reached through the "
+              f"single-command sudoers entry or forced-command SSH.", file=sys.stderr)
+        return 2
+
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_FILE, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("another activation is in flight — refusing to interleave.", file=sys.stderr)
+            return 2
+
+        if "--node" in argv:
+            # A missing value is uncertainty, and uncertainty means `empty` — never a
+            # guess at which model the caller meant.
+            i = argv.index("--node")
+            profile = argv[i + 1] if len(argv) > i + 1 else EMPTY
+            phase = "all"
+            if "--phase" in argv:
+                j = argv.index("--phase")
+                phase = argv[j + 1] if len(argv) > j + 1 else "?"
+            if phase not in PHASES:
+                print(f"unknown phase {phase!r}", file=sys.stderr)
+                return 2
+            try:
+                reconcile_node(profile, phase=phase, force=force, preserve=preserve)
+            except ActivateError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            return 0
+
+        positional = [a for a in argv if not a.startswith("-")]
+        profile = positional[0] if positional else read_request()
+        return run_fleet(profile, force=force, preserve=preserve)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

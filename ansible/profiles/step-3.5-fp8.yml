@@ -39,11 +39,3 @@ serving_topology:
       - --reasoning-parser step3p5
     worker_extra_args:
       - --enable-chunked-prefill
-
-# Front-end
-enable_open_webui: true
-enable_reverse_proxy: true
-enable_control_panel: true
-
-# Observability
-enable_metrics: true
