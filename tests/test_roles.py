@@ -101,3 +101,55 @@ def test_every_role_referenced_by_a_playbook_exists():
                 if name and name not in known:
                     missing.append(f"{playbook.name}: {name}")
     assert not missing, "playbook references a role that doesn't exist:\n  " + "\n  ".join(missing)
+
+
+# --- container images: sourced, pinned, and placed (ADR-0013) ---------------
+
+def _group_vars() -> dict:
+    return yaml.safe_load((PLAYBOOKS / "group_vars/all.yml").read_text())
+
+
+def test_every_pulled_image_is_digest_pinned():
+    """A floating tag is not a version. `:latest` pulled on two nodes days apart gives
+    two different images — which is not hypothetical: it is exactly what happened to
+    `alpine:latest` on this cluster. Locally-built images are exempt; they have no
+    registry digest.
+    """
+    gv = _group_vars()
+    floating = []
+    for entry in gv["container_images"]:
+        ref = entry.get("pull")
+        if not ref:
+            continue
+        # entries reference a *_image var; resolve it
+        var = ref.strip("{} \"'")
+        resolved = gv.get(var, ref)
+        if "@sha256:" not in resolved:
+            floating.append(f"{var} = {resolved}")
+    assert not floating, "these must be pinned by digest:\n  " + "\n  ".join(floating)
+
+
+def test_images_are_run_by_the_same_reference_they_are_pulled_by():
+    """The latent bug this fixes: `docker pull repo@sha256:…` creates no local tag, so
+    a compose file or unit naming `repo:tag` would find nothing on a fresh node and
+    trigger an unpinned runtime pull — reintroducing the drift the digest prevents."""
+    gv = _group_vars()
+    pulled = set()
+    for entry in gv["container_images"]:
+        if entry.get("pull"):
+            pulled.add(gv.get(entry["pull"].strip("{} \"'"), entry["pull"]))
+    for var in ("vllm_image", "webui_image", "caddy_image", "prometheus_image",
+                "grafana_image", "node_exporter_image", "nvidia_exporter_image"):
+        assert gv[var] in pulled, f"{var} is run but never pulled: {gv[var]}"
+
+
+def test_head_only_images_are_not_pushed_to_workers():
+    """Grafana and Open WebUI run only on the head; a worker holding them wastes disk
+    on an image it can never run — the same reasoning as per-node model weights."""
+    gv = _group_vars()
+    placement = {e.get("pull", e.get("build")): e.get("hosts", "all")
+                 for e in gv["container_images"]}
+    for var in ("webui_image", "caddy_image", "prometheus_image", "grafana_image"):
+        assert placement.get("{{ %s }}" % var) == "head", f"{var} should be head-only"
+    for var in ("vllm_image", "node_exporter_image", "nvidia_exporter_image"):
+        assert placement.get("{{ %s }}" % var) == "all", f"{var} should be on all nodes"

@@ -21,4 +21,8 @@
   loop: "{{ container_images }}"
   loop_control:
     loop_var: image
-    label: "{{ image.pull | default(image.build) }}"
+    label: "{{ image.pull | default(image.build) }} -> {{ image.hosts | default('all') }}"
+  # Per-image placement, defaulting to every node. Grafana and Open WebUI run only on
+  # the head, and pulling them onto a worker would waste disk on an image it can never
+  # run — the same reasoning that stopped mirroring every model to every node.
+  when: inventory_hostname in groups[image.hosts | default('all')]

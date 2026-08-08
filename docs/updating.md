@@ -23,14 +23,33 @@ Write the ADR / update the living docs **in the same commit** as the change
 
 ---
 
-## Bump the vLLM container image
+## Bump a container image
 
-E.g. NVIDIA ships `26.07-py3` and you want a profile (or the default) on it.
+Every image the cluster runs — vLLM **and** the front-end (Open WebUI, Caddy,
+Prometheus, Grafana, the exporters) — is declared in `container_images` and pinned by
+**digest**. That list is the version manifest: what is deployed is exactly what is
+written there, on every node.
 
-1. **Get the digest.** `sudo docker images --digests` on a node → the new `sha256:`.
-2. **`ansible/group_vars/all.yml` → `container_images`:** update the `pull:` entry to
-   the new `<ref>@sha256:<digest>` (and the `vllm_image` default if the *default*
-   moves — usually it doesn't; new containers are opt-in per profile).
+Two rules the pinning exists to enforce, both learned the hard way:
+
+- **A floating tag is not a version.** `alpine:latest` pulled on the two nodes days
+  apart gave two *different* images. `:latest`, and even `caddy:2`, move under you.
+- **Pull and run must name the same thing.** `docker pull repo@sha256:…` creates no
+  local tag, so a compose file or unit naming `repo:tag` finds nothing on a fresh node
+  and triggers an *unpinned runtime pull*. Both the `*_image` var and the
+  `container_images` entry reference the digest; the entry references the var, so
+  they cannot drift apart.
+
+E.g. NVIDIA ships `26.07-py3`, or Open WebUI releases a new version.
+
+1. **Get the digest.** `sudo docker images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.Digest}}'`
+   on a node → the new `sha256:`. (For an image you don't have yet, pull it first.)
+2. **`ansible/group_vars/all.yml`:** update the `*_image` var to
+   `<repo>@sha256:<digest>`, with the human tag **and version** in a trailing comment —
+   the digest is authoritative, the comment is what makes the diff readable. The
+   `container_images` entry already references the var, so nothing else moves.
+   Set `hosts: head` on an entry that only the head runs; a worker holding Grafana
+   wastes disk on an image it can never run.
 3. **Derived image `FROM` (if one builds on it).** Update the digest in the matching
    `ansible/roles/images/files/<context>/Dockerfile` `FROM` line — this is a **second
    place the same digest lives** (the base pull + the Dockerfile base); they must move
@@ -46,9 +65,18 @@ E.g. NVIDIA ships `26.07-py3` and you want a profile (or the default) on it.
    (DEF-0001–0005, and DEF-0007 on a vLLM-version bump). Re-test each cleared row **one
    at a time**, behind the fail-safe net; a **soak test** is required to clear DEF-0002
    (strikes 35–55 min in). Update statuses with results.
-7. **Validate** as above. The `images` role pulls/builds on every node at deploy — no
-   manual `docker pull`. Then **`./sparky.sh activate <profile>`**: the deploy installs
-   the new image reference but will not restart a serving engine to pick it up.
+7. **Validate** as above. The `images` role pulls/builds at deploy, on the nodes each
+   image is placed on — no manual `docker pull`. Then **`./sparky.sh activate <profile>`**:
+   the deploy installs the new image reference but will not restart a serving engine to
+   pick it up. For a *front-end* image there is no activation step — the compose file
+   re-renders and the container is recreated by the deploy itself.
+
+**Old images are not deleted.** Convergent `deploy` converges weights only (ADR-0018):
+shared base layers make automated image deletion unsafe, so a superseded image lingers
+until you remove it by hand. `docker system df` will call it "reclaimable" — that only
+means *no running container references it*, not that it is unneeded, so remove images
+**by name** and never `docker image prune -a`, which would delete the pinned images of
+every profile that happens not to be live.
 
 ## Add or change a model / profile
 

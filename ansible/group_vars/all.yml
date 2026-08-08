@@ -13,7 +13,13 @@
 # them (Marlin-MoE load bug on sm_121). 26.06 (needed for NVFP4) is opt-in per profile:
 # profiles/step-3.7-nvfp4.yml pins it. Full story + WAR register + fail-safe boot (ADR-0009):
 # docs/upgrades/container-nvidia-vllm-26.06-py3.md.
-vllm_image: nvcr.io/nvidia/vllm:26.04-py3
+# Referenced by DIGEST, not by tag. `docker pull repo@sha256:…` creates no local tag,
+# so a unit that ran `…:26.04-py3` would, on a fresh node, find nothing and trigger an
+# unpinned runtime pull — reintroducing the very drift ADR-0013 pins against. Pull and
+# run must name the same immutable thing.
+vllm_image: nvcr.io/nvidia/vllm@sha256:98494fdaea68ad892c107180b0be41c99caa3c77683175becc4e202b2cb75b27  # :26.04-py3 — vLLM 0.19
+# The 26.06 base the derived image builds FROM (its Dockerfile pins the same digest).
+vllm_image_2606: nvcr.io/nvidia/vllm@sha256:6e537fc8d84beb9b60e789236168141d2ef4420bc28cbb85ec7d4318ca918b6c  # :26.06-py3 — vLLM 0.22.1
 
 # Container images required on every node (ADR-0013), ensured by the `images` role
 # in the first play — `docker pull` for upstream images, `docker build` for derived
@@ -27,14 +33,31 @@ vllm_image: nvcr.io/nvidia/vllm:26.04-py3
 # registry manifest digest is content-addressed — the same tag resolves to the same
 # digest on every node). Re-read with `docker images --digests` when bumping. The tag
 # each digest corresponds to is in the trailing comment.
+#
+# `hosts:` places an image where it is actually run (default: all nodes). The same
+# principle as per-node weights: snoopy has no reason to hold Grafana. Each entry
+# references the `*_image` var defined alongside its service, so a bump is one line and
+# the pull, the compose file and the unit can never disagree.
 container_images:
-  # nvcr.io/nvidia/vllm:26.04-py3 — stable default (vLLM 0.19)
-  - pull: nvcr.io/nvidia/vllm@sha256:98494fdaea68ad892c107180b0be41c99caa3c77683175becc4e202b2cb75b27
-  # nvcr.io/nvidia/vllm:26.06-py3 — NVFP4 base (vLLM 0.22.1); the derived image's FROM is pinned to this digest
-  - pull: nvcr.io/nvidia/vllm@sha256:6e537fc8d84beb9b60e789236168141d2ef4420bc28cbb85ec7d4318ca918b6c
-  # dgx-spark/vllm:26.06-fastapi-fix — 26.06 + fastapi<0.137 WAR for DEF-0005 (see the Dockerfile)
+  # --- serving: any node may run any engine, so these go everywhere -------------
+  - pull: "{{ vllm_image }}"
+  - pull: "{{ vllm_image_2606 }}"
+  # dgx-spark/vllm:26.06-fastapi-fix — 26.06 + fastapi<0.137 WAR for DEF-0005 (see the
+  # Dockerfile). Built locally, so it has no registry digest to pin.
   - build: dgx-spark/vllm:26.06-fastapi-fix
     context: vllm-26.06-fastapi-fix
+  # --- front-end: head only -----------------------------------------------------
+  - pull: "{{ webui_image }}"
+    hosts: head
+  - pull: "{{ caddy_image }}"
+    hosts: head
+  - pull: "{{ prometheus_image }}"
+    hosts: head
+  - pull: "{{ grafana_image }}"
+    hosts: head
+  # --- exporters: every node ----------------------------------------------------
+  - pull: "{{ node_exporter_image }}"
+  - pull: "{{ nvidia_exporter_image }}"
 
 # Host paths
 vllm_models_dir: /opt/vllm/models
@@ -145,18 +168,18 @@ vllm_start_timeout_sec: 1200
 # Prometheus + Grafana on the head. (GB10 reports no GPU memory via nvidia-smi —
 # that's the unified memory, covered by node-exporter.)
 exporters_dir: /opt/exporters
-node_exporter_image: prom/node-exporter:latest
+node_exporter_image: prom/node-exporter@sha256:e9cff4fc67b1818f8c97adb115b9f12c9a54b533de86765d4a0effc01b357205  # :latest == 1.11.1
 node_exporter_port: 9100
-nvidia_exporter_image: utkuozdemir/nvidia_gpu_exporter:1.2.0
+nvidia_exporter_image: utkuozdemir/nvidia_gpu_exporter@sha256:cc407f77ab017101ce233a0185875ebc75d2a0911381741b20ad91f695e488c7  # :1.2.0
 nvidia_exporter_port: 9835
 # Pin query fields: GB10's nvidia-smi exposes clocks_event_reasons_* "[us]" fields
 # that the exporter turns into invalid Prometheus metric names and crashes on.
 # Querying an explicit safe set avoids that (GPU memory is N/A on GB10 anyway).
 nvidia_exporter_query_fields: "utilization.gpu,temperature.gpu,power.draw,clocks.current.sm,clocks.current.memory"
-prometheus_image: prom/prometheus:latest
+prometheus_image: prom/prometheus@sha256:c6b27ea434f8389bfe233fbc7be381cf50587c286e871bc842008f5a1b1908a7  # :latest == 3.13.0
 prometheus_dir: /opt/prometheus
 prometheus_port: 9090
-grafana_image: grafana/grafana:latest
+grafana_image: grafana/grafana@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63  # :latest == 13.1.0
 grafana_dir: /opt/grafana
 grafana_port: 3000
 
@@ -165,7 +188,7 @@ grafana_port: 3000
 # role — no per-endpoint var here. Kept here (not role defaults) so teardown.yml
 # can reach them too. Binds an INTERNAL port (8080) — Caddy fronts it at
 # chat.{{ web_domain }}.
-webui_image: ghcr.io/open-webui/open-webui:latest
+webui_image: ghcr.io/open-webui/open-webui@sha256:a26effeb220e132482bf7e0560b3404843e7bc40d23051144e062960df8df6b0  # :latest == 0.10.2
 webui_install_dir: /opt/open-webui
 webui_port: 8080
 # Sent as the API key for every vLLM engine endpoint (vLLM ignores it).
@@ -185,7 +208,7 @@ webui_default_user_role: "user"
 # each service is a subdomain (<svc>.{{ web_domain }}). Needs wildcard DNS
 # *.{{ web_domain }} -> sparky's IP (one record, then services are proxy-only).
 web_domain: sparky.flummoxed.net
-caddy_image: caddy:2
+caddy_image: caddy@sha256:af5fdcd76f2db5e4e974ee92f96ee8c0fc3edb55bd4ba5032547cbf3f65e486d  # :2
 caddy_dir: /opt/caddy
 # /admin basic_auth (ADR-0008's seam, TURNED ON by ADR-0018 — the panel is now
 # deliberately agent-drivable and holds the activation grant, so it can't stay
