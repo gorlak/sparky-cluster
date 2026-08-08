@@ -27,6 +27,7 @@ The boundary matters and is enforced:
 - "Bump / upgrade the container to T" → **container upgrade tracker** `docs/upgrades/container-<coord>-T.md`, and walk the pathway in `docs/updating.md`.
 - "We're carrying a bug / working around an upstream issue" → a **DEF-NNNN row** in `docs/defects.md` (+ detail in its home).
 - "How do I update X / what else needs touching?" → `docs/updating.md` (the change-pathway checklists).
+- "What needs updating / is there a newer version?" → the [[version-discovery]] skill (check + stage), which then walks `docs/updating.md`.
 - A settled, one-way decision → an **ADR** (see "Decision records" below), not a tracker.
 
 ## Naming (upgrade trackers)

@@ -17,6 +17,11 @@ as slash commands). When a task matches one, read its `SKILL.md` and follow it:
 - **`skills/model-discovery/SKILL.md`** — search HuggingFace (via the `hf` CLI)
   for new models / quantizations that fit this cluster's hardware. Use when asked
   to check for better models, newer quantizations, or what's new that fits.
+- **`skills/version-discovery/SKILL.md`** — check everything versioned the cluster runs
+  (container images, the panel's Python deps, vendored assets, the harness lock, model
+  snapshots, the host baseline) for newer releases and **stage** the bumps. Use when
+  asked what needs updating, before an upgrade round, or when a defect's *clears-when*
+  waits on a version. It stages; applying is a separate change.
 - **`skills/model-evaluation/SKILL.md`** — evaluating models: the pre-deployment
   fit checklist for one model (memory math, `config.json`, `vllm serve` flags),
   plus the **fleet sourcing sweep** that reviews the deployed models for worthwhile
