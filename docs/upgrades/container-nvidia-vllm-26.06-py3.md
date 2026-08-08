@@ -119,6 +119,30 @@ while the `step-3.7-nvfp4` profile runs 26.06 on the same cluster.
 
 ## Re-assessment log
 
+- **2026-08-08** — **Defect triage against 26.06 before an upgrade round. All three
+  suspect rows are still real; none was stale.** Two were confirmed by inspecting the
+  image directly: `Step3VLProcessor` still lacks `_get_num_multimodal_tokens`
+  (DEF-0006 stands), and stock 26.06 still ships **fastapi 0.137.1**, so the derived
+  `26.06-fastapi-fix` image is still load-bearing (DEF-0005 stands).
+
+  The third is the interesting one. **DEF-0003 was mis-described, not stale.** Reading a
+  live engine's startup config showed the profile requesting
+  `cudagraph_mode: FULL_AND_PIECEWISE` — the exact mode the defect names — and vLLM
+  *downgrading it itself*:
+
+  > `CUDAGraphMode.FULL_AND_PIECEWISE is not supported with spec-decode for attention
+  > backend FlashInferBackend …; setting cudagraph_mode=PIECEWISE`
+
+  So the workaround has been in force by accident, via MTP speculative decoding, not by
+  any profile setting. `enforce_eager=False`; graph capture succeeds in ~5 s for 1.2 GiB.
+  **We have therefore never actually run full cudagraphs on GB10**, and nine days of
+  uptime is not evidence about them — absence of a symptom is not a test when the
+  condition was never active.
+
+  The forward risk is concrete: the next 26.06 profile *without* spec-decode —
+  DeepSeek-V4-Flash, Mistral-Medium, Nemotron-Puzzle are all candidates — unmasks it on
+  first bring-up. The register row now says so, so the "check defects.md" step of the
+  add-a-model pathway will actually catch it.
 - **2026-08-06** — **First sustained 26.06 TP=2 serving run — no DEF-0002 deadlock in 90
   minutes.** `minimax-m2.7-nvfp4` (modelopt NVFP4, TP=2 across both nodes, 26.06) was
   activated and soaked at 1 completion/min for 90 min: **87 probes, zero non-200,
