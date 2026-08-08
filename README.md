@@ -396,6 +396,12 @@ carry the decision; the script needn't even exist). On a **hang / hard-reset / p
 cut** the surviving `.running` marker skips the unit, so the node comes up **empty and
 reachable** instead of re-attempting a risky load unattended.
 
+**Verified on 2026-08-08**, both gates independently, without a hard reset: a clean
+reboot of snoopy left five of six enabled instances skipped for want of a desired marker
+and started the sixth on its own (no reconciler involved); a planted `.running` marker
+then made that same engine skip on the *negated* gate, leaving the node up, reachable
+and serving nothing. systemd names the failing condition in the journal either way.
+
 Recovery from the fail-safe state is an **activation**: `./sparky.sh activate
 <profile>` (or the panel's "Re-activate") clears the marker and starts the engines.
 The worker unit retries the rendezvous every 20 s until sparky's is up; the head

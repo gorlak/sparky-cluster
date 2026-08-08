@@ -39,6 +39,54 @@ def test_status_json_exit2_when_panel_unreachable(monkeypatch):
     assert "unreachable" in res.stdout
 
 
+def test_status_runs_no_subprocess_when_the_panel_is_unreachable(monkeypatch):
+    """The old fallback shelled `sudo -u deploy ansible`, which prompts for a password
+    — surprising a human and hanging an agent — and it fired exactly when a node was
+    down. Asserted on behaviour, not wording: nothing may be executed at all."""
+    monkeypatch.setattr(ops, "panel_status", lambda: None)
+    monkeypatch.setattr(ops, "_run", lambda *a, **k: pytest.fail("status executed a command"))
+    for args in (["status"], ["status", "--json"]):
+        res = runner.invoke(cli.app, args)
+        assert res.exit_code == 2, args
+
+
+def _unreachable(monkeypatch, fleet=None):
+    monkeypatch.setattr(ops, "panel_status", lambda: None)
+    monkeypatch.setattr(act, "fleet_state", lambda *a, **k: fleet)
+    return runner.invoke(cli.app, ["status"]).stdout
+
+
+def test_status_points_at_the_unprivileged_probes_instead(monkeypatch):
+    """A dead end helps nobody: name the commands that DO work without the panel."""
+    out = _unreachable(monkeypatch)
+    assert "--status" in out
+    assert "deploy" in out          # how to repair the panel
+
+
+def test_status_answers_the_question_you_actually_have_first(monkeypatch):
+    """The panel is a status surface; it being down says nothing about whether the
+    cluster is serving. Lead with the one line that answers that."""
+    out = _unreachable(monkeypatch, fleet={
+        "model_endpoint": "http://api.example.net",
+        "nodes": [{"node": "snoopy"}, {"node": "sparky"}]})
+    assert "http://api.example.net/health" in out
+    assert out.index("serving") < out.index("Why is the panel down")
+
+
+def test_status_names_every_node_deploy_recorded(monkeypatch):
+    """Derived from what `deploy` wrote, not hardcoded — so it stays right as the
+    Peanuts roster grows past two."""
+    out = _unreachable(monkeypatch, fleet={"model_endpoint": "http://x",
+                                           "nodes": [{"node": "sparky"}, {"node": "snoopy"},
+                                                     {"node": "woodstock"}]})
+    for node in ("snoopy", "woodstock"):
+        assert f"ssh {node} " in out
+    # this host needs no ssh, and comes first — it still answers when the network is
+    # what's broken
+    body = out[out.index("Per-node"):]
+    assert body.index("/usr/local/sbin/vllm-activate --status\n") < body.index("ssh ")
+
+
 def test_status_json_emits_the_dict(monkeypatch):
     monkeypatch.setattr(ops, "panel_status", lambda: _status(ok=True))
     res = runner.invoke(cli.app, ["status", "--json"])

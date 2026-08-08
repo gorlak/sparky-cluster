@@ -82,6 +82,56 @@ def show_topology(
 SMOKE_REPORT = Path("/opt/cluster/last-smoke.json")
 
 
+def _panel_unreachable(json_out: bool) -> int:
+    """Report a missing panel usefully, and execute nothing.
+
+    Ordered by what you actually want to know, which is NOT "why is the panel down":
+    the panel is a status surface, so its being down says nothing about whether the
+    cluster is serving. That question comes first, and it is answerable in one line
+    with no panel, no sudo and no ansible. Node names come from what `deploy` recorded,
+    so this stays right as the Peanuts roster grows.
+    """
+    fleet = act.fleet_state() or {}
+    endpoint = fleet.get("model_endpoint")
+    local = socket.gethostname().split(".")[0]
+    nodes = [n["node"] for n in fleet.get("nodes", [])] or [local, ops.WORKER_HOST]
+    # This node first: it needs no ssh, so it is the one that still answers when the
+    # network is the thing that's broken.
+    nodes = sorted(dict.fromkeys(nodes), key=lambda n: n != local)
+    probes = [f"{act.ACTIVATE_BIN} --status" if n == local
+              else f"ssh {n} {act.ACTIVATE_BIN} --status" for n in nodes]
+
+    if json_out:
+        console.print_json(data={
+            "error": "control panel unreachable", "waited_seconds": ops.PANEL_TIMEOUT,
+            "hint": "the panel is a status surface — this says nothing about whether "
+                    "the cluster is serving",
+            "is_it_serving": f"curl -s {endpoint}/health" if endpoint else None,
+            "per_node_state": probes,
+            "diagnose_panel": ["systemctl is-active control-panel",
+                               "journalctl -u control-panel -n 50 --no-pager"],
+            "repair": "./sparky.sh deploy"})
+        return 2
+
+    console.print(f"[red]control panel unreachable[/] at {ops.CONTROL_PANEL_URL} "
+                  f"(waited {ops.PANEL_TIMEOUT:g}s)")
+    console.print("[dim]The panel only reports status — this says nothing about whether "
+                  "the cluster is serving.[/]")
+    if endpoint:
+        console.print("\n[bold]Is it still serving?[/]")
+        console.print(f"  curl -s {endpoint}/health")
+    console.print("\n[bold]Per-node engine state[/] [dim](no sudo — reading status "
+                  "was never privileged)[/]")
+    for probe in probes:
+        console.print(f"  {probe}")
+    console.print("\n[bold]Why is the panel down?[/]")
+    console.print("  systemctl is-active control-panel")
+    console.print("  journalctl -u control-panel -n 50 --no-pager")
+    console.print("\n[bold]Repair[/]")
+    console.print("  ./sparky.sh deploy")
+    return 2
+
+
 def _smoke(topology_file: str | None, report_file: str | None) -> int:
     """The gate itself, as a return code — `activate` runs it in-process."""
     path = Path(topology_file) if topology_file else topology.CURRENT_TOPOLOGY
@@ -453,24 +503,27 @@ def _render_status(s: dict) -> None:
 def status(
     json_out: bool = typer.Option(False, "--json", help="Emit raw JSON (machine-readable)."),
 ) -> None:
-    """Live cluster status — reads the control panel (no sudo, both nodes). Exit 0 when
-    healthy, 1 when an engine is down / in fail-safe. Falls back to systemd-over-ansible
-    (needs your sudo password) only if the control panel is unreachable."""
+    """Live cluster status — reads the control panel (no sudo, every node).
+
+    Exit **0** healthy · **1** degraded or in fail-safe · **2** panel unreachable.
+
+    There is **no fallback**, by design. There used to be one, over
+    `sudo -u deploy ansible` — a password-gated route to information that isn't
+    privileged at all (reading systemd state needs no rights; so does the reconciler's
+    `--status` verb). It fired when the panel merely got *slow*, which happens when a
+    node is down — exactly when you most need status to work without sudo, and exactly
+    when an unannounced password prompt hangs an agent. A panel that is genuinely down
+    is a fault worth reporting plainly, not papering over with a second implementation
+    that would drift from the first.
+    """
     s = ops.panel_status()
-    if s is not None:
-        if json_out:
-            console.print_json(data=s)
-        else:
-            _render_status(s)
-        raise typer.Exit(0 if s.get("ok") else 1)
-    # Control panel unreachable — fall back to the ansible/systemd path.
+    if s is None:
+        raise typer.Exit(_panel_unreachable(json_out))
     if json_out:
-        console.print_json(data={"error": "control panel unreachable",
-                                 "hint": "run `./sparky.sh status` for the systemd view"})
-        raise typer.Exit(2)
-    console.print("[yellow]control panel unreachable — falling back to systemd over ansible "
-                  "(needs your sudo password)…[/]")
-    raise typer.Exit(ops.status())
+        console.print_json(data=s)
+    else:
+        _render_status(s)
+    raise typer.Exit(0 if s.get("ok") else 1)
 
 
 @app.command()

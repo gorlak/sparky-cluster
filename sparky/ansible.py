@@ -31,11 +31,18 @@ WORKER_HOST = "snoopy"
 # `deploy` and an in-flight evaluation sweep must not interleave — one is reshaping
 # the boundary while the other walks it. Both take this lock.
 FLEET_LOCK = Path("/opt/cluster/fleet.lock")
-# The control panel is the no-sudo live-status surface: it queries every node over
-# the bounded status channel. `sparky status` reads its /status.json instead of
-# shelling `sudo -u deploy ansible … systemctl` (which needs geoff's password).
+# The control panel is the ONLY live-status surface, and it needs no sudo: it queries
+# every node over the bounded status channel. There is deliberately no ansible/systemd
+# fallback any more — reading status is not privileged (plain `systemctl is-active`, or
+# the reconciler's `--status` verb, work as geoff on every node), so a password-gated
+# alternative bought nothing and fired at the worst possible moment.
 # Bound to 127.0.0.1:{control_panel_port} (group_vars, default 8088).
 CONTROL_PANEL_URL = "http://127.0.0.1:8088"
+# Generous on purpose. The panel probes every node, so a node that is DOWN — rebooting,
+# wedged — makes it slow rather than absent, and that is exactly when status gets read.
+# A budget tighter than the panel's worst case turns "slow" into "unreachable" and used
+# to send this straight to the password-prompting fallback.
+PANEL_TIMEOUT = 20.0
 
 
 def _as_deploy() -> list[str]:
@@ -104,19 +111,11 @@ def panel_status() -> dict | None:
     """Live status from the control panel's /status.json (no sudo) — or None if the
     panel is unreachable (down / not deployed). See CONTROL_PANEL_URL."""
     try:
-        r = httpx.get(f"{CONTROL_PANEL_URL}/status.json", timeout=5.0)
+        r = httpx.get(f"{CONTROL_PANEL_URL}/status.json", timeout=PANEL_TIMEOUT)
         r.raise_for_status()
         return r.json()
     except (httpx.HTTPError, ValueError):
         return None
-
-
-def status() -> int:
-    """systemd state of the vLLM units on both nodes, via ansible (the fallback path
-    when the control panel is down — shells `sudo -u deploy`, needs geoff's password)."""
-    cmd = [*_as_deploy(), "ansible", "all", "-m", "shell", "-a",
-           "systemctl --no-pager --lines=0 status 'vllm@*.service' 2>/dev/null; true"]
-    return _run(cmd, cwd=LIVE)
 
 
 def logs(node: str = "head") -> int:

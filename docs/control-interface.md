@@ -106,8 +106,12 @@ and hangs a non-interactive agent).
   purpose: an agent gating on `ok` must not start work against a model that is still
   loading, but a *human* needs to know the difference between "wait" and "broken".
 - **`sparky status [--json]`** reads `/status.json` (no sudo) and **exits `0` healthy /
-  `1` degraded / `2` panel-unreachable**, so a deploy can be gated on it. It falls back
-  to the ansible/systemd path only when the panel is down.
+  `1` degraded / `2` panel-unreachable**, so a deploy can be gated on it. There is **no
+  fallback**: reading status is not privileged (plain `systemctl is-active`, or the
+  reconciler's `--status` verb, work as geoff on every node), so the old
+  `sudo -u deploy ansible` route bought nothing — and it fired when the panel merely got
+  *slow*, which is what happens when a node is down. On exit 2 the CLI names the direct
+  per-node probes instead of running anything.
 
 **Activation-gate breadcrumb — `/opt/cluster/last-smoke.json`** (`cluster_smoke_report`).
 `./sparky.sh activate` runs the smoke gate (ADR-0012) once the engines answer and
@@ -176,6 +180,15 @@ Agent-facing usage is in [`skills/operations/SKILL.md`](../skills/operations/SKI
   set (its `clocks_event_reasons_* [us]` fields become invalid Prometheus metric
   names and crash-loop the container). Grafana set to land on the cluster
   dashboard via `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`. P3 remains.
+- **2026-08-08 (ADR-0018)** — **Removed the ansible status fallback**, found by a node
+  reboot. The panel answers in ~0.5 s normally but blocks on an unreachable node, and
+  the CLI's 5 s budget turned *slow* into *absent* — so `sparky status` silently shelled
+  `sudo -u deploy ansible` and prompted for a password, in the one situation where a
+  no-sudo status matters most. Three changes: the CLI budget now exceeds the panel's
+  worst case; the panel probes nodes **concurrently** so one unreachable node costs one
+  timeout rather than the sum (and the cost stops growing with the roster); and the
+  fallback is gone rather than gated, because reading status was never privileged in the
+  first place. Exit 2 now names the direct probes.
 - **2026-08-07 (ADR-0018)** — Two false alarms found by watching a real switch.
   (1) **Fail-safe was firing on every profile change.** Detection was "marker present
   and not active", but `ExecStop` is `docker stop --time=120`, so a clean deliberate

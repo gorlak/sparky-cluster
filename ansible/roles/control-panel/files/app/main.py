@@ -31,6 +31,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -199,8 +200,8 @@ def _remote_status(node):
     if not addr:
         return None
     out = _run(["ssh", "-i", ACTIVATE_SSH_KEY, "-l", ACTIVATE_SSH_USER,
-                "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
-                "-o", "StrictHostKeyChecking=accept-new", addr, "status"], timeout=10)
+                "-o", "BatchMode=yes", "-o", "ConnectTimeout=2",
+                "-o", "StrictHostKeyChecking=accept-new", addr, "status"], timeout=6)
     try:
         return json.loads(out)
     except (ValueError, TypeError):
@@ -210,7 +211,7 @@ def _remote_status(node):
 def _local_status():
     """This node's engine states, straight from the reconciler's read-only path
     (no sudo needed — reading systemd state is not privileged)."""
-    out = _run([ACTIVATE_BIN, "--status"], timeout=10)
+    out = _run([ACTIVATE_BIN, "--status"], timeout=6)
     try:
         return json.loads(out)
     except (ValueError, TypeError):
@@ -218,19 +219,25 @@ def _local_status():
 
 
 def node_engine_states():
-    """{node: {engine: {...}}} across the fleet, gathered once per status render."""
+    """{node: {engine: {...}}} across the fleet, gathered once per status render.
+
+    Probed **concurrently**. Serially, one unreachable node adds its whole timeout to
+    every status render — and a node being down is precisely when status gets read, so
+    the slow path was the hot path. It also made the cost grow with the node count,
+    which the Peanuts roster is designed to do. Now the worst case is one timeout, not
+    the sum of them.
+    """
+    probes = {PANEL_NODE: _local_status}
+    probes.update({node: (lambda n=node: _remote_status(n)) for node in NODE_ADDRS})
     states = {}
-    local = _local_status()
-    if local:
-        states[local.get("node", PANEL_NODE)] = {e["name"]: e for e in local.get("engines", [])}
-    for node in NODE_ADDRS:
-        remote = _remote_status(node)
-        if remote:
-            states[remote.get("node", node)] = {e["name"]: e for e in remote.get("engines", [])}
+    with ThreadPoolExecutor(max_workers=max(2, len(probes))) as pool:
+        for node, result in zip(probes, pool.map(lambda f: f(), probes.values())):
+            if result:
+                states[result.get("node", node)] = {e["name"]: e for e in result.get("engines", [])}
     return states
 
 
-def _http_ok(url, timeout=4):
+def _http_ok(url, timeout=3):
     """Service liveness over HTTP. Deliberately not `docker inspect`: the panel is
     not in the docker group, because docker group membership is root-equivalent and
     would re-open exactly the hole ADR-0018 closes."""
@@ -243,7 +250,7 @@ def _http_ok(url, timeout=4):
 
 def _vllm_api(base):
     try:
-        r = httpx.get(f"{base}/v1/models", timeout=4)
+        r = httpx.get(f"{base}/v1/models", timeout=3)
         if r.status_code == 200:
             data = r.json().get("data", [])
             return True, ", ".join(d["id"] for d in data) if data else "(no models)"

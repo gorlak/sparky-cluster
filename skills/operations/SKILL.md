@@ -21,10 +21,23 @@ no path from here to root, by design; attempts to find one are wasted effort.
 ## The one rule: read status, don't shell sudo
 
 `./sparky.sh status` reads the **control panel** (`127.0.0.1:8088`), which gathers
-every node over its own bounded channel — so it needs **no password**. Do NOT reach for
-`sudo -u deploy ansible … systemctl`: that prompts for Geoff's password and hangs a
-non-interactive agent. (`sparky status` falls back to that path only if the panel is
-down, and says so.)
+every node over its own bounded channel — so it needs **no password**, and it has **no
+fallback that does**. Do NOT reach for `sudo -u deploy ansible … systemctl`: it prompts
+for Geoff's password and hangs you.
+
+If the panel is unreachable (exit 2), these work directly, still with no sudo — reading
+status was never privileged:
+
+```bash
+/usr/local/sbin/vllm-activate --status
+```
+
+```bash
+ssh snoopy /usr/local/sbin/vllm-activate --status
+```
+
+A panel that is genuinely down is a fault to report, not to work around; `./sparky.sh
+deploy` repairs it.
 
 ## Switch which model is serving
 
@@ -61,7 +74,8 @@ did not end up serving that model.
 ```
 
 **Exit code is the verdict:** `0` = healthy, `1` = something down / in fail-safe,
-`2` = panel unreachable. So gate on it directly:
+`2` = panel unreachable (and nothing was executed — it will never prompt). So gate on
+it directly:
 
 ```bash
 ./sparky.sh status >/dev/null && echo "cluster healthy" || echo "cluster NOT healthy"

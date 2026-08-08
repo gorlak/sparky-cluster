@@ -64,18 +64,29 @@ def test_teardown_webui_adds_tags(monkeypatch):
     assert "--tags" in seen["cmd"] and "all,webui" in seen["cmd"]
 
 
-def test_status_and_logs_target_the_template_unit(monkeypatch):
+def test_logs_target_the_template_unit(monkeypatch):
     cmds = []
     monkeypatch.setattr(ansible, "_run", lambda cmd, **kw: cmds.append(cmd) or 0)
     monkeypatch.setattr(ansible.getpass, "getuser", lambda: "deploy")
-    ansible.status()
     ansible.logs("head")
     ansible.logs("worker")
-    status_cmd, head_cmd, worker_cmd = cmds
-    assert status_cmd[:3] == ["ansible", "all", "-m"]
-    assert "vllm@*.service" in status_cmd[-1]
+    head_cmd, worker_cmd = cmds
     assert head_cmd == ["journalctl", "-u", "vllm@*", "-f"]
     assert worker_cmd == ["ssh", ansible.WORKER_HOST, "journalctl", "-u", "vllm@*", "-f"]
+
+
+def test_there_is_no_ansible_status_path(monkeypatch):
+    """Removed deliberately. Reading status is not privileged — plain `systemctl
+    is-active` and the reconciler's `--status` verb both work as geoff on every node —
+    so a `sudo -u deploy ansible` route bought nothing and prompted for a password at
+    the worst possible moment: when a node was down and the panel merely got slow."""
+    assert not hasattr(ansible, "status")
+
+
+def test_the_panel_budget_exceeds_the_panels_own_worst_case(monkeypatch):
+    """The panel probes every node, so a node that is DOWN makes it slow, not absent.
+    A budget under that turns 'slow' into 'unreachable'."""
+    assert ansible.PANEL_TIMEOUT >= 15.0
 
 
 def test_reading_logs_needs_no_privilege(monkeypatch):
