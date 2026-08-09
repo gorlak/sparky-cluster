@@ -177,6 +177,30 @@ suggests a parser at all (as for Nemotron), ship **without** tool flags rather t
 guessing: plain chat is unaffected, and a wrong name costs a deploy.
 *2026-08-08 · the Qwen3-VL / Nemotron / DeepSeek profiles*
 
+### Metrics silently stop: dashboards empty, Prometheus targets still `up`
+**Two independent causes, both on 2026-08-09, both invisible to a liveness check.**
+
+**GPU exporter — NVML broken by `daemon-reload`.** `nvidia_smi_command_exit_code 255`,
+`nvidia_smi_failed_scrapes_total` climbing, HTTP 200 throughout and the Prometheus target
+**up** for ~15 hours. A `systemctl daemon-reload` during any deploy breaks NVML inside a
+container that does not share the host cgroup namespace — the README's own gotcha, and a
+deploy runs daemon-reload every time. **Fix:** `cgroup: host` in the compose file.
+
+**node-exporter — the `cpufreq` collector blocks on GB10.** Sampled alone, 4 of 5
+requests took >6s while every other collector answered in <10ms. Full scrapes hung,
+Prometheus timed out at its 10s default, and each aborted scrape **leaked** the in-flight
+counter until it hit the cap of 40 and every scrape 503'd forever.
+**Fix:** `--no-collector.cpufreq` (the cause) plus `--web.max-requests=0` (so a future
+stall cannot become a permanent wedge). Neither costs anything: CPU utilization comes
+from `node_cpu_seconds_total`, not cpufreq.
+
+**Check.** Assert metrics are **produced**, not that the endpoint answers — the panel now
+does this per node (`_exporter_ok`): a non-zero `nvidia_smi_command_exit_code` is a
+failure, and so is an exporter emitting almost no series, whatever the status code.
+And when diagnosing a hanging exporter, **sample collectors repeatedly** — one sample
+each showed everything healthy and hid a collector that fails 4 times in 5.
+*2026-08-09 · node-exporter + nvidia_gpu_exporter*
+
 ---
 
 ## What the pattern says

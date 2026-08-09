@@ -25,6 +25,10 @@ Environment=ACTIVATE_SSH_KEY={{ activate_ssh_key }}
 Environment=ACTIVATE_SSH_USER={{ activate_user }}
 # Worker reachability for the read-only `status` verb of the forced command.
 Environment=NODE_ADDRS={% for node in groups['all'] | sort if node != inventory_hostname %}{{ node }}={{ hostvars[node].vllm_host_ip }} {% endfor %}
+# Exporter ports, so the panel can assert metrics are being PRODUCED —
+# not merely that the endpoint answers (see _exporter_ok).
+Environment=GPU_EXPORTER_PORT={{ nvidia_exporter_port }}
+Environment=NODE_EXPORTER_PORT={{ node_exporter_port }}
 
 Environment=WEBUI_URL=http://127.0.0.1:{{ webui_port }}/health
 Environment=PROXY_URL=http://127.0.0.1:80/

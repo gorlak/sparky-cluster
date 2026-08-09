@@ -54,6 +54,8 @@ FALLBACK_PROFILE = os.environ.get("CLUSTER_PROFILE", "empty")
 WEBUI_URL = os.environ.get("WEBUI_URL", "http://127.0.0.1:8080/health")
 PROXY_URL = os.environ.get("PROXY_URL", "http://127.0.0.1:80/")
 MODEL_ENDPOINT = os.environ.get("MODEL_ENDPOINT", "")
+GPU_EXPORTER_PORT = os.environ.get("GPU_EXPORTER_PORT", "9835")
+NODE_EXPORTER_PORT = os.environ.get("NODE_EXPORTER_PORT", "9100")
 # How long an engine may sit "unit up, API down" before that stops being a weight load
 # and starts being a fault. Mirrors the unit's TimeoutStartSec.
 LOAD_TIMEOUT = float(os.environ.get("LOAD_TIMEOUT", "1200"))
@@ -268,6 +270,51 @@ def load_topology():
         return None
 
 
+def _exporter_ok(url, timeout=4):
+    """Is this exporter producing DATA — not merely answering?
+
+    On 2026-08-09 the GPU exporter answered every scrape for ~15 hours with HTTP 200
+    and a body containing nothing but `nvidia_smi_failed_scrapes_total`. Its Prometheus
+    target stayed **up** the whole time while every GPU dashboard was empty, because a
+    `systemctl daemon-reload` during a deploy had broken NVML inside the container and
+    nvidia-smi was exiting 255 on every call. Liveness was perfect; the data was gone.
+
+    So this asserts content: an explicit failure counter is a failure, and an exporter
+    emitting almost no series is a failure, whatever the status code says.
+    """
+    try:
+        r = httpx.get(url, timeout=timeout)
+        if r.status_code >= 400:
+            return f"HTTP {r.status_code}"
+        body = r.text
+        for line in body.splitlines():
+            if line.startswith("nvidia_smi_command_exit_code"):
+                code = line.rsplit(" ", 1)[-1]
+                if code not in ("0", "0.0"):
+                    return f"nvidia-smi exit {code.split('.')[0]}"
+        series = sum(1 for ln in body.splitlines() if ln and not ln.startswith("#"))
+        return "running" if series > 10 else f"only {series} series"
+    except Exception as e:  # noqa: BLE001
+        return f"down ({type(e).__name__})"
+
+
+def metrics_services():
+    """Per-node exporter health, as data rather than liveness. Empty when NODE_ADDRS is
+    unset (tests, or a single-node bring-up) so this never invents failures."""
+    # NODE_ADDRS lists REMOTE nodes only (the unit builds it by excluding
+    # inventory_hostname), so the panel's own node must be added explicitly — and it is
+    # the one whose exporters broke on 2026-08-09. Checking only the far side would have
+    # missed the actual failure.
+    targets = [(PANEL_NODE, "127.0.0.1")] + sorted(NODE_ADDRS.items())
+    out = []
+    for node, addr in targets:
+        out.append((f"GPU metrics ({node})",
+                    _exporter_ok(f"http://{addr}:{GPU_EXPORTER_PORT}/metrics")))
+        out.append((f"Node metrics ({node})",
+                    _exporter_ok(f"http://{addr}:{NODE_EXPORTER_PORT}/metrics")))
+    return out
+
+
 def load_fleet():
     """What the last deploy provisioned (the allowlist + per-node placement)."""
     try:
@@ -286,6 +333,7 @@ def gather():
     services = [("Open WebUI", _http_ok(WEBUI_URL)), ("Proxy", _http_ok(PROXY_URL))]
     if MODEL_ENDPOINT:
         services.append(("Model endpoint", _http_ok(f"{MODEL_ENDPOINT}/health")))
+    services.extend(metrics_services())
     states = node_engine_states()
     requested = requested_profile()
 

@@ -14,16 +14,30 @@ scrape_configs:
       - files:
           - /etc/prometheus/vllm_targets.yml
 
+  # `instance` is relabelled to the HOSTNAME. Targets must be addressed by ConnectX IP
+  # (that is the interface carrying cluster traffic), but an IP is meaningless on a
+  # dashboard — "10.0.200.13 is at 50% CPU" makes you look up which box that is, every
+  # time. Relabelling here rather than editing each panel's legendFormat means every
+  # query gets hostnames, including ones written later, and `instance` stays the single
+  # identifier for a node across all jobs.
   - job_name: node
     static_configs:
-      - targets:
 {% for h in groups['all'] %}
-          - '{{ hostvars[h].vllm_host_ip }}:{{ node_exporter_port }}'
+      - targets: ['{{ hostvars[h].vllm_host_ip }}:{{ node_exporter_port }}']
+        labels:
+          node: '{{ h }}'
 {% endfor %}
+    relabel_configs:
+      - source_labels: [node]
+        target_label: instance
 
   - job_name: gpu
     static_configs:
-      - targets:
 {% for h in groups['all'] %}
-          - '{{ hostvars[h].vllm_host_ip }}:{{ nvidia_exporter_port }}'
+      - targets: ['{{ hostvars[h].vllm_host_ip }}:{{ nvidia_exporter_port }}']
+        labels:
+          node: '{{ h }}'
 {% endfor %}
+    relabel_configs:
+      - source_labels: [node]
+        target_label: instance

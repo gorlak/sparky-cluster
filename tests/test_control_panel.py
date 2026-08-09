@@ -347,3 +347,71 @@ def test_a_real_failsafe_is_never_masked_by_a_switch(panel, monkeypatch):
     j = client.get("/status.json").json()
     assert j["failsafe"] is True
     assert j["phase"] == "failsafe"
+
+
+# --- exporters: data presence, not liveness (2026-08-09) --------------------
+
+def test_an_exporter_answering_with_no_data_is_not_healthy(panel, monkeypatch):
+    """The failure this exists for: on 2026-08-09 the GPU exporter returned HTTP 200 for
+    ~15 hours with a body containing only `nvidia_smi_failed_scrapes_total`. Its
+    Prometheus target stayed `up`, every GPU dashboard was empty, and nothing noticed —
+    a `systemctl daemon-reload` during a deploy had broken NVML inside the container.
+    Liveness checks cannot see this; only a content check can."""
+    main, _ = panel
+
+    class _Resp:
+        status_code = 200
+        text = ("# HELP nvidia_smi_command_exit_code\n"
+                "nvidia_smi_command_exit_code 255\n"
+                "nvidia_smi_failed_scrapes_total 3503\n")
+
+    monkeypatch.setattr(main.httpx, "get", lambda *a, **k: _Resp())
+    assert main._exporter_ok("http://x/metrics") == "nvidia-smi exit 255"
+
+
+def test_a_healthy_exporter_reports_running(panel, monkeypatch):
+    main, _ = panel
+
+    class _Resp:
+        status_code = 200
+        text = "nvidia_smi_command_exit_code 0\n" + "".join(
+            f"metric_{i} 1\n" for i in range(20))
+
+    monkeypatch.setattr(main.httpx, "get", lambda *a, **k: _Resp())
+    assert main._exporter_ok("http://x/metrics") == "running"
+
+
+def test_an_exporter_emitting_almost_nothing_is_flagged(panel, monkeypatch):
+    """The general case: an exporter that lost its data source without advertising a
+    failure counter of its own."""
+    main, _ = panel
+
+    class _Resp:
+        status_code = 200
+        text = "# HELP something\nonly_one_series 1\n"
+
+    monkeypatch.setattr(main.httpx, "get", lambda *a, **k: _Resp())
+    assert "only 1 series" in main._exporter_ok("http://x/metrics")
+
+
+def test_node_exporter_503_is_reported(panel, monkeypatch):
+    """node-exporter's other 2026-08-09 failure: a leaked in-flight counter made every
+    scrape 503 while each collector individually answered in under 40ms."""
+    main, _ = panel
+
+    class _Resp:
+        status_code = 503
+        text = "Limit of concurrent requests reached (40), try again later.\n"
+
+    monkeypatch.setattr(main.httpx, "get", lambda *a, **k: _Resp())
+    assert main._exporter_ok("http://x/metrics") == "HTTP 503"
+
+
+def test_metrics_checks_the_panels_own_node_too(panel, monkeypatch):
+    """NODE_ADDRS lists remote nodes only, so a naive loop checks the far side and skips
+    the local one — which on 2026-08-09 was the node whose exporters were broken."""
+    main, _ = panel
+    monkeypatch.setattr(main, "_exporter_ok", lambda url, **k: url)
+    labels = [name for name, _ in main.metrics_services()]
+    assert any(main.PANEL_NODE in label for label in labels), labels
+    assert any("snoopy" in label for label in labels), labels

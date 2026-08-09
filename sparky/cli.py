@@ -31,7 +31,7 @@ from rich.table import Table
 
 from sparky import activate as act
 from sparky import ansible as ops
-from sparky import report, topology
+from sparky import evals, report, store, topology
 from sparky.vision import probe as vision_probe
 from sparky.api import VllmClient
 from sparky.bench import run_all
@@ -437,6 +437,64 @@ def probe(
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
     raise typer.Exit(proc.returncode)
+
+
+@app.command("eval")
+def eval_cmd(
+    label: str = typer.Argument(None, help="Label to record under (default: the profile)."),
+    limit: int = typer.Option(140, "--limit", "-n", help="Questions (max 280)."),
+    concurrency: int = typer.Option(8, "--concurrency", "-c"),
+    record: bool = typer.Option(True, "--record/--no-record", help="Write to the trend store."),
+) -> None:
+    """Score the live model for ACCURACY — the `quality` regiment (ADR-0016).
+
+    Everything else measures throughput or liveness; this is the only thing that says
+    whether a model is any *good*, which is what ranking candidates requires.
+
+    Uses a committed, category-balanced MMLU-Pro subset. Scores compare to other runs of
+    the same subset — NOT to published MMLU-Pro numbers.
+    """
+    current = topology.load_current_topology()
+    if not current or not current.get("engines"):
+        console.print("[yellow]Nothing serving — activate a profile first.[/]")
+        raise typer.Exit(1)
+    engine = current["engines"][0]
+    profile = current.get("profile", "?")
+    label = label or profile
+
+    items = evals.load_items(limit)
+    console.print(f"[bold]quality[/] · {profile} · {len(items)} questions · "
+                  f"concurrency {concurrency}")
+    console.print(f"[dim]{engine['api_url']} · served as {engine['served_as']}[/]")
+
+    done = {"n": 0}
+
+    def tick(_result):
+        done["n"] += 1
+        if done["n"] % 20 == 0:
+            console.print(f"[dim]  {done['n']}/{len(items)}…[/]")
+
+    with VllmClient(engine["api_url"], timeout=600.0) as client:
+        result = evals.run(client, engine["served_as"], limit=limit,
+                           concurrency=concurrency, on_item=tick)
+
+    table = Table(title=f"quality: {label}", title_justify="left")
+    for col in ("category", "score", "n"):
+        table.add_column(col, overflow="fold")
+    for category, (ok, n) in result.by_category().items():
+        table.add_row(category, f"{100 * ok / n:.0f}%", str(n))
+    console.print(table)
+    console.print(f"  [bold]accuracy {100 * result.accuracy:.1f}%[/] "
+                  f"({sum(1 for i in result.items if i.ok)}/{len(result.items)}) · "
+                  f"unparseable {result.unparseable} · {result.seconds / 60:.1f} min")
+
+    if record:
+        with store.Store() as db:
+            db.record(store.Run(
+                label=label, model=engine.get("model", "?"), profile=profile,
+                scenario="quality:mmlu-pro", accuracy=result.accuracy,
+                items=len(result.items), unparseable=result.unparseable))
+        console.print(f"[dim]  recorded as '{label}' (scenario quality:mmlu-pro)[/]")
 
 
 @app.command()

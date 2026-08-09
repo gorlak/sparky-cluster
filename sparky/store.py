@@ -29,9 +29,19 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
     output_toks_s REAL, total_toks_s REAL, requests_s REAL,
     ttft_mean_ms  REAL, ttft_p99_ms REAL,
     tpot_mean_ms  REAL, tpot_p99_ms REAL,
-    itl_mean_ms   REAL, itl_p99_ms  REAL
+    itl_mean_ms   REAL, itl_p99_ms  REAL,
+    -- the `quality` regiment (ADR-0016): an accuracy score, so models can be RANKED
+    -- rather than only compared on throughput. NULL for bench rows.
+    accuracy      REAL,
+    items         INTEGER,
+    unparseable   INTEGER
 );
 """
+
+# Columns added after the table shipped. SQLite has no "ADD COLUMN IF NOT EXISTS", and
+# the trend store is a live file on the cluster — dropping it would discard the
+# benchmark history the whole A/B story rests on, so migrate in place.
+_MIGRATIONS = ("accuracy REAL", "items INTEGER", "unparseable INTEGER")
 
 _METRIC_COLS = (
     "output_toks_s", "total_toks_s", "requests_s",
@@ -60,6 +70,9 @@ class Run:
     tpot_p99_ms: float | None = None
     itl_mean_ms: float | None = None
     itl_p99_ms: float | None = None
+    accuracy: float | None = None
+    items: int | None = None
+    unparseable: int | None = None
 
 
 class Store:
@@ -71,6 +84,11 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        existing = {r[1] for r in self._conn.execute("PRAGMA table_info(benchmark_runs)")}
+        for column in _MIGRATIONS:
+            if column.split()[0] not in existing:
+                self._conn.execute(f"ALTER TABLE benchmark_runs ADD COLUMN {column}")
+        self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
@@ -83,12 +101,14 @@ class Store:
 
     def record(self, run: Run) -> int:
         """Insert one run; returns its row id."""
-        cols = ["ts", "label", "model", "profile", "scenario", "skipped", "quality_pass", *_METRIC_COLS]
+        cols = ["ts", "label", "model", "profile", "scenario", "skipped", "quality_pass",
+                "accuracy", "items", "unparseable", *_METRIC_COLS]
         vals = [
             run.ts or int(time.time()),
             run.label, run.model, run.profile, run.scenario,
             int(run.skipped),
             None if run.quality_pass is None else int(run.quality_pass),
+            run.accuracy, run.items, run.unparseable,
             *(getattr(run, c) for c in _METRIC_COLS),
         ]
         placeholders = ", ".join("?" * len(cols))

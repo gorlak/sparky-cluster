@@ -12,6 +12,24 @@ services:
     command:
       - '--path.rootfs=/host'
       - '--web.listen-address=:{{ node_exporter_port }}'
+      # Disable the in-flight scrape cap. node-exporter defaults to 40 concurrent
+      # requests and decrements that counter only on clean completion — so scrapes
+      # aborted mid-flight LEAK it. On 2026-08-09 the counter had leaked to its cap
+      # and every scrape 503'd with "Limit of concurrent requests reached (40)" for
+      # ~15 hours, while every individual collector still answered in under 40ms.
+      # The trigger was almost certainly the host memory pressure during the big
+      # model loads. One Prometheus scrapes this; a concurrency cap protects nothing
+      # here and converts a transient stall into a permanent wedge.
+      - '--web.max-requests=0'
+      # ROOT CAUSE of the 2026-08-09 metrics blackout. Reading cpufreq sysfs on GB10's
+      # Grace cores BLOCKS: sampled in isolation, 4 of 5 requests took >6s while every
+      # other collector answered in under 10ms. Full scrapes therefore hung, Prometheus
+      # timed out at its 10s default, and each aborted scrape leaked node-exporter's
+      # in-flight counter until it reached the cap and 503'd everything permanently.
+      # The max-requests line above stops a stall becoming a wedge; THIS stops the stall.
+      # Costs nothing we use — CPU utilization comes from node_cpu_seconds_total (the
+      # `cpu` collector), not from cpufreq.
+      - '--no-collector.cpufreq'
     volumes:
       - /:/host:ro,rslave
 
@@ -20,6 +38,13 @@ services:
     container_name: nvidia-gpu-exporter
     network_mode: host
     restart: always
+    # A `systemctl daemon-reload` while this container is up breaks NVML inside it —
+    # nvidia-smi then exits 255 forever and every scrape fails silently (the exporter
+    # itself stays "up", so Prometheus sees a healthy target emitting nothing but
+    # nvidia_smi_failed_scrapes_total). That is the README's documented gotcha, and a
+    # deploy runs daemon-reload, so it fires routinely. Sharing the host cgroup
+    # namespace is the fix — the same reason the vLLM units pass --cgroupns=host.
+    cgroup: host
     # Pin query fields — GB10's nvidia-smi exposes clocks_event_reasons_* "[us]"
     # fields that crash the exporter (invalid metric names). See group_vars.
     command:
