@@ -35,7 +35,10 @@ python3 -c "import json;c=json.load(open('/opt/cluster/model-cache/<model>/confi
 ./sparky.sh probe quant                           # 4. is the quant_algo in modelopt_algos?
 ```
 ```bash
-./sparky.sh probe parsers                         # 5. exact parser names — never guess
+./sparky.sh probe parsers                         # 5. candidate parser names
+```
+```bash
+grep -oE '<tool_call>|\[TOOL_CALLS\]|<function|<parameter' /opt/cluster/model-cache/<model>/chat_template.jinja | sort | uniq -c   # 6. the format the model ACTUALLY emits
 ```
 
 ---
@@ -145,7 +148,18 @@ status codes prove nothing. Note the named-function shape is the least informati
 passes even with a mismatched parser. `auto` is the one that matters, since it is what
 Open WebUI sends.
 **Also.** Same-vendor is not same-format: `qwen3_xml` serves `qwen3.6-35b` correctly and
-is wrong for `Qwen3-VL-235B`.
+is wrong for `Qwen3-VL-235B`. Qwen alone ships at least three tool formats.
+
+**THE CHEAP CHECK, and it should come first — read the chat template.** The model states
+its own format, in the file, before anything is deployed:
+
+```bash
+grep -oE '<tool_call>|\[TOOL_CALLS\]|<function|<parameter' /opt/vllm/models/<model>/chat_template.jinja | sort | uniq -c
+```
+
+`<tool_call>{"name":…,"arguments":…}</tool_call>` → `hermes`. `[TOOL_CALLS]` → `mistral`.
+This settled Qwen3-VL-235B in ten seconds after a wrong guess had already cost a deploy
+cycle. Prefer it over any inference from the model family.
 *2026-08-08 · Qwen3-VL-235B*
 
 ### Engine refuses to start on an unknown `--tool-call-parser` / `--reasoning-parser`
