@@ -52,7 +52,7 @@ other) see the model sheets: `docs/models/step-3.5-flash.md` and
 - **NVFP4 path (3.7-NVFP4):** the compelling one — it *changes the profile's character*,
   freeing ~30 GiB/node for dev/build work while serving a stronger, multimodal model.
   Today `step` is fully-committed (both nodes essentially maxed); NVFP4 would move it into
-  the same "big-shared with headroom" class as the `minimax-m2.7-awq` profile.
+  the same "big-shared with headroom" class as the `minimax-m2.7-nvfp4` profile.
 
 ## Dependencies (what must land first for the NVFP4 path)
 

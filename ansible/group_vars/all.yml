@@ -20,6 +20,11 @@
 vllm_image: nvcr.io/nvidia/vllm@sha256:98494fdaea68ad892c107180b0be41c99caa3c77683175becc4e202b2cb75b27  # :26.04-py3 — vLLM 0.19
 # The 26.06 base the derived image builds FROM (its Dockerfile pins the same digest).
 vllm_image_2606: nvcr.io/nvidia/vllm@sha256:6e537fc8d84beb9b60e789236168141d2ef4420bc28cbb85ec7d4318ca918b6c  # :26.06-py3 — vLLM 0.22.1
+# 26.07: vLLM 0.24.0, NCCL 2.30.7, and fastapi CAPPED at 0.136.3 — which is what lets
+# the derived 26.06-fastapi-fix image be retired once every NVFP4 profile has moved.
+# Being rolled out per-profile (ADR-0013), not as the default, so a bad 26.07 can only
+# affect the profiles that opted in. See docs/upgrades/container-nvidia-vllm-26.07-py3.md.
+vllm_image_2607: nvcr.io/nvidia/vllm@sha256:95c498a475142c20c989c65e5d223348c09fed83ba17ddf44f117610c0bd3268  # :26.07-py3 — vLLM 0.24.0
 
 # Container images required on every node (ADR-0013), ensured by the `images` role
 # in the first play — `docker pull` for upstream images, `docker build` for derived
@@ -42,10 +47,14 @@ container_images:
   # --- serving: any node may run any engine, so these go everywhere -------------
   - pull: "{{ vllm_image }}"
   - pull: "{{ vllm_image_2606 }}"
-  # dgx-spark/vllm:26.06-fastapi-fix — 26.06 + fastapi<0.137 WAR for DEF-0005 (see the
-  # Dockerfile). Built locally, so it has no registry digest to pin.
-  - build: dgx-spark/vllm:26.06-fastapi-fix
-    context: vllm-26.06-fastapi-fix
+  - pull: "{{ vllm_image_2607 }}"
+  # dgx-spark/vllm:26.07-xgrammar-fix — 26.07 + `xgrammar>=0.2.1` WAR for DEF-0010 (see
+  # the Dockerfile). Built locally, so it has no registry digest to pin. Replaces the
+  # 26.06-fastapi-fix image: 26.07 fixed that defect and introduced this one. The
+  # derived-image mechanism is what keeps us on the newest container (ADR-0013); what it
+  # patches is expected to keep changing.
+  - build: dgx-spark/vllm:26.07-xgrammar-fix
+    context: vllm-26.07-xgrammar-fix
   # --- front-end: head only -----------------------------------------------------
   - pull: "{{ webui_image }}"
     hosts: head
@@ -168,18 +177,24 @@ vllm_start_timeout_sec: 1200
 # Prometheus + Grafana on the head. (GB10 reports no GPU memory via nvidia-smi —
 # that's the unified memory, covered by node-exporter.)
 exporters_dir: /opt/exporters
-node_exporter_image: prom/node-exporter@sha256:e9cff4fc67b1818f8c97adb115b9f12c9a54b533de86765d4a0effc01b357205  # :latest == 1.11.1
+node_exporter_image: prom/node-exporter@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0  # :v1.12.1
 node_exporter_port: 9100
+# HELD BACK at 1.2.0 while everything else moved (2026-08-08). 1.13.1 is available —
+# eleven minors on — but this image carries a GB10 workaround (nvidia_exporter_query_fields
+# below) and `--query-field-names` no longer appears in the project's README, so the flag
+# may be renamed or gone. Bumping blind risks a crash-looping exporter, and a silently
+# absent GPU dashboard is a bad thing to introduce during a container campaign.
+# Tracked as DEF-0009; needs its own check, not a batch bump.
 nvidia_exporter_image: utkuozdemir/nvidia_gpu_exporter@sha256:cc407f77ab017101ce233a0185875ebc75d2a0911381741b20ad91f695e488c7  # :1.2.0
 nvidia_exporter_port: 9835
 # Pin query fields: GB10's nvidia-smi exposes clocks_event_reasons_* "[us]" fields
 # that the exporter turns into invalid Prometheus metric names and crashes on.
 # Querying an explicit safe set avoids that (GPU memory is N/A on GB10 anyway).
 nvidia_exporter_query_fields: "utilization.gpu,temperature.gpu,power.draw,clocks.current.sm,clocks.current.memory"
-prometheus_image: prom/prometheus@sha256:c6b27ea434f8389bfe233fbc7be381cf50587c286e871bc842008f5a1b1908a7  # :latest == 3.13.0
+prometheus_image: prom/prometheus@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69  # :v3.13.2
 prometheus_dir: /opt/prometheus
 prometheus_port: 9090
-grafana_image: grafana/grafana@sha256:121a7a9ece6dc10b969f1f96eed64b4f07dfac0d0b8abc070f7cb83bbde86f63  # :latest == 13.1.0
+grafana_image: grafana/grafana@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43  # :13.1.3
 grafana_dir: /opt/grafana
 grafana_port: 3000
 
@@ -188,7 +203,7 @@ grafana_port: 3000
 # role — no per-endpoint var here. Kept here (not role defaults) so teardown.yml
 # can reach them too. Binds an INTERNAL port (8080) — Caddy fronts it at
 # chat.{{ web_domain }}.
-webui_image: ghcr.io/open-webui/open-webui@sha256:a26effeb220e132482bf7e0560b3404843e7bc40d23051144e062960df8df6b0  # :latest == 0.10.2
+webui_image: ghcr.io/open-webui/open-webui@sha256:72c0ba641ba75e7aa52655cb242570906ececd09b1140fb736483038a22b3228  # :v0.11.0
 webui_install_dir: /opt/open-webui
 webui_port: 8080
 # Sent as the API key for every vLLM engine endpoint (vLLM ignores it).
@@ -208,7 +223,7 @@ webui_default_user_role: "user"
 # each service is a subdomain (<svc>.{{ web_domain }}). Needs wildcard DNS
 # *.{{ web_domain }} -> sparky's IP (one record, then services are proxy-only).
 web_domain: sparky.flummoxed.net
-caddy_image: caddy@sha256:af5fdcd76f2db5e4e974ee92f96ee8c0fc3edb55bd4ba5032547cbf3f65e486d  # :2
+caddy_image: caddy@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9  # :2.11.4
 caddy_dir: /opt/caddy
 # /admin basic_auth (ADR-0008's seam, TURNED ON by ADR-0018 — the panel is now
 # deliberately agent-drivable and holds the activation grant, so it can't stay

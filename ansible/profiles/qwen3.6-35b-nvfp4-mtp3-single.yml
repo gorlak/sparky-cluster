@@ -9,7 +9,12 @@
 # see docs/profile-tuning.md and ADR-0014's register.
 
 profile_name: qwen3.6-35b-nvfp4-mtp3-single
-vllm_image: dgx-spark/vllm:26.06-fastapi-fix
+# FIRST 26.07 CANARY (2026-08-08). Chosen deliberately: it keeps MTP-3, and spec-decode
+# is what makes vLLM downgrade cudagraphs to PIECEWISE — so DEF-0003 stays masked here
+# and the container is the ONLY variable that moves. A spec-decode-free profile on 26.07
+# (qwen3-coder) is the separate, later experiment that unmasks it.
+# 26.07 = vLLM 0.24.0, NCCL 2.30.7, fastapi 0.136.3 (capped -> retires the derived image).
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
   - name: qwen3.6-35b-snoopy
     kind: vllm

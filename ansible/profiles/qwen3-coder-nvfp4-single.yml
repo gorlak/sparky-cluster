@@ -8,7 +8,11 @@
 # NVFP4 models: see docs/profile-tuning.md.
 
 profile_name: qwen3-coder-nvfp4-single
-vllm_image: dgx-spark/vllm:26.06-fastapi-fix
+# ON 26.07 (2026-08-08). This profile has NO spec-decode, so unlike the qwen3.6
+# canary it does NOT mask DEF-0003 — activating it runs FULL_AND_PIECEWISE
+# cudagraphs for the first time ever on GB10. That is the point: it is the DEF-0003
+# experiment. Run it AFTER the canary proves the container itself is sound.
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
   - name: qwen3-coder-snoopy
     kind: vllm

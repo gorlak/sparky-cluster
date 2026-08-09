@@ -30,7 +30,10 @@ blocked: true
 # kernels and applies to THIS profile only (extra-vars outrank group_vars, which
 # stays the stable 26.04 default for everything else). The `images` role builds this
 # patched image (26.06 + fastapi<0.137 WAR) on every node — see ADR-0013.
-vllm_image: dgx-spark/vllm:26.06-fastapi-fix
+# ON 26.07 (2026-08-08) — moved off the derived image with everything else, but
+# STILL PARKED: 26.07's Step3VLProcessor still lacks _get_num_multimodal_tokens
+# (DEF-0006, re-verified 2026-08-08). The repoint is housekeeping, not an unblock.
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 
 serving_topology:
   - name: step-3.7-nvfp4

@@ -178,3 +178,21 @@ def test_the_request_file_keeps_its_inode_and_permissions(tmp_path):
     act.write_request("qwen", f)
     assert f.read_text() == "qwen\n"
     assert f.stat().st_ino == before
+
+
+def test_a_stale_session_gets_a_diagnosis_not_a_traceback(monkeypatch, tmp_path):
+    """Group membership is granted at LOGIN, so the deploy that first creates the
+    `activate` group cannot retrofit it onto shells already open. That makes this the
+    single most likely first-run failure of the whole ADR-0018 boundary — and it used
+    to surface as a raw PermissionError traceback, which reads like a broken cluster."""
+    monkeypatch.setattr(act, "read_allowlist", lambda *a, **k: ["empty", "step"])
+    monkeypatch.setattr(act, "group_diagnosis", lambda *a, **k: "THIS SESSION predates it")
+
+    def denied(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(act, "write_request", denied)
+    monkeypatch.setattr(act, "reconcile", lambda **k: pytest.fail("must not reconcile"))
+    res = runner.invoke(cli.app, ["activate", "step"])
+    assert res.exit_code == 2
+    assert "THIS SESSION predates it" in res.stdout

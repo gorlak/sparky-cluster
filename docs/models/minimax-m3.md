@@ -2,8 +2,10 @@
 
 **Last updated:** 2026-07-02
 **Hardware:** sparky + snoopy — GB10 Blackwell (SM 12.1), 128 GiB unified memory each
-**Status:** ❌ Does not fit — weights exceed per-node memory at TP=2
 **Available quant:** NVFP4 — `nvidia/MiniMax-M3-NVFP4` (~250 GiB, ~125 GiB/node at TP=2 — exceeds 121 GiB limit)
+**Verdict:** ⛔ tombstoned — see [`tombstones.md`](tombstones.md), which owns the decision
+and the condition to revisit it. This sheet holds the *facts*; it deliberately does not
+restate the verdict.
 
 ---
 

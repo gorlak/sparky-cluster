@@ -105,6 +105,25 @@
                    + fleet_engines | map(attribute='worker_extra_args', default=[]) | flatten }}"
         _bad: "{{ _args | select('search', _quote_re) | list }}"
 
+    # group_vars says "whatever a profile selects must be listed in container_images",
+    # and until now nothing checked it. A profile naming an image the `images` role does
+    # not ensure fails at ENGINE START — after a deploy reports success — and with
+    # digest pins now hand-copied into profiles, a single wrong character does it.
+    - name: Assert every profile's image is one the images role guarantees
+      ansible.builtin.assert:
+        that: _unmanaged | length == 0
+        fail_msg: >-
+          These profiles select a container image that is not in `container_images`, so
+          nothing pulls or builds it and the engine will fail to start: {{ _unmanaged }}.
+          Add it to container_images in group_vars/all.yml (ADR-0013).
+        success_msg: "every profile's image is managed by the images role"
+      vars:
+        _managed: "{{ container_images | map(attribute='pull', default='') | list
+                      + container_images | map(attribute='build', default='') | list }}"
+        _unmanaged: >-
+          {{ fleet_profiles | map(attribute='image') | unique
+             | reject('in', _managed) | list }}
+
     - name: Show the fleet
       ansible.builtin.debug:
         msg: >-

@@ -19,6 +19,7 @@ anything — the allowlist and the installed env files are the policy, and only
 from __future__ import annotations
 
 import getpass
+import grp
 import json
 import os
 import subprocess
@@ -31,6 +32,7 @@ from sparky.api import VllmClient
 ACTIVATE_BIN = "/usr/local/sbin/vllm-activate"
 DESIRED_PROFILE = Path("/opt/cluster/desired-profile")
 ALLOWLIST_FILE = Path("/opt/vllm/engines/allowlist")
+ACTIVATE_GROUP = "activate"
 FLEET_STATE = Path("/opt/cluster/fleet.json")
 EMPTY = "empty"
 
@@ -79,6 +81,34 @@ def write_request(profile: str, profile_path: Path = DESIRED_PROFILE) -> None:
         handle.write(profile + "\n")
 
 
+def group_diagnosis(group: str = ACTIVATE_GROUP) -> str:
+    """Why can't this process write the request? Almost always a stale session.
+
+    Group membership is granted at LOGIN, so the deploy that first creates the
+    `activate` group cannot retrofit it onto shells that were already open — and the
+    resulting `PermissionError` looks like a broken cluster rather than a stale
+    session. Say which of the two it is instead of guessing.
+    """
+    try:
+        members = grp.getgrnam(group).gr_mem
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        return (f"the '{group}' group does not exist on this host — this cluster has "
+                f"not been deployed since ADR-0018. Run: ./sparky.sh deploy")
+    user = getpass.getuser()
+    in_session = gid in os.getgroups()
+    if in_session:
+        return (f"you ARE in '{group}' and the file is group-writable, so this is not a "
+                f"group problem — check: ls -l {DESIRED_PROFILE}")
+    if user in members:
+        return (f"you are a member of '{group}' but THIS SESSION predates it — group "
+                f"membership is granted at login. Fix it in one of two ways:\n"
+                f"    newgrp {group}          (this shell, right now)\n"
+                f"    sg {group} -c '<cmd>'   (one command, no re-login)\n"
+                f"  Logging out and back in makes it permanent.")
+    return (f"{user} is not a member of '{group}'. A deploy adds them: ./sparky.sh deploy")
+
+
 def _sudo() -> list[str]:
     return [] if os.geteuid() == 0 else ["sudo", "-n"]
 
@@ -110,7 +140,12 @@ def activate(profile: str, *, force: bool = False) -> int:
         print(f"No allowlist at {ALLOWLIST_FILE} — has this cluster ever been deployed? "
               f"Run `./sparky.sh deploy` first.")
         return 2
-    write_request(profile)
+    try:
+        write_request(profile)
+    except PermissionError:
+        print(f"cannot write the activation request at {DESIRED_PROFILE}.\n"
+              f"  {group_diagnosis()}")
+        return 2
     return reconcile(force=force).returncode
 
 

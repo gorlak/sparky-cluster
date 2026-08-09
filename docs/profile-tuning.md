@@ -68,7 +68,7 @@ Model is so large that even at max gmu, outside headroom is ~5 GiB — just
 enough for the service stack + OS. **No meaningful capacity left for user
 work.** Honest constraint, not a problem: use other machines for dev that day.
 
-### Big-shared with dev headroom (e.g. `minimax-m2.7-awq` at gmu 0.75)
+### Big-shared with dev headroom (e.g. `minimax-m2.7-nvfp4` at gmu 0.80)
 Big model TP'd across both nodes, but gmu deliberately set below max so each
 node keeps **~30 GiB free**. Single/few-user serving still gets ample KV for
 long context with some batching. You can dev on sparky concurrently, or run
@@ -97,7 +97,7 @@ Numbers from measured deploys, 2026-05.
 | **Workflow fit** | Fully-committed; no realistic dev-headroom variant |
 | `max_model_len` | `32768` empirically confirmed; sliding_window=512 may allow more but hasn't been measured |
 
-### MiniMax-M2.7-AWQ-4bit — `minimax-m2.7-awq`, TP=2
+### MiniMax-M2.7-AWQ-4bit — `minimax-m2.7-awq`, TP=2 *(retired 2026-08-08 — kept for the math)*
 | | value |
 |---|---|
 | Weights per shard | **~60.93 GiB** |

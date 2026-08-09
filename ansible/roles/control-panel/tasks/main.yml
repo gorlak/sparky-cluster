@@ -41,7 +41,7 @@
 # Vendor htmx at deploy time so the panel is self-contained at runtime (no CDN).
 - name: Vendor htmx into the app's static dir
   ansible.builtin.get_url:
-    url: https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js
+    url: https://unpkg.com/htmx.org@2.0.9/dist/htmx.min.js
     dest: "{{ control_panel_dir }}/app/static/htmx.min.js"
     mode: "0644"
   become: false

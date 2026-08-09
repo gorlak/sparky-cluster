@@ -153,3 +153,53 @@ def test_head_only_images_are_not_pushed_to_workers():
         assert placement.get("{{ %s }}" % var) == "head", f"{var} should be head-only"
     for var in ("vllm_image", "node_exporter_image", "nvidia_exporter_image"):
         assert placement.get("{{ %s }}" % var) == "all", f"{var} should be on all nodes"
+
+
+def test_the_panel_is_tested_against_the_fastapi_it_deploys():
+    """tests/test_control_panel.py loads the panel's main.py under the HARNESS
+    environment, so if pyproject declares a floor while requirements.txt pins an exact
+    version, the panel is validated against a FastAPI it will never run. DEF-0005 is the
+    standing reminder that one FastAPI minor can break a working app outright."""
+    import re
+    req = (ROLES / "control-panel/files/app/requirements.txt").read_text()
+    pyproject = (PLAYBOOKS.parent / "pyproject.toml").read_text()
+    for pkg in ("fastapi", "starlette"):
+        shipped = re.search(rf"(?m)^{pkg}==(\S+)$", req)
+        tested = re.search(rf'"{pkg}==(\S+?)"', pyproject)
+        assert shipped and tested, f"{pkg}: pin both, exactly (req={bool(shipped)} dev={bool(tested)})"
+        assert shipped.group(1) == tested.group(1), (
+            f"{pkg}: panel deploys {shipped.group(1)} but tests run {tested.group(1)}")
+
+
+def test_derived_images_are_not_gated_on_the_tag_existing():
+    """A `build:` entry's tag never changes, so "the image is present" says nothing
+    about whether it came from the CURRENT Dockerfile. Gating the build on presence let
+    an edited Dockerfile be silently ignored — on 2026-08-08 a broken WAR survived the
+    deploy meant to fix it, and the fix's own build-time assertion never ran because the
+    build never ran. Docker's layer cache makes an always-run build cheap."""
+    tasks = list(walk_tasks(ROLES / "images/tasks/ensure_one.yml"))
+    # the build step *and* the block that wraps it — a guard on either one skips it
+    guards = [str(t.get("when", "")) for t in tasks
+              if "build" in str(t.get("name", "")).lower()]
+    assert guards, "no build task found in ensure_one.yml"
+    offenders = [g for g in guards if "image_present" in g]
+    assert not offenders, (
+        "the docker build step is gated on the image already existing — an edited "
+        f"Dockerfile would be ignored. when: {offenders!r}")
+
+
+def test_derived_images_patch_without_letting_the_resolver_loose():
+    """A vendor image is a carefully-resolved dependency set. Installing one package
+    without `--no-deps` lets pip "fix" the rest: on 2026-08-08 patching xgrammar pulled
+    transformers back to v4, which vLLM 0.24.0 removed support for, and every engine
+    died at import. Surgical or not at all — a needed dependency goes in explicitly."""
+    loose = []
+    for dockerfile in sorted((ROLES / "images/files").glob("*/Dockerfile")):
+        body = dockerfile.read_text().replace("\\\n", " ")
+        for line in body.splitlines():
+            if line.lstrip().startswith("#") or "pip install" not in line:
+                continue
+            if "--no-deps" not in line:
+                loose.append(f"{dockerfile.parent.name}: {line.strip()[:90]}")
+    assert not loose, ("these pip installs can re-resolve the vendor's dependency set:\n  "
+                       + "\n  ".join(loose))

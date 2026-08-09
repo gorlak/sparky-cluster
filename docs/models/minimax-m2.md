@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-02
 **Hardware:** sparky + snoopy — GB10 Blackwell (SM 12.1), 128 GiB unified memory each, ConnectX-7 200Gbit RoCE
-**Status:** ✅ Deployed and serving (`minimax-m2.7-awq` profile)
+**Status:** ✅ Deployed and serving (`minimax-m2.7-nvfp4` profile). The AWQ-4bit quant and its `minimax-m2.7-awq` profile were **retired 2026-08-08** — its Marlin MoE loader is DEF-0004, which froze a node on 26.07, pinning it to 26.04 forever.
 **Installed quant:** AWQ 4-bit compressed-tensors — `cyankiwi/MiniMax-M2.7-AWQ-4bit` (122 GiB measured, ~61 GiB/node at TP=2)
 
 ---
@@ -101,7 +101,7 @@ keeps ~30 GiB free for OS, dev work, and other containers.
 
 ## Production Serve Flags
 
-From the active `minimax-m2.7-awq` profile. Worker node uses the same flags minus
+From the retired `minimax-m2.7-awq` profile (kept for reference — the NVFP4 profile's flags are equivalent). Worker node uses the same flags minus
 `--master-addr` and with `--node-rank 1`.
 
 ```

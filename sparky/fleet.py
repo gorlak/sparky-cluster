@@ -19,7 +19,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import yaml
+
 from sparky.topology import PROFILES_DIR, Engine, Profile, all_profiles
+
+GROUP_VARS = PROFILES_DIR.parent / "group_vars" / "all.yml"
 
 # The one well-known front port. At most one live engine per port fleet-wide is what
 # lets the stable endpoint be a static health-checked upstream list.
@@ -132,8 +136,36 @@ class Fleet:
                         f"systemd's $VAR expansion unquotes); single quotes and newlines "
                         f'are not. Write JSON args unspaced, e.g. -sc {{"method":"mtp"}}')
 
+        managed = managed_images()
+        if managed:
+            for p in self.profiles:
+                if p.vllm_image and p.vllm_image not in managed:
+                    problems.append(
+                        f"{p.name}: selects {p.vllm_image!r}, which is not in "
+                        f"container_images — nothing would pull or build it, and the "
+                        f"engine would fail to start (ADR-0013)")
+
         if problems:
             raise FleetError("\n".join(f"  - {p}" for p in problems))
+
+
+def managed_images(path=GROUP_VARS) -> set[str]:
+    """Every image `container_images` guarantees, with `{{ var }}` references resolved.
+
+    ADR-0013's rule is that a profile may only select an image the `images` role ensures.
+    Unenforced, a profile naming an unmanaged image deploys "successfully" and then fails
+    at engine start — and since the pins are digests copied by hand, one wrong character
+    does it.
+    """
+    try:
+        gv = yaml.safe_load(path.read_text()) or {}
+    except OSError:
+        return set()
+    out = set()
+    for entry in gv.get("container_images") or []:
+        ref = entry.get("pull") or entry.get("build") or ""
+        out.add(gv.get(ref.strip("{} \"\'"), ref) if ref.startswith("{{") else ref)
+    return {r for r in out if r}
 
 
 def load_fleet(profiles_dir=PROFILES_DIR) -> Fleet:

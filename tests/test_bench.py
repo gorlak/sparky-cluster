@@ -36,10 +36,10 @@ def test_scenarios_are_the_three():
 
 def test_bench_command_shape():
     cmd = bench_command(
-        "vllm-minimax-m2.7-awq", "/models/M", "minimax-m2", "throughput", "out.json",
+        "vllm-minimax-m2.7-nvfp4", "/models/M", "minimax-m2", "throughput", "out.json",
         port=8000, label="26.04",
     )
-    assert cmd[:5] == ["sudo", "docker", "exec", "vllm-minimax-m2.7-awq", "vllm"]
+    assert cmd[:5] == ["sudo", "docker", "exec", "vllm-minimax-m2.7-nvfp4", "vllm"]
     assert cmd[5:7] == ["bench", "serve"]
     assert "--served-model-name" in cmd and "minimax-m2" in cmd
     assert "--result-filename" in cmd and "out.json" in cmd

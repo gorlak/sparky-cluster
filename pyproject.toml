@@ -14,7 +14,18 @@ dependencies = [
 sparky = "sparky.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8", "jinja2>=3", "fastapi>=0.110", "python-multipart>=0.0.9"]
+# fastapi/starlette are PINNED to the exact versions the control panel deploys
+# (roles/control-panel/files/app/requirements.txt). tests/test_control_panel.py loads
+# the panel's main.py under THIS environment, so a floor here means the panel is tested
+# against a FastAPI it will never run — and DEF-0005 is a standing reminder that a
+# FastAPI minor can break a working app outright. tests/test_roles.py asserts they match.
+dev = [
+    "pytest>=8",
+    "jinja2>=3",
+    "fastapi==0.141.1",
+    "starlette==1.6.0",
+    "python-multipart>=0.0.9",
+]
 
 [tool.pytest.ini_options]
 filterwarnings = [

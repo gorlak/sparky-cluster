@@ -9,6 +9,11 @@
 > build of `nvcr.io/nvidia/vllm` (Python 3). It is *not* a vLLM version — 26.04 ships
 > vLLM 0.19; 26.06 ships 0.22.1.
 
+> **2026-08-08: `26.07-py3` exists**, and is the live candidate — see
+> [container-nvidia-vllm-26.07-py3.md](container-nvidia-vllm-26.07-py3.md). This tracker
+> remains the record of how the NVFP4 profiles got running on 26.06, and its WAR register
+> is still the authority; the 26.07 tracker re-evaluates each WAR rather than restating it.
+
 This is a **living tracker**, not a decision record. The upgrade is underway and
 paused on specific upstream bugs; when the completion criteria below are met we
 re-attempt it. (It is deliberately *not* an ADR — nothing is settled to make

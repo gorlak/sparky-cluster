@@ -3,9 +3,17 @@
 # declaration from `container_images` — either
 #   {pull: <ref>}                          upstream, ideally <ref>@sha256:<digest>
 #   {build: <tag>, context: <dir>}         derived, built from files/<dir>/Dockerfile
-# Idempotent: skip the pull/build entirely if the image is already local (mirrors the
-# `model` role's "skip if already canonical"). A derived image rebuilds only when
-# absent, or when the entry sets `force: true`.
+# PULL is skipped when the image is already local — safe, because the ref is a digest,
+# so "already local" means byte-identical by construction.
+#
+# BUILD is deliberately NOT skipped that way. A derived image's tag never changes, so
+# "the tag exists" says nothing about whether it was built from the CURRENT Dockerfile.
+# Gating on presence meant an edited Dockerfile was silently ignored and the stale image
+# kept serving — on 2026-08-08 a broken xgrammar WAR survived the very deploy meant to
+# fix it, and the fix's own build-time assertion never ran, because the build never ran.
+# `docker build` is therefore ALWAYS invoked: Docker's layer cache makes an unchanged
+# context a ~1s no-op, and a changed one rebuilds, which is the entire point. The
+# Dockerfile is the source of truth, not the presence of a tag.
 
 - name: Is {{ image.pull | default(image.build) }} already present on this node?
   ansible.builtin.command: "docker image inspect {{ image.pull | default(image.build) }}"
@@ -25,9 +33,7 @@
 # The build context must exist on the TARGET node, so stage it there (copy reads
 # from the control node's role files/, pushes to each node) then build.
 - name: Build {{ image.build | default('') }} from files/{{ image.context | default('') }}/
-  when:
-    - image.build is defined
-    - image_present.rc != 0 or (image.force | default(false) | bool)
+  when: image.build is defined
   block:
     - name: Stage the {{ image.build }} build context on this node
       ansible.builtin.copy:
@@ -38,4 +44,15 @@
     - name: docker build {{ image.build }}
       ansible.builtin.command:
         cmd: "docker build -t {{ image.build }} {{ images_build_dir }}/{{ image.context }}"
-      changed_when: true
+      register: image_build
+      changed_when: false          # decided below, by identity, not by log-scraping
+
+    # Did the build actually produce a different image? Compare the inspect output
+    # before and after: identical means every layer was cached and nothing moved.
+    # Deliberately not parsed out of the build log — buildkit's cache wording is not a
+    # stable interface, and a heuristic that silently reports "changed" on every deploy
+    # is worse than no signal at all.
+    - name: Did {{ image.build }} change?
+      ansible.builtin.command: "docker image inspect {{ image.build }}"
+      register: image_after
+      changed_when: image_after.stdout != image_present.stdout

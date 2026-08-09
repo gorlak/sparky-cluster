@@ -1,8 +1,8 @@
 ---
-# MiniMax-M2.7, NVFP4 quant — TP=2 across both nodes. A/B candidate against the
-# known-good `minimax-m2.7-awq` profile (the AWQ-4bit quant). Same model, same
-# topology; only the weights (and container) change. Once NVFP4 proves out on 26.06
-# it can become the default MiniMax profile.
+# MiniMax-M2.7, NVFP4 quant — TP=2 across both nodes. **The** MiniMax profile since
+# 2026-08-08: it began as an A/B against the AWQ-4bit sibling and replaced it outright
+# when AWQ turned out to be unable to leave container 26.04 (DEF-0004 froze a node on
+# 26.07). Same model, same topology, current container, hardware FP4 on Blackwell.
 #
 # Memory math (gmu 0.80 — NVFP4 weights are BIGGER than the AWQ):
 #   NVFP4 disk ~140 GiB → ~70 GiB/node at TP=2 (vs AWQ ~61 GiB/node).
@@ -15,14 +15,20 @@
 # (would double-quantize → garbage, same trap as the AWQ/FP8 checkpoints). Custom
 # modeling_minimax_m2.py handled by the template's global --trust-remote-code.
 #
-# Requires the 26.06 container (NVFP4). Verify before first deploy that vllm_image
-# in group_vars/all.yml is the 26.06 tag.
+# NVFP4 is a **modelopt** checkpoint, so it does not touch the Marlin/AWQ MoE weight
+# loader that DEF-0004 tracks. That distinction stopped being academic on 2026-08-08:
+# MiniMax **AWQ** on 26.07 exhausted host RAM during weight load and hard-froze sparky
+# (fail-safe boot then held the node empty and reachable — ADR-0009's first real
+# firing). AWQ is therefore pinned to 26.04 indefinitely, and this profile — same
+# model, same TP=2 shape, a loader that sidesteps the bug — is now the way MiniMax
+# moves forward rather than an A/B curiosity.
 
 profile_name: minimax-m2.7-nvfp4
-# NVFP4 (modelopt FP4) needs 26.06; the modelopt path is distinct from 26.06's
-# hanging Marlin/AWQ MoE loader, so this checkpoint is fine here. 26.04 default
-# stays for AWQ/FP8 profiles. The `images` role builds this patched image on every node (ADR-0013).
-vllm_image: dgx-spark/vllm:26.06-fastapi-fix
+# ON 26.07 (2026-08-08). TP=2 across both nodes — carries the DEF-0002 soak question
+# (inference-time CUDA deadlock, 35–55 min in) and is the only TP=2 shape on 26.07.
+# (inference deadlock 35-55 min in). Needs a CONCURRENCY soak, not just duration:
+# the 90-min light-load soak on 2026-08-06 passed and proved little.
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
   - name: minimax-m2.7-nvfp4
     kind: vllm

@@ -123,9 +123,8 @@ engines"; `activate` then picks one to serve. Two gestures follow:
 | Profile | Shape |
 |---|---|
 | `step-3.5-fp8` | Step-3.5-Flash-FP8 TP=2 across both nodes (fully-committed big-shared) — stable |
-| `step-3.7-nvfp4` | Step-3.7-Flash-NVFP4 TP=2 on 26.06 — **⛔ parked** (`blocked: true`; upstream vLLM VL bug, DEF-0006) |
-| `minimax-m2.7-awq` | MiniMax-M2.7-AWQ TP=2 across both nodes (big-shared, ~30 GiB/node dev headroom) |
-| `minimax-m2.7-nvfp4` | MiniMax-M2.7-NVFP4 TP=2 on 26.06 — NVFP4 A/B vs the AWQ profile |
+| `step-3.7-nvfp4` | Step-3.7-Flash-NVFP4 TP=2 on 26.07 — **⛔ parked** (`blocked: true`; upstream vLLM VL bug, DEF-0006) |
+| `minimax-m2.7-nvfp4` | MiniMax-M2.7-NVFP4 TP=2 across both nodes (big-shared, ~24 GiB/node dev headroom) — soaked 64 min clean on 26.07 |
 | `qwen3-coder-nvfp4-single` | Qwen3-Coder-Next (NVFP4) on snoopy, TP=1 (sparky free for dev) |
 | `qwen3.6-35b-nvfp4-mtp3-single` | Qwen3.6-35B-A3B (NVFP4, **MTP-3**) on snoopy — reasoning-generalist; 2.3× single-stream decode (ADR-0014) |
 | `empty` | nothing serving; full hardware available. Also the **fail-safe target** — always activatable |
@@ -140,8 +139,10 @@ See [`docs/profiles.md`](docs/profiles.md) for what each serves and how to switc
 `gpu_memory_utilization` as a deliberate split between vLLM and system/dev memory,
 plus the GB10 unified-memory accounting quirk.
 
-**Do not use:** `Qwen3.5-122B-A10B-FP8` — froze sparky during load (DEF-0008,
-[`docs/defects.md`](docs/defects.md)).
+**Rejected models** live in [`docs/models/tombstones.md`](docs/models/tombstones.md) —
+the register that *owns* those verdicts, so a discovery sweep never re-litigates one.
+Two entries today: `Qwen3.5-122B-A10B-FP8` (froze sparky during load — never deploy) and
+`MiniMax-M3` (does not fit under TP=2). Read it before proposing a model.
 
 ### Services
 
@@ -262,15 +263,23 @@ group are created by the `activate` role on every deploy. Ansible itself is apt'
 
 ### Runtime: the NVIDIA vLLM container
 
-All CUDA-linked code runs inside `nvcr.io/nvidia/vllm:26.04-py3` — the pypi aarch64
+All CUDA-linked code runs inside an `nvcr.io/nvidia/vllm` image — the pypi aarch64
 torch wheel is CPU-only, so a pip/venv install can't serve on this hardware; NVIDIA's
 image ships matching torch + vLLM compiled for sm_121.
 
-- **Why 26.04:** SM12.1 CUTLASS kernels were broken in 26.03 (fixed in vLLM PR
-  #38126). **Do not move to 26.06 globally yet** — it ships NCCL 2.30.5, whose NVLS
-  regression hard-hangs dual GB10 at multinode bring-up. The 26.06 upgrade (needed
-  for NVFP4) is per-profile and upstream-blocked — tracked in
-  [`docs/upgrades/container-nvidia-vllm-26.06-py3.md`](docs/upgrades/container-nvidia-vllm-26.06-py3.md).
+**The container is per-profile, and the fleet deliberately spans two of them.**
+`vllm_image` in a profile overrides the `group_vars` default, so a container bump is
+adopted model by model rather than fleet-wide — which is what made the 26.07 campaign
+survivable when one model turned out to be a node-killer on it.
+
+| Container | Runs | Why |
+|---|---|---|
+| **26.07-py3** (vLLM 0.24.0, NCCL 2.30.7) — via the derived `dgx-spark/vllm:26.07-xgrammar-fix` | every NVFP4 profile | current. The derived image patches xgrammar (DEF-0010) — NVIDIA shipped it *below* vLLM's own declared minimum, breaking all tool-calling |
+| **26.04-py3** (vLLM 0.19, NCCL 2.29.7) | `step-3.5-fp8` | FP8 works and has no reason to move yet. SM12.1 CUTLASS kernels were broken in 26.03 (fixed in vLLM PR #38126), so 26.04 is the floor |
+
+Nothing runs on 26.06 any more: 26.07 fixed its fastapi defect (DEF-0005) and the
+derived image built for it has been deleted. Progress is tracked in
+[`docs/upgrades/container-nvidia-vllm-26.07-py3.md`](docs/upgrades/container-nvidia-vllm-26.07-py3.md).
 - **Multi-node:** vLLM 0.19 dropped Ray; native multinode uses
   `--nnodes / --node-rank / --master-addr / --headless` over torch.distributed. Both
   nodes rendezvous at `10.0.200.12:29500` over ConnectX-7.
@@ -402,6 +411,19 @@ and started the sixth on its own (no reconciler involved); a planted `.running` 
 then made that same engine skip on the *negated* gate, leaving the node up, reachable
 and serving nothing. systemd names the failing condition in the journal either way.
 
+**Then it fired for real, the same day.** Activating `minimax-m2.7-awq-2607` (the
+DEF-0004 experiment) exhausted host memory during weight load and **froze sparky** —
+unresponsive, recovered only by a physical power cycle. The `.running` marker survived
+the reset, which is precisely the signal it exists to carry: the stop was not clean, so
+on boot systemd refused to re-attempt the load that had just killed the machine.
+
+> `vllm@minimax-awq-2607.service was skipped because of an unmet condition check`
+> `(ConditionPathExists=!/opt/vllm/state/vllm-minimax-awq-2607.running)`
+
+sparky came back **empty and reachable in four minutes** rather than freezing again
+unattended, and recovery was an ordinary unprivileged `activate`. The synthetic test
+showed the gates work; this showed the design was aimed at the right hazard.
+
 Recovery from the fail-safe state is an **activation**: `./sparky.sh activate
 <profile>` (or the panel's "Re-activate") clears the marker and starts the engines.
 The worker unit retries the rendezvous every 20 s until sparky's is up; the head
@@ -422,7 +444,7 @@ converges the moment the restored engine passes health.
    area, the store is the fleet. Staged weights are never evicted, so you can acquire
    candidates well ahead of profiling them.
 2. Copy an existing profile that matches your shape (`step-3.5-fp8.yml` /
-   `minimax-m2.7-awq.yml` for big-shared TP=2; `qwen3-coder-nvfp4-single.yml` for
+   `minimax-m2.7-nvfp4.yml` for big-shared TP=2; `qwen3-coder-nvfp4-single.yml` for
    single-node on snoopy) to `profiles/<name>.yml` and edit.
 3. `./sparky.sh deploy` — **adopts** the staged weights into the store and installs the
    engine fleet-wide. Then `./sparky.sh activate <name>`.

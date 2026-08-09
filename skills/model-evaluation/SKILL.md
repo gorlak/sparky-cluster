@@ -113,13 +113,19 @@ upgrading our models"**, after a notable release, or when a blocking dependency 
 
 1. **Enumerate the fleet.** List each Ansible profile and the model it serves
    (`ansible/profiles/*.yml` → `model:`), grouped by shape: big-shared TP=2 (`step-3.5-fp8`,
-   `minimax-m2.7-awq`) vs per-node (`qwen3-coder-nvfp4-*`, `qwen3.6-35b-nvfp4-*`). Note the current quant and its
+   `minimax-m2.7-nvfp4`) vs per-node (`qwen3-coder-nvfp4-*`, `qwen3.6-35b-nvfp4-*`). Note the current quant and its
    fact sheet under `docs/models/`.
 
 2. **Find upgrades for each served model** ([[model-discovery]]): a newer generation of the
    family (Step-3.5 → 3.7; MiniMax-M2.7 → M3; a newer Qwen3-30B) or a better/newer quant
    (NVFP4 availability; official vs community; calibrated vs RTN). Record release date,
    HF repo, quant method.
+
+   **Check `docs/models/tombstones.md` first.** It is the register of models already
+   ruled out, and it owns those verdicts. A tombstoned model is not a candidate unless
+   its stated *Reconsider when* has actually been met — say which one, and why it now
+   holds. MiniMax-M3 is the trap this catches: it is the obvious M2.7 upgrade and it
+   does not fit under TP=2, so it looks worth sizing every single sweep.
 
 3. **Assess each candidate's fit** with the checklist above — size it
    (`hf models ls <repo> --tree -h`, no download), do the per-node memory math at the

@@ -2,48 +2,45 @@
 # exactly what is written here. Same discipline as the digest-pinned container images
 # and the harness's uv.lock.
 #
-# These were previously unconstrained. pip does not upgrade an already-satisfied
-# unconstrained requirement, so the venv sat on whatever the first deploy happened to
-# resolve — and deleting the venv would have silently jumped every package. That is the
-# identical accidental freeze the `:latest` images had, and it is not theoretical here:
-# **fastapi 0.137 is what broke vLLM's metrics instrumentation** (DEF-0005, which we
-# still carry a derived container image to work around). The panel was sitting one
-# patch release below it, by luck rather than by decision.
-#
 # Transitives are pinned too, deliberately. DEF-0005 was itself a transitive
 # incompatibility (fastapi x prometheus-fastapi-instrumentator) — pinning only the
 # direct five would leave exactly that hole open.
 #
-# To bump: edit the direct dependency, delete the venv on the head, re-deploy, then
-# refresh the resolved set below from:
-#   /opt/cluster/control-panel/venv/bin/pip list --format=freeze
+# **These exact versions are what the test suite runs.** pyproject.toml's dev group pins
+# fastapi/starlette to match, because tests/test_control_panel.py loads this app's
+# main.py under the harness environment — a floor there would mean testing the panel
+# against a FastAPI it never runs. tests/test_roles.py asserts the two stay in step.
+#
+# Bumped 2026-08-08 (fastapi 0.136.3 -> 0.141.1) only after the panel's 30 tests passed
+# under the new versions. To bump: re-resolve, align pyproject, run the suite, deploy.
+#   uv pip compile --python-version 3.12 <(printf 'fastapi\nuvicorn[standard]\nJinja2\nhttpx\npython-multipart\n')
 # See skills/version-discovery/SKILL.md.
 
 # --- direct ---------------------------------------------------------------
-fastapi==0.136.3
-uvicorn[standard]==0.48.0
-Jinja2==3.1.6
+fastapi==0.141.1
 httpx==0.28.1
+jinja2==3.1.6
 python-multipart==0.0.32
+uvicorn[standard]==0.52.1
 
 # --- resolved (transitive — regenerate, don't hand-edit) -------------------
-annotated-doc==0.0.4
-annotated-types==0.7.0
-anyio==4.13.0
-certifi==2026.5.20
-click==8.4.1
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+certifi==2026.7.22
+click==8.4.2
 h11==0.16.0
 httpcore==1.0.9
-httptools==0.7.1
-idna==3.16
-MarkupSafe==3.0.3
+httptools==0.8.0
+idna==3.18
+markupsafe==3.0.3
+pydantic-core==2.46.4
 pydantic==2.13.4
-pydantic_core==2.46.4
 python-dotenv==1.2.2
-PyYAML==6.0.3
-starlette==1.1.0
-typing_extensions==4.15.0
+pyyaml==6.0.3
+starlette==1.6.0
+typing-extensions==4.16.0
 typing-inspection==0.4.2
 uvloop==0.22.1
 watchfiles==1.2.0
-websockets==16.0
+websockets==17.0.1

@@ -7,7 +7,7 @@
 **Status:** T1–T5 built and deployed; **substantially revised by
 [ADR-0018](adr/0018-provision-select-split.md)** — see "What ADR-0018 changed" below
 before relying on the projection table. The full profile family
-([`profiles.md`](profiles.md)) lives on this design: `step-3.5-fp8` and `minimax-m2.7-awq` are
+([`profiles.md`](profiles.md)) lives on this design: `step-3.5-fp8` and `minimax-m2.7-nvfp4` are
 big-shared TP=2; `qwen3-coder-nvfp4-*` and `qwen3.6-35b-nvfp4-*` are per-node single-engine; `empty` takes
 the cluster down to bare. Co-residency of vLLM engines on one node was attempted
 (retired `multi` profile) and abandoned — see decisions log + operational
@@ -188,7 +188,7 @@ skill and run a memory-profiled bring-up before committing a dense profile.
 5. **T5 — state file + control panel + teardown.** Write `current-topology.json`;
    control panel reads it for status and per-engine P3 actions; teardown prunes.
 6. **Then (done differently):** authored a profile *family* instead of a single
-   multi-tenant config — `step-3.5-fp8`, `step-3.7-nvfp4`, `minimax-m2.7-awq`, `minimax-m2.7-nvfp4`, `qwen3-coder-nvfp4-*`, `qwen3.6-35b-nvfp4-*`, `empty` (see
+   multi-tenant config — `step-3.5-fp8`, `step-3.7-nvfp4`, `minimax-m2.7-nvfp4`, `qwen3-coder-nvfp4-*`, `qwen3.6-35b-nvfp4-*`, `empty` (see
    [`profiles.md`](profiles.md)). The original `multi` (MiniMax TP=2 + Qwen30
    single-node co-resident on snoopy + talkie via Ollama) was attempted, hit a
    rank-asymmetric CUDA-graph KV squeeze under co-residency, and was retired in

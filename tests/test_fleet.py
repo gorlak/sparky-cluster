@@ -181,3 +181,37 @@ def test_empty_is_in_the_real_allowlist():
 
 def test_every_committed_profile_is_loaded():
     assert len(load_fleet().profiles) == len(list(PROFILES_DIR.glob("*.yml")))
+
+
+# --- ADR-0013: a profile may only select an image the images role guarantees ---
+
+def test_a_profile_selecting_an_unmanaged_image_is_rejected(dir_, monkeypatch):
+    """Documented in group_vars, unenforced until now. An unmanaged image deploys
+    "successfully" and then fails at ENGINE START — and with digest pins copied into
+    profiles by hand, one wrong character does it."""
+    from sparky import fleet as fleet_mod
+    monkeypatch.setattr(fleet_mod, "managed_images",
+                        lambda *a, **k: {"nvcr.io/nvidia/vllm@sha256:good"})
+    write(dir_, "typo", profile_yaml("typo") +
+          "vllm_image: nvcr.io/nvidia/vllm@sha256:DEADBEEF\n")
+    with pytest.raises(FleetError, match="not in container_images"):
+        load_fleet(dir_).validate()
+
+
+def test_a_profile_selecting_a_managed_image_passes(dir_, monkeypatch):
+    from sparky import fleet as fleet_mod
+    monkeypatch.setattr(fleet_mod, "managed_images",
+                        lambda *a, **k: {"nvcr.io/nvidia/vllm@sha256:good"})
+    write(dir_, "ok", profile_yaml("ok") +
+          "vllm_image: nvcr.io/nvidia/vllm@sha256:good\n")
+    load_fleet(dir_).validate()
+
+
+def test_the_real_fleets_images_are_all_managed():
+    """Drift guard against the live group_vars — catches a hand-typed digest."""
+    from sparky.fleet import managed_images
+    managed = managed_images()
+    assert managed, "container_images did not parse"
+    for p in load_fleet().profiles:
+        if p.vllm_image:
+            assert p.vllm_image in managed, f"{p.name}: {p.vllm_image}"

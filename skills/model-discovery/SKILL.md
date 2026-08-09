@@ -100,6 +100,14 @@ that matter (exact NCCL/container versions, flags, whether it needed a hard rese
 on GB10" for a container/quant we don't run yet is a **blocker to record**, not a detail
 to skip.
 
+**Screen candidates against [`docs/models/tombstones.md`](../../docs/models/tombstones.md)
+before reporting them.** That register owns the verdicts on models already rejected; a
+sweep that re-surfaces one has cost time twice. If a tombstoned model reappears as a
+genuinely good idea, the answer is to check its *Reconsider when* — not to re-do the
+analysis. And when a sweep rejects a model for a reason about the **model itself** (does
+not fit on this hardware; hangs the node), add a row there rather than burying it in a
+scouting report.
+
 ## Polling etiquette (be a good web citizen)
 
 These sources are other people's servers — NVIDIA's community forum (a Discourse
