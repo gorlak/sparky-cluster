@@ -97,6 +97,8 @@ serving_topology:
     max_model_len: 32768
     head_extra_args: [--enable-chunked-prefill, --enable-auto-tool-choice]
     worker_extra_args: [--enable-chunked-prefill]
+    engine_env:                       # optional: CONTAINER env vars, not serve flags
+      VLLM_USE_DEEP_GEMM: "0"
 
   # vLLM, single-node on snoopy, second engine co-resident with minimax's shard.
   - name: qwen30
@@ -121,6 +123,23 @@ Derived facts (not authored): an engine's **rank** for a node = its index in
 `nodes`; the **API host** = `nodes[0]`; **master_addr** = `nodes[0]`'s ConnectX
 IP (today a global constant — becomes per-engine); unit/container name =
 `vllm-<name>` / `ollama-<name>`.
+
+
+### `engine_env:` — when a flag is not enough
+
+A map of environment variables set **inside the container**, rendered to
+`/opt/vllm/engines/<engine>.docker-env` and passed with `--env-file` — the same mechanism
+the NCCL config already uses. The file is always rendered, empty or not, because docker
+fails on a missing `--env-file`.
+
+It exists because some models need an env var that no serve flag can express. DeepSeek-V4
+loads completely on GB10 and then dies in DeepGEMM (`Unknown SF transformation`,
+DEF-0014); the candidate workaround is `VLLM_USE_DEEP_GEMM=0`, which was simply
+unreachable before this field.
+
+**Prefer a serve flag when one exists.** Flags are validated by `lint` and survive the
+env-file round trip under known rules (ADR-0018); env vars are unvalidated and only
+discovered at run time. This is the escape hatch, not the front door.
 
 ## How each service projects from the spec
 

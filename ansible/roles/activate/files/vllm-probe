@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""vllm-probe — read-only introspection of a deployed container image (ADR-0019).
+
+The second bounded grant, built to the same shape as `vllm-activate` (ADR-0018):
+**one fixed, input-validating program that can do nothing but the intended thing.**
+
+WHY IT EXISTS. Deciding whether a model can be deployed means asking questions of the
+container — does vLLM know this architecture, what NCCL does it ship, is this package
+above its own declared floor. Every one of those needs `docker`, `docker` needs root,
+and a `docker` grant *is* a root grant (`docker run -v /:/host`) — which is exactly
+what ADR-0018 retired. So the questions kept being routed through a human pasting
+`sudo docker run …`, making the operator the bottleneck on the cheapest, most
+frequent, most mechanical step of model evaluation. Worse, it inverted the cost
+gradient the evaluation checklist depends on: a probe that should cost seconds cost a
+round-trip, so the tempting shortcut was to skip it and let a failed activation be the
+test.
+
+WHAT MAKES IT SAFE. It is not a docker wrapper — no caller-supplied part of the
+command line reaches `docker` uninterpreted:
+
+  * the IMAGE must appear verbatim in the deploy-written, root-owned allowlist at
+    /opt/vllm/images/allowlist. Probing something new is a deploy, not an argument.
+  * the PROBE is a key into a fixed dict of programs in this file. There is no
+    "run this Python" mode, because that would be a shell with extra steps.
+  * ARGUMENTS are matched against a strict character class and passed as argv to the
+    probe program — never interpolated into its source.
+  * the docker flags are constants: no bind mounts, no --gpus, no --privileged,
+    --network none, --cap-drop ALL, --security-opt no-new-privileges. The container
+    it starts cannot see the host filesystem, the network, or the GPUs.
+
+The residual risk is running a vendor image we already run with GPUs and host cgroups,
+in a strictly weaker sandbox. That is a smaller hole than the engines themselves, and
+enormously smaller than the `sudo docker` line it replaces.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+IMAGE_ALLOWLIST = Path("/opt/vllm/images/allowlist")
+
+# One token, no whitespace/quotes/slashes. Wide enough for package names, dotted
+# module paths and CamelCase architectures; narrow enough that nothing here can end a
+# shell word — which is belt-and-braces, since we never build a shell string at all.
+SAFE_ARG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+MAX_ARGS = 24
+
+# --- the probes -------------------------------------------------------------
+# Each is a complete Python program run inside the image with `python3 -c`. They take
+# their arguments from sys.argv and print JSON. Keep them dependency-free beyond what
+# the image already has, and keep them READ-ONLY — a probe that mutates the image
+# would make results depend on probe history.
+
+PROBES: dict[str, str] = {
+    # What does this image actually ship? The first question of every container bump.
+    "versions": r"""
+import json, sys
+out = {}
+try:
+    import vllm; out["vllm"] = vllm.__version__
+except Exception as e: out["vllm"] = f"ERR {e}"
+try:
+    import torch
+    out["torch"] = torch.__version__
+    out["nccl"] = ".".join(str(x) for x in torch.cuda.nccl.version())
+except Exception as e: out["torch"] = f"ERR {e}"
+from importlib.metadata import version, PackageNotFoundError
+for p in ("transformers", "xgrammar", "fastapi", "flashinfer-python", "nvidia-modelopt"):
+    try: out[p] = version(p)
+    except PackageNotFoundError: out[p] = None
+    except Exception as e: out[p] = f"ERR {e}"
+print(json.dumps(out))
+""",
+    # Does vLLM know these architectures? argv = architecture names from config.json.
+    # With no names given, returns the full supported set (long, but sometimes what
+    # you want when a model's arch is spelled differently than you guessed).
+    "archs": r"""
+import json, sys
+from vllm.model_executor.models.registry import ModelRegistry
+supported = set(ModelRegistry.get_supported_archs())
+want = sys.argv[1:]
+print(json.dumps({a: (a in supported) for a in want} if want else sorted(supported)))
+""",
+    # Installed version of one or more packages — the DEF-0005 / DEF-0010 question
+    # ("is this dependency above the floor vLLM itself declares?").
+    "pip": r"""
+import json, sys
+from importlib.metadata import version, PackageNotFoundError
+out = {}
+for p in sys.argv[1:]:
+    try: out[p] = version(p)
+    except PackageNotFoundError: out[p] = None
+    except Exception as e: out[p] = f"ERR {e}"
+print(json.dumps(out))
+""",
+    # Does <module> carry <attr>? argv = module, then attribute paths.
+    # This is the Step-3.7 / DEF-0006 shape: an upstream fix detected by the presence
+    # of a method, with no model load and no GPU.
+    "attr": r"""
+import json, sys, importlib
+mod = importlib.import_module(sys.argv[1])
+out = {}
+for path in sys.argv[2:]:
+    obj, ok = mod, True
+    for part in path.split("."):
+        if not hasattr(obj, part): ok = False; break
+        obj = getattr(obj, part)
+    out[path] = ok
+print(json.dumps(out))
+""",
+    # Which --tool-call-parser / --reasoning-parser names does this build register?
+    # A guessed parser name is not a warning, it is a refusal to start: the whole
+    # bring-up is spent to learn a string. Added 2026-08-08 after exactly that class
+    # of failure (a tokenizer mode, same shape) cost a TP=2 load.
+    # Which --tool-call-parser / --reasoning-parser names does this build accept?
+    #
+    # Asks the ARGUMENT PARSER, not the registry. Two earlier attempts read
+    # `ToolParserManager.tool_parsers` directly and both returned {} — the concrete
+    # parsers are lazily imported, so the registry is bare until something pulls them
+    # in, and walking the package did not reliably do it. `make_arg_parser` is
+    # authoritative by construction: it builds the very `choices=` list vLLM validates
+    # `--tool-call-parser` against, so whatever it reports is exactly what will be
+    # accepted — and building it forces registration as a side effect.
+    #
+    # A guessed parser name is a refusal to start, so "authoritative" is the whole
+    # requirement here; a close-enough answer is worth nothing.
+    # Which --tool-call-parser / --reasoning-parser names does this build register?
+    #
+    # THIRD ATTEMPT, and the history is the design rationale. (1) Reading
+    # `ToolParserManager.tool_parsers` directly returned {} — parsers self-register on
+    # module import and nothing had imported them. (2) Walking the package returned {}
+    # too, and silently, so there was nothing to debug. (3) Asking vLLM's own argument
+    # parser — authoritative, since it builds the `choices=` list — turned out to need a
+    # GPU (`Failed to infer device type`), and this probe deliberately has none.
+    #
+    # So: walk and import, then read the registry — but REPORT THE WALK. The counts and
+    # the import errors come back in the payload, because a probe that answers "[]" with
+    # no explanation wasted two rounds already. Instrument rather than infer; that is the
+    # whole lesson of 2026-08-08.
+    "parsers": r"""
+import json, importlib, pkgutil
+out, diag = {}, {}
+for key, pkg, attr in (("tool", "vllm.tool_parsers", "tool_parsers"),
+                       ("reasoning", "vllm.reasoning", "reasoning_parsers")):
+    info = {"imported": 0, "errors": []}
+    try:
+        P = importlib.import_module(pkg)
+    except Exception as e:
+        diag[key] = {"package": f"ERR {type(e).__name__}: {e}"}; out[key] = []; continue
+    for m in pkgutil.iter_modules(list(getattr(P, "__path__", []))):
+        try:
+            importlib.import_module(pkg + "." + m.name); info["imported"] += 1
+        except Exception as e:
+            info["errors"].append(m.name + ": " + type(e).__name__ + " " + str(e)[:80])
+    manager = None
+    for cls in ("ToolParserManager", "ReasoningParserManager"):
+        manager = getattr(P, cls, None)
+        if manager is not None: break
+    registry = getattr(manager, attr, None) if manager is not None else None
+    if isinstance(registry, dict):
+        out[key] = sorted(registry)
+    else:
+        out[key] = []
+        info["registry"] = "not a dict: " + type(registry).__name__
+    info["found"] = len(out[key])
+    # Report the MODULE names too. Three attempts failed to read the registry — parsers
+    # import cleanly (43 of them) and the manager's dict stays empty, so registration
+    # writes somewhere these probes have not located. The module names are the best
+    # available fallback — but a CANDIDATE SET, not a lookup, and 2026-08-08 proved it:
+    # `qwen3_xml` is a name this cluster serves with today and its module is
+    # `qwen3_engine`. One module registers several parsers, so this list can both miss a
+    # working name and suggest names that were never registered.
+    # Prefer a name already proven on this cluster; treat anything derived as unverified.
+    # The engine's argparse is the real check — seconds to fail, but a deploy to change.
+    info["modules"] = sorted(
+        m.name.replace("_tool_parser", "").replace("_reasoning_parser", "")
+        for m in pkgutil.iter_modules(list(getattr(P, "__path__", [])))
+        if not m.name.startswith("_") and "abstract" not in m.name
+    )
+    diag[key] = info
+print(json.dumps({**out, "_diagnostics": diag}))
+""",
+    # Which quantization methods can this build actually load?
+    #
+    # TWO LISTS, and confusing them costs a bring-up. `methods` are vLLM's *backend*
+    # names (`modelopt`, `modelopt_fp4`, `compressed-tensors`, …) — what
+    # `--quantization` would name. `modelopt_algos` are the `quant_algo` strings
+    # ModelOpt checkpoints declare in their own config, and it is a SHORTER list:
+    # on 2026-08-08 `Qwen3-VL-32B-Instruct-NVFP4` declared `NVFP4_AWQ`, which is absent
+    # from it, and vLLM refused the model outright even though `modelopt_fp4` was
+    # present among the methods. Check a checkpoint's declared quant_algo against
+    # `modelopt_algos`, not against `methods`.
+    "quant": r"""
+import json
+out = {}
+from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
+out["methods"] = sorted(QUANTIZATION_METHODS)
+try:
+    from vllm.model_executor.layers.quantization import modelopt as _m
+    algos = None
+    for name in dir(_m):
+        v = getattr(_m, name)
+        if isinstance(v, (list, tuple, set, frozenset)) and any(
+                isinstance(x, str) and "NVFP4" in x for x in v):
+            algos = sorted(v); break
+    out["modelopt_algos"] = algos or "ERR not found — read the ValidationError text instead"
+except Exception as e:
+    out["modelopt_algos"] = f"ERR {e}"
+print(json.dumps(out))
+""",
+}
+
+DOCKER_FLAGS = [
+    "--rm",
+    "--network", "none",            # probes answer from the image; nothing to fetch
+    "--cap-drop", "ALL",
+    "--security-opt", "no-new-privileges",
+    "--entrypoint", "python3",
+    # Deliberately absent: -v/--mount (no host filesystem), --gpus (no devices),
+    # --privileged, --cgroupns, --ipc. A probe needs none of them; every one of them
+    # is a way out of the box.
+]
+
+
+def die(msg: str, code: int = 2) -> "typing.NoReturn":  # noqa: F821
+    print(json.dumps({"error": msg}), file=sys.stderr)
+    raise SystemExit(code)
+
+
+def allowed_images() -> list[str]:
+    """Images this cluster has deployed. Root-owned and deploy-written — the same
+    trust model as the engine allowlist the reconciler validates against."""
+    try:
+        return [ln.strip() for ln in IMAGE_ALLOWLIST.read_text().splitlines()
+                if ln.strip() and not ln.startswith("#")]
+    except OSError:
+        return []
+
+
+def usage(code: int = 2) -> "typing.NoReturn":  # noqa: F821
+    images = allowed_images()
+    print(
+        "usage: vllm-probe <image> <probe> [arg ...]\n"
+        f"  probes: {', '.join(sorted(PROBES))}\n"
+        "  images: " + ("\n          ".join(images) if images else
+                        f"(none — {IMAGE_ALLOWLIST} missing; has this cluster been deployed?)") +
+        "\n\nexamples:\n"
+        "  vllm-probe dgx-spark/vllm:26.07-xgrammar-fix versions\n"
+        "  vllm-probe dgx-spark/vllm:26.07-xgrammar-fix archs Mistral3ForConditionalGeneration\n"
+        "  vllm-probe dgx-spark/vllm:26.07-xgrammar-fix pip xgrammar transformers\n"
+        "  vllm-probe dgx-spark/vllm:26.07-xgrammar-fix attr vllm.model_executor.models.step3_vl"
+        " Step3VLProcessor._get_num_multimodal_tokens\n",
+        file=sys.stderr)
+    raise SystemExit(code)
+
+
+def validate(argv: list[str]) -> tuple[str, str, list[str]]:
+    """Pure — the whole decision, so the tests can exercise it without docker."""
+    if len(argv) < 2:
+        usage()
+    image, probe, args = argv[0], argv[1], argv[2:]
+
+    allowed = allowed_images()
+    if not allowed:
+        die(f"no image allowlist at {IMAGE_ALLOWLIST} — run ./sparky.sh deploy first")
+    if image not in allowed:
+        die(f"'{image}' is not a deployed image.\n  deployed: {', '.join(allowed)}\n"
+            f"  Probing a NEW image is a deploy: add it to `container_images` in "
+            f"group_vars/all.yml, deploy, then probe it.")
+    if probe not in PROBES:
+        die(f"unknown probe '{probe}' — choose one of: {', '.join(sorted(PROBES))}")
+    if len(args) > MAX_ARGS:
+        die(f"too many arguments ({len(args)} > {MAX_ARGS})")
+    for a in args:
+        if not SAFE_ARG.match(a):
+            die(f"argument {a!r} is not a bare identifier — probe arguments are package "
+                f"names, module paths and architecture names, nothing else")
+    return image, probe, args
+
+
+def main(argv: list[str]) -> int:
+    image, probe, args = validate(argv)
+    cmd = ["docker", "run", *DOCKER_FLAGS, image, "-c", PROBES[probe], *args]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0:
+        print(json.dumps({
+            "error": "probe failed inside the container",
+            "image": image, "probe": probe,
+            "stderr": (proc.stderr or "").strip()[-2000:],
+        }), file=sys.stderr)
+        return 1
+    print(proc.stdout.strip())
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except subprocess.TimeoutExpired:
+        die("probe timed out after 300s", 1)

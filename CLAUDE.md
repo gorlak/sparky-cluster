@@ -27,6 +27,11 @@ as slash commands). When a task matches one, read its `SKILL.md` and follow it:
   plus the **fleet sourcing sweep** that reviews the deployed models for worthwhile
   upgrades. Use before deploying a model, when estimating fit, or when asked to
   "assess upgrading our models".
+- **`skills/model-bringup/SKILL.md`** — taking staged models from the inbox to serving:
+  batch profiles into ONE deploy (activations serialize, deploys don't), probe the
+  container before activating, and the checkpoint traps that each cost a real bring-up
+  (the repo name lies about the quant; a `tokenizer.json` doesn't mean vLLM accepts it;
+  a guessed parser name is a refusal to start). Use after discovery has staged weights.
 - **`skills/documentation/SKILL.md`** — conventions for the `docs/` tree: model
   fact sheets (`docs/models/`), upgrade trackers (`docs/upgrades/`, named
   `container-…` / `profile-…`), **decision records** (`docs/adr/` — ADR

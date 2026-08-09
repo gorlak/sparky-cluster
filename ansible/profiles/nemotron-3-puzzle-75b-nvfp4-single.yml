@@ -1,0 +1,44 @@
+---
+# NVIDIA Nemotron-3-Puzzle-75B-A9B (NVFP4) on snoopy, TP=1.
+#
+# WHY: a US/NVIDIA model — a third ecosystem alongside the Chinese incumbents and the
+# European Mistral — and the only *hybrid* architecture staged
+# (`NemotronHPuzzleForCausalLM`: Mamba/attention hybrid, 512 experts, A9B active).
+# At 50 GiB it is a single-node profile, so it costs sparky nothing.
+#
+# QUANT: `quant_algo: MIXED_PRECISION` (modelopt), like Mistral-Medium — mixed FP8/NVFP4
+# layers, resolved by vLLM's `modelopt_mixed`. `kv_cache_scheme` FP8 is declared, so
+# `--enable-prefix-caching` stays absent (DEF-0007). **No `--quantization` flag.**
+#
+# MEMORY (gmu 0.65, snoopy TP=1): 78.6 GiB budget − ~50 weights − ~1 graphs → ~27 GiB KV.
+#   KV is cheap on a hybrid (2 kv_heads, head_dim 128, and the Mamba blocks carry state
+#   rather than KV), so 131072 context is comfortable. ~42 GiB/node left outside vLLM.
+#   gmu is 0.65 rather than the 0.55 the other single-node profiles use because the
+#   weights are 2× theirs; drop it toward 0.55 if snoopy needs more dev room.
+#
+# HYBRID CAUTION: Mamba state layers historically constrain tensor-parallel sharding.
+# TP=1 sidesteps that entirely — which is a reason to keep this profile single-node even
+# though 50 GiB would nominally fit a TP=2 split.
+#
+# TOOL CALLING IS DELIBERATELY ABSENT, and this is now an informed choice rather than a
+# pending one. `./sparky.sh probe parsers` (2026-08-08) lists 43 tool parsers and **none
+# of them is a Nemotron parser** — while the reasoning side does ship `nemotron_v3`. So
+# there is no vendor-specific tool format to name here, and the generic candidates
+# (`hermes`, `pythonic`) are unverified for this model. A wrong name is a refusal to
+# start, and it costs a whole deploy to discover, so this profile serves without tools
+# until one is confirmed. Plain chat and reasoning are unaffected.
+profile_name: nemotron-3-puzzle-75b-nvfp4-single
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
+serving_topology:
+  - name: nemotron-3-puzzle-snoopy
+    kind: vllm
+    nodes: [snoopy]
+    port: 8000
+    model: NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4
+    served_as: nemotron-3-puzzle
+    tensor_parallel_size: 1
+    gpu_memory_utilization: "0.65"
+    max_model_len: 131072
+    head_extra_args:
+      - --enable-chunked-prefill
+    worker_extra_args: []

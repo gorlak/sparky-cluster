@@ -203,3 +203,25 @@ def test_derived_images_patch_without_letting_the_resolver_loose():
                 loose.append(f"{dockerfile.parent.name}: {line.strip()[:90]}")
     assert not loose, ("these pip installs can re-resolve the vendor's dependency set:\n  "
                        + "\n  ".join(loose))
+
+
+def test_engine_env_is_rendered_and_passed_to_the_container():
+    """`engine_env:` is worthless unless BOTH halves exist: a file rendered per engine,
+    and the unit actually passing it to docker. It was added for DEF-0014, where a model
+    needed an env var (`VLLM_USE_DEEP_GEMM=0`) that no serve flag could express."""
+    role = ROLES / "vllm"
+    tasks = (role / "tasks/main.yml").read_text()
+    unit = (role / "templates/vllm@.service.j2").read_text()
+    assert (role / "templates/engine.docker-env.j2").exists()
+    assert "src: engine.docker-env.j2" in tasks
+    assert "%i.docker-env" in unit, "the unit never passes the file to docker"
+    assert "--env-file" in unit
+
+
+def test_engine_env_file_is_rendered_even_when_empty():
+    """docker fails on a missing --env-file, and most engines declare no env — so the
+    template must not be conditional on `engine_env` being present."""
+    tasks = (ROLES / "vllm/tasks/main.yml").read_text()
+    block = tasks[tasks.index("engine.docker-env.j2"):]
+    guard = block[:block.index("loop:")]
+    assert "when:" not in guard, "rendering the container env file must be unconditional"

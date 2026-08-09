@@ -63,6 +63,7 @@ system, so it's worth reading before anything else:
 ./sparky.sh bench <label>        # run vllm bench serve scenarios → record to the trend store
 ./sparky.sh report <a> <b>       # compare two benchmark labels (direction-aware A/B)
 ./sparky.sh topology <profile>   # show a profile's engines / nodes / ports / served names
+./sparky.sh probe <what> [args]  # ask a DEPLOYED image a read-only question (no root)
 
 # develop it
 ./sparky.sh test [-k …]          # harness unit tests (pytest)
@@ -77,6 +78,21 @@ that's the gate into the automation context). It takes **no profile argument**: 
 installs every allowlisted profile's weights, images, engine env files and the
 activation grants. It preserves whatever is currently serving (falling to `empty`
 only if that profile left the allowlist) and **never auto-promotes** a model.
+
+> **Run a long deploy under `tmux`.** `deploy` runs in the foreground and needs a TTY
+> for the sudo password, so it cannot simply be backgrounded — and a dropped SSH session
+> (a phone client quitting, a laptop sleeping) sends SIGHUP and kills it mid-run. A
+> deploy that moves weights can run for tens of minutes, which is plenty of time for
+> that to happen.
+>
+> ```bash
+> tmux new -s deploy       # then run ./sparky.sh deploy inside it
+> ```
+>
+> Being killed this way is *safe* — Ansible is idempotent, rsync re-sends a partial
+> file rather than trusting it, and a run that never reaches the `fleet-state` role has
+> not touched the allowlist or the engine files, so the fleet keeps serving what it was.
+> Re-running picks up where it left off. `tmux attach -t deploy` to get back to it.
 
 **`activate`** writes a desired profile to a group-writable file — *no sudo at all* —
 then triggers a small, fixed, root-owned reconciler (`/usr/local/sbin/vllm-activate`)
@@ -222,11 +238,21 @@ Four identities, and **no web-API path to root** (ADR-0001, tightened by ADR-001
   deploy**; geoff enters this context via `sudo -u deploy …` — his password is the
   gate, and it is now the **only** way in. No service runs as `deploy`.
 - **`activator`** — the low-privilege **activation identity**. Runs the control panel
-  and is what an agent acts as. Holds exactly three things: write access to
+  and is what an agent acts as. Holds exactly four things: write access to
   `/opt/cluster/desired-profile`, a single-command sudoers entry for
-  `/usr/local/sbin/vllm-activate`, and an SSH key whose forced command on each worker
-  is that same reconciler. Deliberately **not** in the `docker` group — docker group
+  `/usr/local/sbin/vllm-activate`, an SSH key whose forced command on each worker
+  is that same reconciler, and — since ADR-0019 — a second single-command entry for
+  `/usr/local/sbin/vllm-probe`, which introspects an already-deployed container image
+  and can do nothing else. Deliberately **not** in the `docker` group — docker group
   membership is root-equivalent and would re-open the hole this closes.
+
+  The probe exists because *evaluating* a model means asking questions of the container
+  ("does this vLLM know `Mistral3ForConditionalGeneration`?", "what NCCL does it
+  ship?"), and every one of those otherwise needs `sudo docker` — i.e. root. It is
+  bounded the same way the reconciler is: the image must be in a root-owned,
+  deploy-written allowlist, the probe is a key into a fixed set of programs, arguments
+  must be bare identifiers, and the docker flags are constants with no bind mounts, no
+  `--gpus`, no network and no capabilities. **Probing something new is a deploy.**
 - **`vllm`** — service account owning the model weights (uid 996, no home/shell).
 
 Groups: **`cluster`** (geoff + deploy) owns `/opt/cluster` (mode 2775 + default ACLs)
@@ -348,7 +374,7 @@ that talk to the cluster; `sparky` itself = the operator entrypoint over both.**
   the start of every activation so a stale verdict can't be read as a fresh one.
 
 Design records live in [`docs/adr/`](docs/adr/) — one file per decision:
-ADR-0010 the harness, 0011 the test regiment, 0012 benchmarks, 0015 sparky as the
+ADR-0010 the harness, 0011 the test regiment, 0012 benchmarks, 0019 the bounded image probe, 0015 sparky as the
 operator entrypoint, 0018 the deploy/activate split.
 
 ---
@@ -437,17 +463,30 @@ converges the moment the restored engine passes health.
 > Re-kick the sweep, or re-activate the promoted model. A rough edge, not a hazard —
 > the node is up and reachable throughout.
 
-### Adding, changing, and removing models
+### Bringing up a new model — the whole lifecycle
 
-1. Stage weights: `./sparky.sh download <hf-repo>`. They sit in the **inbox**
-   (`/opt/cluster/model-cache`) until a profile claims them — the inbox is the staging
-   area, the store is the fleet. Staged weights are never evicted, so you can acquire
-   candidates well ahead of profiling them.
-2. Copy an existing profile that matches your shape (`step-3.5-fp8.yml` /
-   `minimax-m2.7-nvfp4.yml` for big-shared TP=2; `qwen3-coder-nvfp4-single.yml` for
-   single-node on snoopy) to `profiles/<name>.yml` and edit.
-3. `./sparky.sh deploy` — **adopts** the staged weights into the store and installs the
-   engine fleet-wide. Then `./sparky.sh activate <name>`.
+Seven steps, and **only step 5 needs root or a human.** Everything else is
+agent-drivable, which is the point of the ADR-0018 split and ADR-0019's probe.
+
+| # | Step | Command | Needs geoff? |
+|---|---|---|---|
+| 1 | **Discover** a candidate | [`skills/model-discovery`](skills/model-discovery/SKILL.md) — and check [`docs/models/tombstones.md`](docs/models/tombstones.md) first, so a rejected model is never re-litigated | no |
+| 2 | **Stage** the weights | `./sparky.sh download <hf-repo>` → the inbox | no |
+| 3 | **Analyse** the checkpoint | `du -sh`, then `config.json`: architecture, real quant, KV scheme. Do the per-node memory math at your TP ([`skills/model-evaluation`](skills/model-evaluation/SKILL.md)) → a fact sheet in `docs/models/` | no |
+| 4 | **Probe** the container | `./sparky.sh probe archs <Arch>` · `probe quant` · `probe versions` — does the vLLM we run actually support it? | no |
+| 5 | **Profile + deploy** | write `ansible/profiles/<name>.yml`, `./sparky.sh lint`, then **`./sparky.sh deploy`** — adopts the weights, installs the engine fleet-wide | **yes** — password-gated |
+| 6 | **Activate** | `./sparky.sh activate <name>` — reconciler, then the smoke gate | no |
+| 7 | **Verify** | tool-choice shapes, a concurrency soak, `./sparky.sh bench` | no |
+
+**Steps 3 and 4 are the cheap ones, and skipping them is expensive.** The checkpoint
+rarely matches its own repo name — `Mistral-Medium-3.5-128B-NVFP4` is actually
+`MIXED_PRECISION` (FP8 *and* NVFP4 layers) and declares an FP8 KV cache, both of which
+change the flags and the memory math. And an architecture the container does not know
+fails minutes into a load rather than in the twenty seconds a probe costs.
+
+For step 5, copy the profile whose *shape* matches: `minimax-m2.7-nvfp4.yml` or
+`step-3.5-fp8.yml` for big-shared TP=2, `qwen3-coder-nvfp4-single.yml` for single-node
+on snoopy.
 
 **Removing** is the same mechanism, run backwards: delete the `.yml` and
 `./sparky.sh deploy`. The deploy reports which weights are now unreferenced and
@@ -576,6 +615,15 @@ changes on deploy.
   identity, so it can activate but not provision. Adding a model, changing a flag, or
   bumping a container is a password-gated CLI deploy. This is the automation given up
   in exchange for having no web-API path to root (ADR-0018).
+- **Vision loses small detail in large images — silently.** Verified end-to-end
+  2026-08-08 (through Caddy, on the stable `sparky` alias): a 12 MB / 3 MP upload is
+  accepted and answered correctly when the subject is a reasonable fraction of the
+  frame. Hold the subject at ~1% of the width and the model returns HTTP 200 and a
+  confident **wrong** answer rather than refusing. The vision encoder downscales, and
+  detail below its effective resolution is gone before the model ever sees it. In
+  practice: a small error message inside a full-screen screenshot may be misread, not
+  flagged. Crop to the region of interest. There is no transport limit — the proxy
+  passed 12 MB without complaint.
 - **`--kv-cache-dtype fp8` + `--enable-prefix-caching` are disabled on `step-3.5-fp8`**
   for stable multi-turn operation (Nth-turn garbage / nonstop thinking on vLLM 0.19).
   Tracked as DEF-0007 ([`docs/defects.md`](docs/defects.md)); re-enabling is governed by

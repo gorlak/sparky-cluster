@@ -102,6 +102,10 @@ vllm_allowlist_file: "{{ vllm_engines_dir }}/allowlist"
 # Invoked through two bounded triggers — a single-command sudoers entry locally,
 # and forced-command SSH cross-node. See roles/activate.
 activate_bin: /usr/local/sbin/vllm-activate
+# The second bounded grant (ADR-0019): read-only introspection of a DEPLOYED image.
+# Same shape as the reconciler — one fixed program, validated input, no docker grant.
+probe_bin: /usr/local/sbin/vllm-probe
+probe_image_allowlist: /opt/vllm/images/allowlist
 activate_conf: /opt/vllm/activate.conf
 # The dedicated LOW-PRIVILEGE activation identity (the control panel service and
 # the agent). It holds the two trigger grants and nothing else — no sudo beyond

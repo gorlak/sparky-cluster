@@ -9,6 +9,15 @@
 # from any service — it is enterable only through geoff's password.
 %{{ activate_group }} ALL=(root) NOPASSWD: {{ activate_bin }}
 
+# The READ-ONLY grant (ADR-0019). `vllm-probe` answers questions about an image that
+# is ALREADY deployed — what vLLM/NCCL it ships, which architectures and quantization
+# methods it supports — and can do nothing else: the image must be in the root-owned
+# allowlist, the probe is a key into a fixed dict of programs, arguments must be bare
+# identifiers, and the docker flags are constants with no mounts, no devices and no
+# network. It exists so evaluating a model does not require handing out `sudo docker`,
+# which would be handing out root.
+%{{ activate_group }} ALL=(root) NOPASSWD: {{ probe_bin }}
+
 # The cross-node trigger arrives as forced-command SSH; sshd puts the request in
 # SSH_ORIGINAL_COMMAND, and sudo's env_reset would otherwise drop it. The value
 # never reaches a shell (the forced command is a fixed string) and the reconciler

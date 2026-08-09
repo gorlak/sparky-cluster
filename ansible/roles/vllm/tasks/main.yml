@@ -44,6 +44,18 @@
     loop_var: engine
     label: "{{ engine.name }} ({{ engine._profile }}, rank {{ engine.nodes.index(inventory_hostname) }})"
 
+- name: Render each engine's container env file (profile `engine_env:`)
+  ansible.builtin.template:
+    src: engine.docker-env.j2
+    dest: "{{ vllm_engines_dir }}/{{ engine.name }}.docker-env"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ host_engines | default([]) }}"
+  loop_control:
+    loop_var: engine
+    label: "{{ engine.name }}: {{ (engine.engine_env | default({})).keys() | list | join(',') or 'none' }}"
+
 # --- converge: drop engines this node should no longer be able to run --------
 - name: Find installed engine env files
   ansible.builtin.find:

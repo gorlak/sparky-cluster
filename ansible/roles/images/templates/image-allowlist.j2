@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+# Images this deploy guarantees are present on {{ inventory_hostname }}.
+#
+# Read by {{ probe_bin }} (ADR-0019) as the ONLY set of images it will introspect.
+# Root-owned and deploy-written, exactly like /opt/vllm/engines/allowlist — the probe
+# re-validates against this file on every invocation, so an image that never went
+# through a deploy cannot be run, even by a caller holding the grant.
+#
+# Per-node on purpose: head-only images (Grafana, Open WebUI) do not appear on a
+# worker, because they are not there to introspect.
+{% for image in container_images %}
+{% if inventory_hostname in groups[image.hosts | default('all')] %}
+{{ image.pull | default(image.build) }}
+{% endif %}
+{% endfor %}

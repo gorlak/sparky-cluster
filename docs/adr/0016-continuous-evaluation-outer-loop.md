@@ -5,7 +5,11 @@ model moved to ADR-0018; this ADR keeps the loop, the sweep representation, and 
 regiments. Revised 2026-08-03, while Proposed: the CI-style matrix DSL was dropped for a
 flat, literal job list — see Options. Revised 2026-08-06, while Proposed: the `bench`
 regiment is **rebuilt here**, HTTP-native, rather than inheriting today's container-bound
-one — see ADR-0018's errata for why that hole exists and why it is left open.)
+one — see ADR-0018's errata for why that hole exists and why it is left open. Revised
+2026-08-08, while Proposed: **`vision` and `tools` added as first-class regiments** —
+the 2026-08-08 bring-ups showed both are load-bearing capabilities that nothing scored,
+and three of four failures that evening were in the vision path. Same revision: the
+**tuning knobs are named as the variant axis `soak` exists to validate**.)
 **Status:** Proposed
 
 ## Context
@@ -65,6 +69,8 @@ defaults:                        # merged into each job — the one non-literal 
     - smoke
     - bench: [latency, throughput, prefix]
     - quality: [mmlu-pro, livebench]
+    - vision                       # n/a for text-only models; never a failure
+    - tools                        # all four tool_choice shapes, not just liveness
     - soak: {minutes: 10}
 jobs:                            # explicit, reviewed as-is — what you read is what runs
   - profile: mistral-medium-3.5-nvfp4    # DEF-0002-risky TP=2/26.06 → carries the long soak
@@ -96,6 +102,56 @@ jobs:                            # explicit, reviewed as-is — what you read is
     but the DEF-0002 deadlock class strikes **35–55 min in**, so 10 min *cannot* catch it — a
     longer soak (45–60 min) is a **per-candidate knob** for the DEF-0002-risky TP=2/26.06
     profiles. A blanket 10 min would pass slow deadlocks through the gate.
+
+    **Soak is where the tuning knobs are decided**, because every one of them fails
+    *late* — which is exactly why they cannot be settled by a bring-up or a bench run:
+
+    | Knob | What it buys | How it fails, and when |
+    |---|---|---|
+    | **speculative decoding** (MTP-n) | 2.3× single-stream decode (ADR-0014) | corrupts image **number-reads** (vision regiment) and breaks constrained decoding (DEF-0011) — both at generation time, never at load |
+    | **KV cache dtype** (FP8 vs bf16) | ~2× the KV, so ~2× concurrency | DEF-0007 multi-turn corruption — by construction only on the **Nth** turn |
+    | **prefix caching** | large prefill savings on repeated context | DEF-0007's other half; suspected to interact with FP8 KV specifically |
+    | **`max_model_len`** | usable context | OOM under *concurrency* rather than at load; and quality decay at heavily extrapolated rope (Mistral-Medium is YaRN **×64** from 4096) |
+    | **`gpu_memory_utilization`** | KV budget vs dev headroom | OOM under load — and at the extreme, a host-memory exhaustion that takes the **node** down (DEF-0004) |
+
+    So each is a **variant row** paired against `base`, with a soak long enough for its own
+    failure mode, and the trend store makes the comparison free (`report base fp8-kv`).
+
+    **A finding that changes the baseline (2026-08-08):** vLLM *auto-enables* FP8 KV when a
+    checkpoint declares `kv_cache_quant_algo` — Nemotron came up with `kv_cache_dtype=fp8_e4m3`
+    without the flag being set anywhere. So "FP8 KV is disabled" is **false** for every
+    modelopt checkpoint in the fleet, and ADR-0014's register describes a state we are not
+    in. The knob is being set by the file, not by us; the sweep has to measure what is
+    actually running rather than what the profile omits.
+  - **`vision`** — can it *see*, and does it see **correctly**? Every model staged since
+    2026-08 is vision-capable and none had its vision path exercised, so the capability was
+    entirely unverified. Two levels, and the gap between them is the point:
+    - the **gate** (built 2026-08-08, `sparky/vision.py`): one generated image, count the
+      shapes, pass/fail on every activation. It asks *counting* rather than *describing*
+      because ADR-0014 found MTP corrupts image **number-reads** while leaving prose
+      plausible — a "describe this" check would pass a model whose vision is quietly wrong.
+    - the **regiment**: a scored set (counting, colour, text-in-image, chart-reading) run
+      like `quality`, so vision is comparable across candidates rather than merely present.
+      A text-only model scores `n/a`, never a failure.
+
+    The 2026-08-08 evidence for making this first-class: `mistral-medium-3.5` (DEF-0012)
+    and `step-3.7-nvfp4` (DEF-0006) both **fail before serving** on a vision processor, and
+    `qwen3.6-35b` serves vision *today* while being deliberately run text-first. None of
+    that was visible to any regiment.
+  - **`tools`** — does tool calling actually work, across the shapes callers send? Not the
+    smoke gate's liveness check (`tool_choice: "auto"` returns 200) but a scored regiment:
+    all four shapes (`none` / `auto` / `required` / named function), argument fidelity
+    against a schema, and multi-tool selection. This is what makes a model usable as an
+    *agent* rather than a chatbot, and it is the capability that decides whether the
+    cluster's models can search the web themselves rather than having results pasted into
+    their context.
+
+    It earns first-class status by having broken three separate ways in one evening:
+    DEF-0010 (an xgrammar version below vLLM's own floor → **every** tool call 500s, which
+    breaks ordinary chat because Open WebUI sends `auto`), DEF-0011 (MTP breaks constrained
+    decoding, so `required` and named-function fail while `auto` passes), and a bring-up
+    lost to a **guessed `--tool-call-parser` name**. A regiment that exercises all four
+    shapes catches the first two; `sparky probe parsers` (ADR-0019) prevents the third.
   - **`bench`** — **rebuilt HTTP-native**, against ADR-0018's fixed model endpoint, with
     input lengths controlled from the model's `tokenizer.json` (readable on disk, no
     privilege). Today's regiment shells `sudo docker exec … vllm bench serve` inside the

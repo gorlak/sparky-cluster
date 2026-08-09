@@ -80,25 +80,40 @@
   failed_when: false
   register: geoff_sudo
 
-- name: Assert the reconciler is geoff's ONLY passwordless grant
+# The allowlist is EXHAUSTIVE on purpose: every passwordless grant geoff holds must be
+# one of the two bounded programs, named here. A third one appearing — however
+# reasonable it looked at the time — is the failure this catches, because anything
+# running as geoff (an agent most of all) inherits it.
+- name: Assert the two bounded programs are geoff's ONLY passwordless grants
   ansible.builtin.assert:
     that: _unexpected | length == 0
     fail_msg: >-
-      geoff still has passwordless sudo beyond the reconciler on {{ inventory_hostname }}:
-      {{ _unexpected }}.
+      geoff still has passwordless sudo beyond the bounded programs on
+      {{ inventory_hostname }}: {{ _unexpected }}.
       Anything running as geoff — an agent included — inherits that, which defeats the
       ADR-0018 boundary. Find and remove it:
       sudo grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/
-    success_msg: "geoff's only passwordless grant is {{ activate_bin }} — the boundary holds."
+    success_msg: >-
+      geoff's only passwordless grants are {{ activate_bin }} (ADR-0018) and
+      {{ probe_bin }} (ADR-0019) — the boundary holds.
   vars:
+    _bounded: "{{ [activate_bin, probe_bin] | map('regex_escape') | join('|') }}"
     _unexpected: >-
       {{ geoff_sudo.stdout_lines | default([]) | select('search', 'NOPASSWD')
-         | reject('search', activate_bin | regex_escape) | list }}
+         | reject('search', _bounded) | list }}
 
 - name: Install the reconciler
   ansible.builtin.copy:
     src: vllm-activate
     dest: "{{ activate_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the probe (ADR-0019 — the read-only half of the bounded grants)
+  ansible.builtin.copy:
+    src: vllm-probe
+    dest: "{{ probe_bin }}"
     owner: root
     group: root
     mode: "0755"

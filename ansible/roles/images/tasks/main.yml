@@ -26,3 +26,25 @@
   # the head, and pulling them onto a worker would waste disk on an image it can never
   # run — the same reasoning that stopped mirroring every model to every node.
   when: inventory_hostname in groups[image.hosts | default('all')]
+
+# The probe (ADR-0019) may only introspect an image this deploy guaranteed. Writing
+# that set here, root-owned, is what makes "probing something new is a deploy" true
+# rather than aspirational — and it is per-node, so a worker cannot be asked about a
+# head-only image it does not hold.
+- name: Ensure /opt/vllm/images exists
+  ansible.builtin.file:
+    path: "{{ probe_image_allowlist | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: Publish the probe's image allowlist for this node
+  ansible.builtin.template:
+    src: image-allowlist.j2
+    dest: "{{ probe_image_allowlist }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true

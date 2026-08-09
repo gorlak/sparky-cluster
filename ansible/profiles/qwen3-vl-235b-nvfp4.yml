@@ -1,0 +1,45 @@
+---
+# Qwen3-VL-235B-A22B-Instruct (NVFP4) — TP=2 across both nodes. Vision at scale.
+#
+# The big-shared sibling of `qwen3-vl-32b-nvfp4-single`: same family and flags, ~6× the
+# parameters. Bring the 32B up FIRST — it proves the architecture, the quant path and the
+# parser names on one node for 21 GiB, and everything learned there transfers here.
+#
+# QUANT: `quant_algo: NVFP4` (plain, modelopt) with `kv_cache_scheme` FP8 declared by the
+# checkpoint — DEF-0007 territory, so `--enable-prefix-caching` is deliberately absent.
+# Auto-detected: **no `--quantization` flag**.
+#
+# MEMORY (gmu 0.80, TP=2): 127 GiB → ~63.5 GiB/node; 96.8 budget − 63.5 − ~1 → ~32 GiB
+#   KV/rank. KV/token = 2 × 94 layers × 4 kv_heads × 128 × 2 = 192 KiB, and TP=2 splits
+#   the 4 KV heads 2/2, so ~96 KiB per rank → ~350k tokens, ~2–3 concurrent at 131072.
+#   ~24 GiB/node outside vLLM. Same footprint class as MiniMax; a known-comfortable shape.
+#
+# FLAGS MINIMAL for the same reason as the 32B — parser names pending
+# `./sparky.sh probe parsers`.
+profile_name: qwen3-vl-235b-nvfp4
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
+serving_topology:
+  - name: qwen3-vl-235b-nvfp4
+    kind: vllm
+    nodes: [sparky, snoopy]      # nodes[0]=sparky is rank 0 / the API host
+    port: 8000
+    model: Qwen3-VL-235B-A22B-Instruct-NVFP4
+    served_as: qwen3-vl-235b
+    tensor_parallel_size: 2
+    gpu_memory_utilization: "0.80"
+    max_model_len: 131072
+    head_extra_args:
+      - --enable-chunked-prefill
+      # `hermes` — SECOND candidate. `qwen3_xml` was tried first because the
+      # `qwen3.6-35b` sibling serves with it on this same container, and it FAILED
+      # SILENTLY: vLLM accepted the name, then extracted nothing on `auto` and produced
+      # empty/garbage arguments on `required` (`{}`, `{"city":"<value=Paris>"}`) while
+      # returning HTTP 200 throughout. Same vendor, different tool-call format.
+      # `hermes` is the classic Qwen `<tool_call>{json}</tool_call>` format and the most
+      # likely fit for a `-VL-Instruct` checkpoint. STILL UNVERIFIED — check the
+      # ARGUMENTS after activating, not the status code.
+      # `-Instruct` is non-reasoning, so no --reasoning-parser.
+      - --enable-auto-tool-choice
+      - --tool-call-parser hermes
+    worker_extra_args:
+      - --enable-chunked-prefill

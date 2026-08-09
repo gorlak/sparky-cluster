@@ -70,6 +70,7 @@ ExecStart=/usr/bin/docker run --rm --name vllm-%i \
     -v {{ vllm_models_dir }}:/models:ro \
     -v {{ nccl_conf_path }}:/etc/nccl-env.conf:ro \
     --env-file {{ nccl_conf_path }} \
+    --env-file {{ vllm_engines_dir }}/%i.docker-env \
     -e HF_HOME=/tmp/hf \
     -e VLLM_HOST_IP=${VLLM_HOST_IP} \
     -e VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 \

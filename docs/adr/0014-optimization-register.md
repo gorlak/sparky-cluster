@@ -79,3 +79,25 @@ Keep a knob only if it's stable *and* wins; otherwise revert and record why.
   free win now that the bug's container is behind us).
 - This is a **living register**: each row updates its status as it's re-enabled
   (kept / reverted, with the measured result).
+
+## Errata — 2026-08-08: MTP-3's price is two capabilities, not zero
+
+This register recorded MTP-3 as **KEEP** on the strength of a 2.3× single-stream decode
+win, "stable, exact output". That measurement stands. What was missing is the cost side,
+because there was nothing to compare against — the MTP profile was the only one of its
+weights.
+
+`qwen3.6-35b-nvfp4-single` (same weights, same container, same parsers, spec-decode
+removed) now makes the trade explicit:
+
+| | MTP-3 | no-MTP |
+|---|---|---|
+| single-stream decode | **2.3×** | baseline |
+| vision | forbidden — MTP corrupts image number-reads | **passes** the vision gate |
+| `tool_choice: required` / named function | **500** (DEF-0011) | **200** |
+
+So MTP-3 buys speed and spends **vision** and **constrained tool calling**. That is a
+defensible trade for a throughput-oriented slot and a bad one for an agentic or
+multimodal slot — which is an argument for keeping *both* siblings rather than choosing,
+and for letting the sweep's paired rows (ADR-0016) decide per workload rather than
+globally. The `KEEP` verdict is not withdrawn; its scope is.

@@ -21,6 +21,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from rich.table import Table
 from sparky import activate as act
 from sparky import ansible as ops
 from sparky import report, topology
+from sparky.vision import probe as vision_probe
 from sparky.api import VllmClient
 from sparky.bench import run_all
 from sparky.fleet import load_fleet
@@ -43,6 +45,29 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+PROBE_BIN = "/usr/local/sbin/vllm-probe"
+
+
+def _live_image() -> str | None:
+    """The image to probe when none is named: the live profile's, else the one the most
+    profiles pin. Falling back matters — you probe most often with nothing activated,
+    which is exactly when you are deciding what to bring up."""
+    live = act.live_profile()
+    if live:
+        try:
+            img = topology.load_profile(live).vllm_image
+            if img:
+                return img
+        except Exception:
+            pass
+    from collections import Counter
+    try:
+        images = Counter(p.vllm_image for p in topology.all_profiles() if p.vllm_image)
+    except Exception:
+        return None
+    return images.most_common(1)[0][0] if images else None
 
 
 @app.callback()
@@ -146,7 +171,7 @@ def _smoke(topology_file: str | None, report_file: str | None) -> int:
         return 0
 
     table = Table(title=f"smoke: {profile}", title_justify="left")
-    for col in ("engine", "api", "ready", "tool-shape", "quality"):
+    for col in ("engine", "api", "ready", "tool-shape", "quality", "vision"):
         table.add_column(col, overflow="fold")
 
     failed = False
@@ -154,16 +179,31 @@ def _smoke(topology_file: str | None, report_file: str | None) -> int:
     for e in engines:
         tool, quality, ok = "—", "—", False
         tool_code, quality_str = None, "skipped"
+        vision_cell, vision_str, vision_ok = "—", "skipped", True
         with VllmClient(e["api_url"], timeout=120.0) as client:
             ready = client.is_ready()
             if ready:
+                # Vision runs on READINESS, not on the tool/quality chain: a model can
+                # lack tool flags and still be asked to look at an image, and a VL model
+                # that serves text perfectly is exactly the case this catches.
+                v = vision_probe(client, e["served_as"])
+                vision_ok = v.ok
+                vision_cell = ("[dim]n/a[/]" if v.unsupported
+                               else "[green]pass[/]" if v.ok else f"[red]{v.detail}[/]")
+                vision_str = v.detail
                 code = client.probe_tool_support(e["served_as"]).status_code
                 tool_code = code
                 tool = "[green]200[/]" if code == 200 else f"[red]{code}[/]"
                 ok = code == 200
-                if ok:
+                # Quality runs on READINESS, not on tool support. It used to be chained
+                # behind a 200 here, which meant any model without the tool flags — every
+                # minimal-flag first bring-up — silently skipped its output-quality check
+                # and showed "—". Tool calling and coherent prose are independent
+                # capabilities; a model can lack the first and still be the thing we are
+                # deciding whether to serve.
+                if True:
                     result = run_multiturn(client, e["served_as"])
-                    ok = result.ok
+                    ok = ok and result.ok
                     if result.ok:
                         quality = "[green]pass[/]"
                         quality_str = "pass"
@@ -171,12 +211,13 @@ def _smoke(topology_file: str | None, report_file: str | None) -> int:
                         reasons = sorted({r for t in result.failures for r in t.verdict.reasons})
                         quality = "[red]FAIL: " + ",".join(reasons) + "[/]"
                         quality_str = "fail: " + ",".join(reasons)
-        failed = failed or not ok
+        failed = failed or not ok or not vision_ok
         results.append({"name": e["name"], "api_url": e["api_url"], "ready": ready,
-                        "tool_shape": tool_code, "quality": quality_str, "ok": ok})
+                        "tool_shape": tool_code, "quality": quality_str,
+                        "vision": vision_str, "ok": ok and vision_ok})
         table.add_row(
             e["name"], e["api_url"],
-            "[green]yes[/]" if ready else "[red]no[/]", tool, quality,
+            "[green]yes[/]" if ready else "[red]no[/]", tool, quality, vision_cell,
         )
 
     console.print(table)
@@ -362,6 +403,40 @@ def activate(
         raise typer.Exit(0)
     console.print("[bold]smoke gate[/]")
     raise typer.Exit(_smoke(None, str(SMOKE_REPORT)))
+
+
+@app.command()
+def probe(
+    what: str = typer.Argument(..., help="versions | archs | pip | attr | quant"),
+    args: list[str] = typer.Argument(None, help="Probe arguments (architectures, packages, …)."),
+    image: str = typer.Option(
+        None, "--image", "-i",
+        help="Image to introspect. Defaults to the image the live profile runs."),
+) -> None:
+    """Ask a DEPLOYED container image a read-only question — no root, no docker grant.
+
+    The bounded probe of ADR-0019: which architectures a vLLM build supports, what it
+    ships, whether an upstream fix has landed. This is the cheap half of model
+    evaluation — do it BEFORE writing a profile, not after an activation fails.
+
+        sparky probe versions
+        sparky probe archs Mistral3ForConditionalGeneration
+        sparky probe pip xgrammar transformers
+        sparky probe attr vllm.model_executor.models.step3_vl Step3VLProcessor._get_num_multimodal_tokens
+    """
+    if image is None:
+        image = _live_image()
+        if image is None:
+            console.print("[red]No image given and none inferable[/] — pass --image. "
+                          "Deployed images are listed by a bare `sparky probe`.")
+            raise typer.Exit(2)
+    cmd = [*act._sudo(), PROBE_BIN, image, what, *(args or [])]
+    console.print(f"[dim]+ {' '.join(cmd)}[/]")
+    proc = subprocess.run(cmd, text=True, capture_output=True)
+    sys.stdout.write(proc.stdout)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+    raise typer.Exit(proc.returncode)
 
 
 @app.command()

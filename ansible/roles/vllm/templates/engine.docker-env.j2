@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Per-engine CONTAINER environment for {{ engine.name }} ({{ engine._profile }}).
+#
+# Declared by a profile's `engine_env:` map. Passed to docker with --env-file, the same
+# mechanism the NCCL config already uses, rather than as `-e` flags on the unit — so the
+# unit template stays fixed and rarely-changing (ADR-0018) while the per-engine surface
+# stays entirely in generated files.
+#
+# WHY IT EXISTS: some models need an env var, not a serve flag. DeepSeek-V4 on GB10 dies
+# in DeepGEMM ("Unknown SF transformation", DEF-0014) and the candidate workaround is
+# VLLM_USE_DEEP_GEMM=0 — which was simply not expressible before this file.
+#
+# ALWAYS RENDERED, even when empty: docker fails on a missing --env-file, and an engine
+# that declares no env is the common case.
+{% for key, value in (engine.engine_env | default({})).items() %}
+{{ key }}={{ value }}
+{% endfor %}

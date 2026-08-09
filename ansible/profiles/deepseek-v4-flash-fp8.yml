@@ -1,0 +1,74 @@
+---
+# DeepSeek-V4-Flash (FP8, "DSpark" build) — TP=2 across both nodes.
+#
+# WHY: the largest thing staged (156 GiB) and the only one whose upstream build is named
+# for this hardware. `DeepseekV4ForCausalLM` was the ONE architecture already confirmed
+# present in 26.07 by the original container probe, so it starts with a head start the
+# others did not have.
+#
+# QUANT: FP8, declared in `quantization_config` (`quant_method: fp8`) — auto-detected.
+# **No `--quantization` flag**; passing one on a self-declaring checkpoint double-
+# quantizes into garbage, the oldest footgun on this cluster.
+#
+# ATTENTION: 43 layers, `num_key_value_heads: 1`, `head_dim: 512` — that shape is MLA
+# (multi-head latent attention), i.e. one compressed latent per layer rather than a
+# conventional KV head. KV per token is therefore much smaller than the head_dim
+# suggests, which is the whole point of the design.
+#
+# MEMORY (gmu 0.80, TP=2): 156 GiB → ~78 GiB/node; 96.8 budget − 78 − ~1 → ~18 GiB
+#   KV/rank. That is the TIGHTEST of the staged models — comparable to `step-3.5-fp8`'s
+#   squeeze — so 131072 rather than the model's nominal 1,048,576 context. **A 1M-token
+#   context is not reachable on this hardware at this footprint**; do not raise
+#   `max_model_len` toward it without redoing the arithmetic.
+#   Outside headroom: ~24 GiB/node.
+#
+# RISK: weight load at ~78 GiB/node is the closest any current profile comes to the
+# footprint that OOM-froze sparky with AWQ on 26.07 (DEF-0004). That failure was a
+# Marlin-loader problem rather than a pure size problem, and FP8 does not use Marlin —
+# but bring this one up with the fail-safe understood and, ideally, while awake.
+#
+# FLAGS MINIMAL — parser names pending `./sparky.sh probe parsers`.
+# ⛔ PARKED 2026-08-08 — NO WORKING FP8 GEMM KERNEL ON sm_121.
+# Two independent paths were tried and both are missing GB10 coverage:
+#   DeepGEMM   → "Unknown SF transformation"        (layout.hpp:59)
+#   CUTLASS c3x → "dispatch_scaled_mm"              (scaled_mm_helper.hpp:17)
+# `VLLM_USE_DEEP_GEMM=0` worked exactly as intended — the first error disappeared — and
+# simply exposed the second. Everything else about this profile is CORRECT: weights load
+# completely (48/48 shards, memory flat, no pressure), the architecture is supported, the
+# quantization is accepted, and `--kv-cache-dtype fp8` satisfies the MLA layout. Only the
+# kernels are missing.
+#
+# Parked rather than deleted: 156 GiB per node stays put, so a re-test costs no download.
+# UNBLOCK WHEN: a container ships CUTLASS/DeepGEMM with sm_121 support for block-scaled
+# FP8 — then drop `blocked:` and activate. See DEF-0014.
+blocked: true
+profile_name: deepseek-v4-flash-fp8
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
+serving_topology:
+  - name: deepseek-v4-flash-fp8
+    kind: vllm
+    nodes: [sparky, snoopy]      # nodes[0]=sparky is rank 0 / the API host
+    port: 8000
+    model: DeepSeek-V4-Flash-DSpark
+    served_as: deepseek-v4-flash
+    tensor_parallel_size: 2
+    gpu_memory_utilization: "0.80"
+    max_model_len: 131072
+    # WAR candidate for DEF-0014. The model loads completely (48/48 shards, memory flat)
+    # and then dies in DeepGEMM — "Unknown SF transformation" — because there is no
+    # scale-factor layout for this format on sm_121. Disabling DeepGEMM should fall back
+    # to another FP8 GEMM path. UNPROVEN: it may simply fail somewhere else, or serve
+    # slower. This is the first use of `engine_env:`, which exists because a serve flag
+    # could not express it.
+    engine_env:
+      VLLM_USE_DEEP_GEMM: "0"
+    head_extra_args:
+      - --enable-chunked-prefill
+      # REQUIRED, not a tuning choice: DeepSeek-V4's MLA layout refuses to start without
+      # it — "DeepseekV4 fp8_ds_mla layout only supports fp8 kv-cache, got auto"
+      # (2026-08-08). Unlike the modelopt checkpoints, this one does not declare
+      # `kv_cache_quant_algo`, so vLLM defaults to `auto` (bf16) and the assert fires.
+      - --kv-cache-dtype fp8
+    worker_extra_args:
+      - --enable-chunked-prefill
+      - --kv-cache-dtype fp8

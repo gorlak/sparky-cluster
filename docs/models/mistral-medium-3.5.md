@@ -1,9 +1,31 @@
 # Mistral-Medium-3.5-128B on 2× DGX Spark — Status Tracker
 
-**Last updated:** 2026-07-02
+**Last updated:** 2026-08-08
 **Hardware:** sparky + snoopy — GB10 Blackwell (SM 12.1), 128 GiB unified memory each, ConnectX-7 200Gbit RoCE
-**Installed quant:** None — not downloaded
-**Target quant:** FP8 official checkpoint (fits at TP=2; see analysis)
+**Installed quant:** **NVIDIA ModelOpt `MIXED_PRECISION`** — staged as `Mistral-Medium-3.5-128B-NVFP4`, **89 GiB measured** (~44.5 GiB/node at TP=2)
+**Profile:** [`mistral-medium-3.5-nvfp4`](../profiles.md) — TP=2, gmu 0.75, `max_model_len` 131072, container 26.07
+
+> **The staged checkpoint is not what this sheet originally targeted.** It is NVIDIA's
+> ModelOpt quant of `mistralai/Mistral-Medium-3.5-128B` (nvidia-open-model-license,
+> modelopt 0.37.0) — *not* the community `zdy1995love` NVFP4 repo analyzed below, and not
+> the official FP8. Three things follow, each measured from the staged files rather than
+> assumed:
+>
+> | | what the sheet assumed | what is actually staged |
+> |---|---|---|
+> | quant | plain NVFP4, or official FP8 | **`quant_algo: MIXED_PRECISION`** — 367 layers FP8 + 249 NVFP4, per-layer map in `quantized_layers` |
+> | footprint | ~64 GiB (NVFP4) / ~128 GiB (FP8) | **89 GiB** — between the two, as mixed precision implies |
+> | tokenizer | Mistral-native, needs `--tokenizer-mode mistral` | **both** formats present (`tokenizer.json` + `tekken.json`/`params.json`); we take the HF path, vLLM's default |
+>
+> It also declares **`kv_cache_quant_algo: FP8`**, which puts it in DEF-0007's territory
+> (FP8 KV × prefix caching → multi-turn corruption, never re-tested since vLLM 0.19).
+> `--enable-prefix-caching` is deliberately omitted from the profile for that reason.
+>
+> Config facts for the memory math: 88 layers, 8 KV heads (GQA), head_dim 128,
+> hidden 12288, vocab 131072, `max_position_embeddings` 262144 via **YaRN factor 64 from
+> an original 4096**. `text_config.model_type` is `ministral3`, matching vLLM's
+> Ministral-3-Reasoning recipe — hence `--reasoning-parser mistral` (`[THINK]`) and
+> `--tool-call-parser mistral` (`[TOOL_CALLS]`), both confirmed in the chat template.
 
 ---
 
