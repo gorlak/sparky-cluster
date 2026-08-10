@@ -1,23 +1,32 @@
 ---
-# Profile: step-3.5-fp8 — Step-3.5-Flash-FP8, big-shared TP=2 across sparky + snoopy.
+# ⚰️ RETIRED 2026-08-10 — NOT IN THE ALLOWLIST. Loaders glob profiles/*.yml
+#    non-recursively, so nothing here installs, serves, or keeps weights.
+#    Why: outclassed on every measured axis — 32k context (1/8th the best), 19.0 tok/s, 54.3% floor, 195 GiB, and the last profile on 26.04.
+#    Verdict is owned by docs/models/tombstones.md; this file keeps only the
+#    CONFIG and what was learned building it. Re-verify parsers, architecture
+#    and quant algo before reviving — all three have cost a deploy when assumed.
+#    See ansible/profiles/retired/README.md.
+#
+# Profile: step-3.5-flash-fp8 — Step-3.5-Flash-FP8, big-shared TP=2 across sparky + snoopy.
 # The stable, known-good "step" slot (26.04 default container). Its successor
 # candidate is `step-3.7-nvfp4` (Step-3.7-Flash-NVFP4 on 26.06) — A/B them by
 # deploying each in turn. Profile names are the <model>-<version>-<quant> triple.
 #
-# Apply with:  ./sparky.sh deploy step-3.5-fp8
-profile_name: step-3.5-fp8
+# Apply with:  ./sparky.sh deploy step-3.5-flash-fp8
+profile_name: step-3.5-flash-fp8
+hf_repo: stepfun-ai/Step-3.5-Flash-FP8
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [big-shared]
 
 # Serving topology — the single source of truth for what runs where. Every
 # model-dependent service (vLLM units, Open WebUI, Prometheus, the control panel)
 # is a projection of this list. See docs/serving-topology.md.
 serving_topology:
-  - name: step-3.5-fp8
+  - name: step-3.5-flash-fp8
     kind: vllm
-    nodes: [sparky, snoopy]      # order = ranks; nodes[0] is rank 0 / the API host
-    port: 8000
     model: Step-3.5-Flash-FP8    # dir under /opt/vllm/models
-    served_as: step-3.5-flash
-    tensor_parallel_size: 2
+    served_as: step-3.5-flash-fp8
     # gmu 0.90 — step is a "fully-committed" workflow (weights alone are ~97 GiB
     # per shard, so there's no meaningful outside headroom to give back). Use
     # other machines for dev while step is deployed. See docs/profile-tuning.md.

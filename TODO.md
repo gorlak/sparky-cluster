@@ -78,7 +78,8 @@ hostnames either. More invasive — do last or separately.
 1. `ansible-playbook --syntax-check site.yml` with example files in place —
    catches missing variable references before touching the cluster.
 2. `shellcheck ansible/bootstrap-deploy.sh` — catches shell regressions.
-3. `./sparky.sh check step-3.5-fp8` (dry run) — confirms templates render correctly.
+3. `./sparky.sh deploy --check` (dry run) — confirms templates render correctly. Takes no
+   profile argument: a deploy converges the whole allowlist (ADR-0018).
 4. Full `./sparky.sh deploy` on the actual cluster to confirm end-to-end.
 
 > Cross-reference: the "Make node identity fully inventory-driven" item below

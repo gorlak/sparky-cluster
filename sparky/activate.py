@@ -183,3 +183,71 @@ def fleet_state(path: Path = FLEET_STATE) -> dict | None:
 
 def whoami() -> str:
     return getpass.getuser()
+
+
+class NotLive(RuntimeError):
+    """A profile did not reach "serving". Carries WHICH stage failed, and the exit code.
+
+    The code is preserved rather than flattened because callers distinguish them: 2 means
+    the reconciler REFUSED (unknown profile, no allowlist — a request that was never going
+    to work), 1 means it was accepted and then failed to come up. Collapsing them turned
+    "you asked for a profile that does not exist" into a generic failure.
+    """
+
+    def __init__(self, message: str, code: int = 1):
+        super().__init__(message)
+        self.code = code
+
+
+def bring_up(profile: str, *, force: bool = False, wait: bool = True,
+             smoke: bool = None, on_event=None) -> None:
+    """Make `profile` live, or raise. **This is what "activate" should have meant.**
+
+    `activate()` returns `reconcile().returncode`, which means *systemd accepted the
+    start* — a big model then spends ten minutes loading weights. "Activated" and
+    "serving" are different moments, and every caller was expected to know that and call
+    `wait_for_ready()` itself. The CLI remembered. The sweep runner did not, so on
+    2026-08-10 it fired three regiments at an engine still reading 75 GiB off disk: the
+    tools regiment reported four ConnectErrors, and bench and quality then reported
+    SUCCESS in under three seconds each, having measured nothing.
+
+    A return code that means something weaker than the caller assumes is a contract bug,
+    not a caller bug. This is the contract: it returns only when the profile is live, and
+    raises `NotLive` otherwise — so forgetting to wait is no longer expressible.
+
+    `smoke` defaults to True for real profiles and is skipped for `empty`, which has no
+    engines to gate.
+    """
+    def emit(msg: str) -> None:
+        if on_event:
+            on_event(msg)
+
+    rc = activate(profile, force=force)
+    if rc != 0:
+        raise NotLive(f"activate({profile}) exited {rc} — the reconciler refused or a "
+                      f"node failed; the fleet was driven to empty rather than guessing",
+                      code=rc)
+    if profile == EMPTY or not wait:
+        return
+
+    emit(f"{profile}: waiting for engines to answer")
+    if not wait_for_ready():
+        raise NotLive(f"{profile} never answered — activated, but no engine reached "
+                      f"readiness. Check `sparky logs head`")
+
+    if smoke is False:
+        return
+    # The gate is what distinguishes "the API answers" from "it serves the shapes callers
+    # send". A profile with no tool parser answers /v1/models and 400s the moment Open
+    # WebUI attaches tools (that shipped once); measuring it would produce numbers for a
+    # configuration nobody can use.
+    #
+    # Imported at CALL time, not module scope: the gate lives in `cli`, and `cli` imports
+    # this module. Injecting it as a parameter would be tidier but reintroduces the bug
+    # this function exists to remove — a caller who forgets the gate gets an ungated
+    # bring-up and no complaint.
+    from sparky.cli import SMOKE_REPORT, _smoke
+    if _smoke(None, str(SMOKE_REPORT)) != 0:
+        raise NotLive(f"{profile} came up but FAILED the smoke gate — it answers, but not "
+                      f"the shapes callers send. See {SMOKE_REPORT}")
+    emit(f"{profile}: live and gated")

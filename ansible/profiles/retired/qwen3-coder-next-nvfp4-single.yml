@@ -1,5 +1,13 @@
 ---
-# Profile: qwen3-coder-nvfp4-single — Qwen3-Coder-Next (NVFP4) on snoopy, TP=1.
+# ⚰️ RETIRED 2026-08-10 — NOT IN THE ALLOWLIST. Loaders glob profiles/*.yml
+#    non-recursively, so nothing here installs, serves, or keeps weights.
+#    Why: the TP=1 shape lost: its TP=2 twin measured 1.47x decode, +41% throughput and 7.6x KV.
+#    Verdict is owned by docs/models/tombstones.md; this file keeps only the
+#    CONFIG and what was learned building it. Re-verify parsers, architecture
+#    and quant algo before reviving — all three have cost a deploy when assumed.
+#    See ansible/profiles/retired/README.md.
+#
+# Profile: qwen3-coder-next-nvfp4-single — Qwen3-Coder-Next (NVFP4) on snoopy, TP=1.
 # Single-node serving runs on snoopy by design: sparky is the head (Open WebUI,
 # Caddy, control panel, metrics) and the workstation-driven dev node, so single-node
 # models serve on the resource-richer snoopy. Requires the 26.06 container (NVFP4).
@@ -7,19 +15,22 @@
 # Memory math (gmu 0.55) and the "why per-node, not TP=2" rationale for the small
 # NVFP4 models: see docs/profile-tuning.md.
 
-profile_name: qwen3-coder-nvfp4-single
+profile_name: qwen3-coder-next-nvfp4-single
+hf_repo: RedHatAI/Qwen3-Coder-Next-NVFP4
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [single-node, tool-calling]
 # ON 26.07 (2026-08-08). This profile has NO spec-decode, so unlike the qwen3.6
 # canary it does NOT mask DEF-0003 — activating it runs FULL_AND_PIECEWISE
 # cudagraphs for the first time ever on GB10. That is the point: it is the DEF-0003
 # experiment. Run it AFTER the canary proves the container itself is sound.
 vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
-  - name: qwen3-coder-snoopy
+  - name: qwen3-coder-next-nvfp4-single
     kind: vllm
     nodes: [snoopy]
-    port: 8000
     model: Qwen3-Coder-Next-NVFP4
-    served_as: qwen3-coder-snoopy
+    served_as: qwen3-coder-next-nvfp4-single
     tensor_parallel_size: 1
     gpu_memory_utilization: "0.55"
     max_model_len: 262144

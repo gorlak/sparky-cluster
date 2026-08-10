@@ -120,7 +120,7 @@ When a completion criterion is met:
 `vllm_image` is an ordinary var: a profile that sets it overrides the `group_vars/all.yml`
 default (extra-vars precedence). No code change needed — the engine env file already
 renders `{{ vllm_image }}` per engine. This is the mechanism that lets `minimax-m2.7-awq` stay on 26.04
-while the `step-3.7-nvfp4` profile runs 26.06 on the same cluster.
+while the `step-3.7-flash-nvfp4` profile runs 26.06 on the same cluster.
 
 ## Re-assessment log
 
@@ -181,7 +181,7 @@ while the `step-3.7-nvfp4` profile runs 26.06 on the same cluster.
   hang is likely orthogonal to NVFP4. The next 26.06 test should use an actual **NVFP4
   model** (single-node first per the retry plan), not minimax. We have
   `stepfun-ai/Step-3.7-Flash-NVFP4` already downloaded (HF cache).
-- **2026-07-02 (step-3.7 / NVFP4 test — the key result)** — Deployed the new `step-3.7-nvfp4`
+- **2026-07-02 (step-3.7 / NVFP4 test — the key result)** — Deployed the new `step-3.7-flash-nvfp4`
   profile (Step-3.7-Flash-NVFP4, per-profile 26.06 pin; **per-profile pinning validated** —
   minimax et al. stayed on 26.04). **NVFP4 loaded on 26.06 with NO hang** — it got past NCCL
   init *and* weight load cleanly, so the Marlin/AWQ load hang is confirmed **model-specific:

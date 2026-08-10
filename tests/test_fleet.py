@@ -168,7 +168,7 @@ def test_the_real_fleet_is_deployable():
 def test_the_real_allowlist_excludes_parked_profiles():
     fleet = load_fleet()
     parked = [p.name for p in fleet.profiles if p.blocked]
-    assert parked, "expected at least one parked candidate (step-3.7-nvfp4)"
+    assert parked, "expected at least one parked candidate (step-3.7-flash-nvfp4)"
     for name in parked:
         assert name not in fleet.allowlist
         # …but its weights are still kept, which is the whole point of parking.

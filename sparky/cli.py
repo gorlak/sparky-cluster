@@ -22,6 +22,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,12 +30,12 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from sparky import activate as act
+from sparky import soak, sweep, tools, activate as act
 from sparky import ansible as ops
-from sparky import evals, report, store, topology
+from sparky import bench as httpbench
+from sparky import evals, report, scoreboard, store, topology
 from sparky.vision import probe as vision_probe
 from sparky.api import VllmClient
-from sparky.bench import run_all
 from sparky.fleet import load_fleet
 from sparky.multiturn import run_multiturn
 from sparky.store import Store
@@ -75,7 +76,7 @@ def _root() -> None:
     """Sparky Cluster — operator entrypoint (ADR-0015)."""
 
 
-@app.command("topology")
+@app.command("topology", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def show_topology(
     profile: str = typer.Argument(
         "empty", help="Profile name (or a path to a profile YAML)."
@@ -232,7 +233,7 @@ def _smoke(topology_file: str | None, report_file: str | None) -> int:
     return 1 if failed else 0
 
 
-@app.command("smoke")
+@app.command("smoke", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def smoke(
     topology_file: str = typer.Option(
         None, "--topology", help="Topology JSON to probe (default: the live current-topology.json)."),
@@ -252,69 +253,7 @@ def smoke(
     raise typer.Exit(_smoke(topology_file, report_file))
 
 
-@app.command("bench")
-def bench(
-    label: str = typer.Argument(..., help="Label for this run (e.g. '26.04', 'nvfp4', 'prefix-on')."),
-) -> None:
-    """Run the vllm bench serve scenarios against the live engine(s); record to the trend store.
-
-    Several minutes per engine (latency + throughput + prefix_cache). Reads the
-    engine's container/served-name from current-topology.json (ADR-0012).
-
-    **Asks for your sudo password, and only measures head-local engines.** Both are
-    accidents of `vllm bench serve` living inside the container: reaching it means
-    `sudo docker exec` (and ADR-0018 retired the passwordless `docker` grant, because a
-    `docker` grant is root), and the container is only reachable on its own node — so
-    this refuses every single-node profile, including whatever is usually serving.
-
-    Deliberately not patched here. ADR-0016 rebuilds the regiment HTTP-native against
-    the stable endpoint, where neither problem exists; see ADR-0018's errata for the
-    reasoning. Until then: interactive only.
-    """
-    # Fail with the reason rather than a confusing subprocess error 20 minutes in.
-    if (subprocess.run(["sudo", "-n", "docker", "version"],
-                       capture_output=True).returncode != 0 and not os.isatty(0)):
-        console.print(
-            "[red]bench needs `sudo docker` and there's no terminal to prompt on.[/]\n"
-            "  `vllm bench serve` lives inside the container, and geoff's passwordless "
-            "docker grant was retired by ADR-0018 (a docker grant is root).\n"
-            "  Run it from a terminal. The unattended path is ADR-0016's HTTP-native "
-            "rebuild of this regiment, not a way around the boundary.")
-        raise typer.Exit(2)
-    current = topology.load_current_topology()
-    if current is None:
-        console.print("[yellow]No current-topology.json — nothing has been activated.[/]")
-        raise typer.Exit(1)
-    engines = [e for e in current.get("engines", []) if e.get("api_url")]
-    if not engines:
-        console.print("[yellow]No API engines to benchmark.[/]")
-        raise typer.Exit(1)
-    profile = current.get("profile", "?")
-    # bench shells `docker exec` on THIS (head) node, so it can only reach an engine
-    # whose container is local. Skip worker-node engines with a warning instead of
-    # crashing on `docker exec <missing-container>`. Node-aware benching of worker
-    # engines (ssh to the node) is an ADR-0016 follow-up; per-node profiles are the
-    # experimental Tier-2 shape, and the head engine is representative for the A/B.
-    local = socket.gethostname().split(".")[0]
-    benchable = [e for e in engines if (e.get("api_node") or (e.get("nodes") or [local])[0]) == local]
-    for e in engines:
-        if e not in benchable:
-            node = e.get("api_node") or (e.get("nodes") or ["?"])[0]
-            console.print(f"[yellow]skipping {e['name']}: its container is on '{node}', not the "
-                          f"local head, and `docker exec` can't reach it. Retired by ADR-0016's "
-                          f"HTTP-native rebuild — until then this engine can't be benched.[/]")
-    if not benchable:
-        console.print("[yellow]No head-local engines to benchmark.[/]")
-        raise typer.Exit(1)
-    with Store() as store:
-        for e in benchable:
-            console.print(f"[bold]benchmarking {e['name']} as '{label}'[/] — 3 scenarios, several minutes…")
-            for run in run_all(label, e, store, profile):
-                console.print(f"  {run.scenario}: output {run.output_toks_s} tok/s, ttft p99 {run.ttft_p99_ms} ms")
-    console.print(f"[green]recorded '{label}'[/] — compare with:  sparky report {label} <other>")
-
-
-@app.command("report")
+@app.command("report", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def report_cmd(
     label_a: str = typer.Argument(..., help="Baseline label."),
     label_b: str = typer.Argument(..., help="Comparison label."),
@@ -327,7 +266,7 @@ def report_cmd(
 
 # --- deploy: converge the fleet (privileged, human, password-gated) ---------
 
-@app.command()
+@app.command(rich_help_panel="Provision — password-gated (sudo -u deploy), control node only")
 def deploy(
     evict: bool = typer.Option(
         False, "--evict",
@@ -335,6 +274,10 @@ def deploy(
              "only reported — no silent loss.",
     ),
     tags: str = typer.Option(None, "--tags", help="Limit to these ansible tags."),
+    check: bool = typer.Option(
+        False, "--check",
+        help="Dry run (ansible --check --diff): show what would change, change nothing.",
+    ),
 ) -> None:
     """Converge the whole FLEET to the allowlist (ansible site.yml).
 
@@ -343,21 +286,20 @@ def deploy(
     setting the boundary of what may run. It is selection-neutral: whatever is
     serving keeps serving (falling to `empty` only if its profile left the
     allowlist), and it never auto-promotes a model. Use `activate` to choose.
+
+    `--check` is the dry run. It was a separate `check` command until 2026-08-10, which
+    made it a third thing to classify — it looked like a development command but is
+    `deploy` in every way that matters: same code path, same `sudo -u deploy` password
+    gate, same publish to /opt/cluster. As a flag it also composes, so
+    `deploy --check --evict` asks the question you actually want answered: what would an
+    evicting deploy delete?
     """
-    raise typer.Exit(ops.deploy(evict=evict, tags=tags))
-
-
-@app.command()
-def check(
-    evict: bool = typer.Option(False, "--evict", help="Plan with eviction enabled."),
-) -> None:
-    """Dry-run the fleet deploy (--check --diff) — shows what would change, makes nothing."""
-    raise typer.Exit(ops.deploy(dry_run=True, evict=evict))
+    raise typer.Exit(ops.deploy(evict=evict, tags=tags, dry_run=check))
 
 
 # --- activate: choose the live model (unprivileged, human OR agent) ---------
 
-@app.command()
+@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def activate(
     profile: str = typer.Argument(
         None, help="Profile to make live, or `empty`. Omit to show what's activatable."),
@@ -389,23 +331,20 @@ def activate(
         console.print("[bold]activatable:[/] " + "  ".join(allowed))
         raise typer.Exit()
 
-    rc = act.activate(profile, force=force)
-    if rc != 0:
-        raise typer.Exit(rc)
-    if profile == act.EMPTY or not wait:
-        raise typer.Exit(0)
-
-    console.print("[bold]waiting for the engines to answer[/] — a big model loads for minutes…")
-    if not act.wait_for_ready():
-        console.print("[red]timed out waiting for readiness[/] — check `./sparky.sh logs head`.")
-        raise typer.Exit(1)
-    if not smoke_gate:
-        raise typer.Exit(0)
-    console.print("[bold]smoke gate[/]")
-    raise typer.Exit(_smoke(None, str(SMOKE_REPORT)))
+    # One definition of "live", shared with the sweep runner. This used to be an inline
+    # sequence here and a different, shorter one in the runner — which is how the runner
+    # ended up measuring an engine that was still loading (2026-08-10).
+    try:
+        act.bring_up(profile, force=force, wait=wait,
+                     smoke=smoke_gate if wait else False,
+                     on_event=lambda m: console.print(f"[bold]{m}[/]"))
+    except act.NotLive as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(exc.code)
+    raise typer.Exit(0)
 
 
-@app.command()
+@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def probe(
     what: str = typer.Argument(..., help="versions | archs | pip | attr | quant"),
     args: list[str] = typer.Argument(None, help="Probe arguments (architectures, packages, …)."),
@@ -439,12 +378,344 @@ def probe(
     raise typer.Exit(proc.returncode)
 
 
-@app.command("eval")
+@app.command("bench", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+def bench(
+    label: str = typer.Argument(None, help="Label to record under (default: the profile)."),
+    scenarios: str = typer.Option("latency,throughput,prefix_cache", "--scenarios", "-s"),
+    record: bool = typer.Option(True, "--record/--no-record"),
+) -> None:
+    """Throughput and latency over HTTP (ADR-0016).
+
+    Needs no root and no docker: it drives the stable model endpoint and times the token
+    stream client-side. It replaced a regiment that shelled `sudo docker exec … vllm
+    bench serve`, which could not run unattended (ADR-0018 retired the docker grant) and
+    refused every single-node profile, since the container is only reachable on its own
+    node — so for the first time the model that has actually been serving can be measured.
+
+    Numbers compare to other runs of THIS harness, not to `vllm bench serve`: timings are
+    client-side and include network and client overhead (ADR-0018's errata).
+    """
+    current = topology.load_current_topology()
+    if not current or not current.get("engines"):
+        console.print("[yellow]Nothing serving — activate a profile first.[/]")
+        raise typer.Exit(1)
+    engine = current["engines"][0]
+    profile = current.get("profile", "?")
+    label = label or profile
+
+    chosen = [s.strip() for s in scenarios.split(",") if s.strip()]
+    unknown = [s for s in chosen if s not in httpbench.SCENARIOS]
+    if unknown:
+        console.print(f"[red]unknown scenario(s): {', '.join(unknown)}[/] — "
+                      f"choose from {', '.join(httpbench.SCENARIOS)}")
+        raise typer.Exit(2)
+
+    console.print(f"[bold]bench[/] · {profile} · {', '.join(chosen)}")
+    console.print(f"[dim]{engine['api_url']} · served as {engine['served_as']}[/]")
+
+    # Context capacity: how much this configuration can READ. Speed metrics cannot say
+    # it, and for long-document work it is the binding constraint — so it is measured
+    # once per bench run and attached to every scenario row.
+    ctx = httpbench.context_capacity(engine["api_url"])
+    if ctx:
+        console.print(
+            f"  [bold]context[/]: {ctx.get('usable_context', 0):,} usable tokens "
+            f"(KV holds {ctx.get('kv_tokens', 0):,}, max_model_len "
+            f"{ctx.get('max_model_len', 0):,}) · "
+            f"{ctx.get('full_slots', 0):.1f} full-length slots")
+    else:
+        console.print("  [yellow]context: unavailable[/] — cache_config_info not exposed")
+
+    table = Table(title=f"bench: {label}", title_justify="left")
+    for col in ("scenario", "out tok/s", "req/s", "TTFT mean", "TTFT p99", "TPOT mean", "failed"):
+        table.add_column(col, overflow="fold")
+
+    with VllmClient(engine["api_url"], timeout=600.0) as client:
+        for name in chosen:
+            scenario = httpbench.SCENARIOS[name]
+            console.print(f"[dim]  {name}: {scenario.requests} requests, "
+                          f"concurrency {scenario.concurrency}…[/]")
+            result = httpbench.run_scenario(client, engine["served_as"], scenario,
+                                            model_dir=engine.get("model", ""))
+            m = result.metrics()
+            failed = len(result.results) - len(result.good)
+            if not m:
+                # Show WHY, not just how many. A count alone cannot distinguish a 400
+                # from a timeout, and the first live run cost a round-trip to learn that
+                # the requests were addressing the wrong model name.
+                reasons = sorted({r.error for r in result.results if r.error})
+                table.add_row(name, "—", "—", "—", "—", "—", f"[red]{failed}[/]")
+                for reason in reasons[:3]:
+                    console.print(f"    [red]{reason}[/]")
+                continue
+            table.add_row(
+                name,
+                f"{m['output_toks_s']:.1f}", f"{m['requests_s']:.2f}",
+                f"{m['ttft_mean_ms']:.0f}ms", f"{m['ttft_p99_ms']:.0f}ms",
+                f"{m['tpot_mean_ms']:.1f}ms" if m.get("tpot_mean_ms") else "—",
+                str(failed) if not failed else f"[red]{failed}[/]")
+            if record:
+                with store.Store() as db:
+                    run = httpbench.to_run(result, label=label,
+                                           model=engine.get("model", "?"), profile=profile)
+                    run.kv_tokens = ctx.get("kv_tokens")
+                    run.max_model_len = ctx.get("max_model_len")
+                    db.record(run)
+    console.print(table)
+    if record:
+        console.print(f"[dim]  recorded as '{label}'[/]")
+        _refresh_panel_snapshot()
+
+
+
+# The panel renders a FILE — it does no analysis of its own (see `scoreboard.to_json`),
+# which is what keeps dominance and best-marking from drifting between two
+# implementations. That makes the file the freshness boundary: regenerate it whenever a
+# measurement lands, and the web scoreboard is never staler than the last recorded run.
+# The alternative — a timer — is a thing to forget about and a second place to look when
+# the page is wrong.
+PANEL_SNAPSHOT = Path("/opt/cluster/scoreboard.json")
+
+
+def _refresh_panel_snapshot() -> None:
+    """Best-effort rewrite of the panel's snapshot. Never raises.
+
+    A measurement that succeeded must not be reported as a failure because the panel's
+    directory is missing, read-only, or this is a dev checkout with no /opt/cluster.
+    """
+    try:
+        if not PANEL_SNAPSHOT.parent.is_dir():
+            return
+        import json as _json
+        with store.Store() as db:
+            rows = db.rows()
+        table = scoreboard.build(rows)
+        if not table:
+            return
+        points, dominated = scoreboard.pareto(table)
+        payload = scoreboard.to_json(table, points, dominated)
+        payload["generated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        PANEL_SNAPSHOT.write_text(_json.dumps(payload, indent=2) + "\n")
+        PANEL_SNAPSHOT.chmod(0o644)   # the panel runs as `activator`, not in `cluster`
+    except Exception:
+        pass
+
+
+@app.command("sweep", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+def sweep_cmd(
+    spec_file: str = typer.Argument(..., help="YAML job list (profile x regiments)."),
+    resume: bool = typer.Option(True, "--resume/--restart",
+                                help="Continue from breadcrumbs (default), or start over."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan; run nothing."),
+) -> None:
+    """Run a job list end to end — the ADR-0016 outer loop.
+
+    A sweep COMMANDEERS the cluster: it activates one profile after another, so serving is
+    whatever the sweep is currently measuring. That is why it takes an exclusive lock and
+    why the job list is explicit rather than expanded from a matrix — it is a thing you
+    read and approve before it takes the fleet for two hours.
+
+    Interrupted runs resume: breadcrumbs are written after every REGIMENT, so a 45-minute
+    soak is never repeated because the bench after it failed.
+    """
+    import yaml
+    spec = yaml.safe_load(Path(spec_file).read_text())
+    jobs = sweep.load_jobs(spec)
+
+    if dry_run:
+        for job in jobs:
+            console.print(f"  {job.key}: {', '.join(job.regiments)}")
+        console.print(f"[dim]{len(jobs)} job(s). Nothing was run.[/]")
+        raise typer.Exit()
+
+    state = sweep.load_state() if resume else sweep.SweepState()
+    if resume and state.done:
+        console.print(f"[dim]resuming — {len(state.done)} regiment(s) already done[/]")
+
+    def activate_profile(name: str) -> None:
+        # `bring_up` returns only when the profile is LIVE and gated, and raises otherwise
+        # — which is what quarantines it. The comment this replaced claimed activate()
+        # "already waits for readiness and runs the smoke gate". It does not: it returns
+        # when systemd accepts the start, and this runner then measured an engine that was
+        # still loading (2026-08-10).
+        act.bring_up(name, on_event=lambda m: console.print(f"  [dim]{m}[/]"))
+
+    def _live():
+        current = topology.load_current_topology()
+        if not current or not current.get("engines"):
+            raise RuntimeError("nothing serving after activate")
+        return current["engines"][0]
+
+    def _recorded_since(label: str, since: float, scenarios: set[str]) -> set[str]:
+        """Which scenarios actually LANDED in the store for this label."""
+        with store.Store() as db:
+            return {r["scenario"] for r in db.rows()
+                    if r["label"] == label and (r.get("ts") or 0) >= since
+                    and r["scenario"] in scenarios}
+
+    def _measured(job, fn, want: set[str], what: str) -> str:
+        """Run a recording regiment and VERIFY it recorded something.
+
+        On 2026-08-10 this returned "recorded" for both bench and quality after they ran
+        against an engine that was still loading: every request failed, nothing was
+        written, and each printed its usual closing line anyway. The runner believed the
+        print. A regiment whose deliverable is a row in the trend store has exactly one
+        honest success condition — the row is there.
+        """
+        started = int(time.time())
+        try:
+            fn()
+        except SystemExit as exc:            # typer.Exit from the command function
+            if getattr(exc, "code", 0) not in (0, None):
+                raise RuntimeError(f"{what} exited {exc.code}") from None
+        landed = _recorded_since(job.key, started, want)
+        missing = want - landed
+        if missing:
+            raise RuntimeError(f"{what} recorded nothing for {sorted(missing)} — the "
+                               f"engine answered nothing worth storing")
+        return f"recorded {', '.join(sorted(landed))}"
+
+    def _bench(job) -> str:
+        return _measured(
+            job, lambda: bench(label=job.key, scenarios="latency,throughput,prefix_cache",
+                               record=True),
+            {"latency", "throughput", "prefix_cache"}, "bench")
+
+    def _quality(job) -> str:
+        return _measured(
+            job, lambda: eval_cmd(label=job.key, limit=evals.DEFAULT_LIMIT,
+                                  concurrency=8, record=True, dump=None),
+            {"quality:mmlu-pro"}, "quality")
+
+    def _tools(job) -> str:
+        engine = _live()
+        with VllmClient(engine["api_url"], timeout=300.0) as client:
+            result = tools.check(client, engine["served_as"])
+        if not result.ok:
+            raise RuntimeError(result.summary())
+        return result.summary()
+
+    def _soak(job) -> str:
+        engine = _live()
+        with VllmClient(engine["api_url"], timeout=600.0) as client:
+            result = soak.run(client, engine["served_as"],
+                              on_progress=lambda m: console.print(f"    [dim]{m}[/]"))
+        if not result.ok:
+            raise RuntimeError(result.summary())
+        return result.summary()
+
+    regiments = {"bench": _bench, "quality": _quality, "tools": _tools, "soak": _soak}
+
+    lock = None
+    try:
+        lock = sweep.acquire()
+    except sweep.SweepBusy as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1)
+    try:
+        state = sweep.run(jobs, activate=activate_profile, regiments=regiments,
+                          state=state, on_event=lambda m: console.print(m))
+    finally:
+        sweep.release(lock)
+        _refresh_panel_snapshot()
+
+    console.print()
+    console.print(sweep.summary(state))
+    if any(not o.ok for o in state.outcomes) or state.quarantined:
+        raise typer.Exit(1)
+
+
+@app.command("scoreboard", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+def scoreboard_cmd(
+    markdown: bool = typer.Option(False, "--markdown", "-m",
+                                  help="Emit a markdown table for docs/."),
+    no_plot: bool = typer.Option(False, "--no-plot"),
+    json_out: str = typer.Option(None, "--json", help="Write a snapshot for the panel."),
+) -> None:
+    """The whole fleet on one screen — quality against speed (ADR-0016).
+
+    `report` compares two labels; this compares everything measured, which is the shape
+    the sourcing question actually has: is a model worth its disk, and which one should
+    be serving?
+
+    Shows the trade-off rather than a ranking. A composite score would recommend the
+    biggest model every time — wrong for a two-node cluster, where serving one model
+    means not serving another. The one objective claim it does make is **dominance**: a
+    model beaten on every axis is never the right choice.
+    """
+    with store.Store() as db:
+        rows = db.rows()
+    table = scoreboard.build(rows)
+    # Attach the upstream repo id from the profile. The store records a label; only the
+    # profile knows which org published the checkpoint, and that is the one string that
+    # makes a scoreboard row searchable on the Hub.
+    live = {p.name: p.hf_repo for p in topology.all_profiles()}
+    # Retired profiles keep their repo id (profiles/retired/), so a retired row still
+    # links to the Hub — the measurement is real and its provenance is exactly as useful
+    # as a live one's. `retired` is decided by absence from the LIVE set, not by whether
+    # a repo was found.
+    archived = {}
+    retired_dir = topology.PROFILES_DIR / "retired"
+    if retired_dir.is_dir():
+        for f in sorted(retired_dir.glob("*.yml")):
+            try:
+                prof = topology.load_profile(f)
+            except Exception:
+                continue
+            archived[prof.name] = prof.hf_repo
+    for row in table:
+        row.hf_repo = (live.get(row.label) or live.get(row.profile)
+                       or archived.get(row.label) or archived.get(row.profile))
+        row.retired = row.label not in live and row.profile not in live
+    if not table:
+        console.print("[yellow]No measurements yet — run `sparky eval` and `sparky bench`.[/]")
+        raise typer.Exit(1)
+
+    if json_out:
+        import json as _json
+        points, dominated = scoreboard.pareto(table)
+        payload = scoreboard.to_json(table, points, dominated)
+        payload["generated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        path = Path(json_out)
+        path.write_text(_json.dumps(payload, indent=2) + "\n")
+        path.chmod(0o644)          # the panel runs as `activator`, not in the cluster group
+        console.print(f"[dim]snapshot -> {json_out}[/]")
+        raise typer.Exit()
+
+    if markdown:
+        print(scoreboard.to_markdown(table))
+        raise typer.Exit()
+
+    rich_table = Table(title="fleet scoreboard", title_justify="left")
+    rich_table.add_column("model", overflow="fold")
+    for name, *_ in scoreboard.COLUMNS:
+        rich_table.add_column(name, justify="right")
+    for row in table:
+        cells = [f"[green]{c.text}[/]" if c.best and c.value is not None else c.text
+                 for c in row.cells]
+        rich_table.add_row(row.label, *cells)
+    console.print(rich_table)
+
+    points, dominated = scoreboard.pareto(table)
+    if not no_plot:
+        console.print()
+        console.print(scoreboard.plot(points, dominated))
+    if dominated:
+        console.print(f"\n  [yellow]dominated[/] (beaten on every measured axis): "
+                      f"{', '.join(sorted(dominated))}")
+    missing = [r.label for r in table if r.missing]
+    if missing:
+        console.print(f"  [dim]incomplete: {', '.join(missing)} — "
+                      f"run the missing regiment to place them[/]")
+
+
+@app.command("eval", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def eval_cmd(
     label: str = typer.Argument(None, help="Label to record under (default: the profile)."),
     limit: int = typer.Option(140, "--limit", "-n", help="Questions (max 280)."),
     concurrency: int = typer.Option(8, "--concurrency", "-c"),
     record: bool = typer.Option(True, "--record/--no-record", help="Write to the trend store."),
+    dump: str = typer.Option(None, "--dump", help="Write per-item results as JSONL."),
 ) -> None:
     """Score the live model for ACCURACY — the `quality` regiment (ADR-0016).
 
@@ -474,9 +745,21 @@ def eval_cmd(
         if done["n"] % 20 == 0:
             console.print(f"[dim]  {done['n']}/{len(items)}…[/]")
 
-    with VllmClient(engine["api_url"], timeout=600.0) as client:
+    # Timeout sized from the WORKLOAD, not picked round. Under continuous batching each
+    # request gets roughly (aggregate tok/s / concurrency), so a big TP=2 model at 148
+    # tok/s across 32 requests gives ~4.6 tok/s each — and 4096 tokens then needs ~890s.
+    # A flat 600s silently turned 41 of MiniMax's 140 answers into ReadTimeouts, scored
+    # them wrong, and cost it ~29 points of accuracy that were never about the model.
+    # 15 tok/s per request is a pessimistic floor for anything this cluster serves.
+    timeout = max(600.0, evals.MAX_TOKENS / 15.0 * max(1, concurrency) / 4)
+    console.print(f"[dim]per-request timeout {timeout:.0f}s[/]")
+    with VllmClient(engine["api_url"], timeout=timeout) as client:
         result = evals.run(client, engine["served_as"], limit=limit,
                            concurrency=concurrency, on_item=tick)
+
+    if dump:
+        evals.dump_items(result, dump)
+        console.print(f"[dim]  per-item results -> {dump}[/]")
 
     table = Table(title=f"quality: {label}", title_justify="left")
     for col in ("category", "score", "n"):
@@ -486,8 +769,23 @@ def eval_cmd(
     console.print(table)
     console.print(f"  [bold]accuracy {100 * result.accuracy:.1f}%[/] "
                   f"({sum(1 for i in result.items if i.ok)}/{len(result.items)}) · "
-                  f"unparseable {result.unparseable} · {result.seconds / 60:.1f} min")
+                  f"unparseable {result.unparseable} (truncated {result.truncated}, "
+                  f"rescued {result.rescued}, timed out {result.timed_out}) · "
+                  f"{result.seconds / 60:.1f} min")
+    if result.timed_out:
+        console.print(f"  [red]{result.timed_out} request(s) timed out[/] — that is the "
+                      f"harness giving up, not the model failing. Lower --concurrency or "
+                      f"the score understates it.")
 
+    # A run where most items produced no answer is not a measurement of the model — it
+    # is a measurement of something going wrong (an engine torn away mid-run recorded
+    # 1.4% on 2026-08-09, and that row would have sat on the scoreboard as a real score).
+    # Refuse to record it; a missing cell is honest, a fabricated one is not.
+    if record and result.unparseable > len(result.items) / 2:
+        console.print(f"[red]NOT RECORDED[/] — {result.unparseable}/{len(result.items)} "
+                      f"items unparseable. That is a broken run, not a score. "
+                      f"Check the engine was serving throughout.")
+        record = False
     if record:
         with store.Store() as db:
             db.record(store.Run(
@@ -495,9 +793,10 @@ def eval_cmd(
                 scenario="quality:mmlu-pro", accuracy=result.accuracy,
                 items=len(result.items), unparseable=result.unparseable))
         console.print(f"[dim]  recorded as '{label}' (scenario quality:mmlu-pro)[/]")
+        _refresh_panel_snapshot()
 
 
-@app.command()
+@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def fleet() -> None:
     """Show the allowlist: what a deploy installed, where its weights live, and which
     profiles are parked."""
@@ -536,7 +835,7 @@ def fleet() -> None:
         console.print(f"  [yellow]no {act.FLEET_STATE} — this cluster has not been deployed yet.[/]")
 
 
-@app.command()
+@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def teardown(
     webui: bool = typer.Option(False, "--webui", help="also stop Open WebUI + Caddy"),
     break_glass: bool = typer.Option(
@@ -550,7 +849,7 @@ def teardown(
     raise typer.Exit(act.activate(act.EMPTY))
 
 
-@app.command("admin-password")
+@app.command("admin-password", rich_help_panel="Provision — password-gated (sudo -u deploy), control node only")
 def admin_password() -> None:
     """Set the /admin basic_auth password (ADR-0018 turns the panel's auth on).
 
@@ -632,7 +931,7 @@ def _render_status(s: dict) -> None:
     console.print("  " + "   ".join(f"{svc['name']}: {svc['state']}" for svc in s.get("services", [])))
 
 
-@app.command()
+@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def status(
     json_out: bool = typer.Option(False, "--json", help="Emit raw JSON (machine-readable)."),
 ) -> None:
@@ -659,19 +958,31 @@ def status(
     raise typer.Exit(0 if s.get("ok") else 1)
 
 
-@app.command()
+@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def logs(node: str = typer.Argument("head", help="head | worker")) -> None:
     """Follow the vLLM journal on a node."""
     raise typer.Exit(ops.logs(node))
 
 
-@app.command()
+@app.command(rich_help_panel="Develop — repo only, no cluster, no privilege")
 def lint() -> None:
     """Ansible syntax-check + validate the whole allowlist (ADR-0011 Layer 1)."""
+
+    # Repo hygiene, checked here rather than in `Fleet.validate()`: validate() guards the
+    # invariants a DEPLOY would break (unique names, one port, quoting), and it also runs
+    # against synthetic fleets in unit tests. "Every profile says what it is an example
+    # of" is a property of THIS repo's allowlist, and its whole purpose is that tests can
+    # bind to a shape instead of a model name (topology.ARCHETYPES).
+    untagged = [p.name for p in topology.all_profiles() if not p.archetypes]
+    if untagged:
+        console.print(f"[red]lint FAILED[/] — no `archetypes:` on: {', '.join(untagged)}. "
+                      f"Known: {sorted(topology.ARCHETYPES)}")
+        raise typer.Exit(1)
     raise typer.Exit(ops.lint())
 
 
-@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+@app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+             rich_help_panel="Develop — repo only, no cluster, no privilege")
 def test(ctx: typer.Context) -> None:
     """Run the harness unit tests (pytest). Extra args pass through (e.g. -k name, -x)."""
     import pytest
@@ -680,7 +991,7 @@ def test(ctx: typer.Context) -> None:
     raise typer.Exit(int(pytest.main(list(ctx.args))))
 
 
-@app.command()
+@app.command(rich_help_panel="Develop — repo only, no cluster, no privilege")
 def download(
     repo: str = typer.Argument(..., help="HF repo id, e.g. stepfun-ai/Step-3.5-Flash-FP8."),
     dest: str = typer.Argument(None, help="Optional dir name in the inbox."),

@@ -40,11 +40,28 @@ system, so it's worth reading before anything else:
 
 *The agent gets `activate`; humans get `deploy`.*
 
+**`sparky` commands carry a SCOPE**, shown as a group in `--help` and enforced by a test
+(`tests/test_cli_surface.py`) so a new command cannot join without declaring one. The
+scope answers the question you have before you type: *will this ask for my password, and
+can the agent run it?*
+
+| scope | what it means | commands |
+|---|---|---|
+| **Provision** | password-gated (`sudo -u deploy`), control node only | `deploy` `admin-password` |
+| **Operate** | no privilege, agent-drivable, needs a live cluster | `activate` `status` `fleet` `logs` `smoke` `bench` `eval` `sweep` `scoreboard` `report` `topology` `teardown` `probe` |
+| **Develop** | repo only, no cluster, no privilege | `lint` `test` `download` |
+
+That split is ADR-0018's subject, so the *provision* group is deliberately tiny — two
+commands — and a test fails if it grows past three. `check` used to be a third; it is now
+`deploy --check`, because it was `deploy` in every way that mattered (same code path, same
+password gate) while reading like a development command.
+
 ```bash
 # deploy — set the boundary of what MAY run (privileged, human, password-gated)
 ./sparky.sh deploy               # converge the fleet to ansible/profiles/*.yml
 ./sparky.sh deploy --evict       # …and reclaim the disk of de-allowlisted weights
-./sparky.sh check                # dry-run (--check --diff); makes nothing
+./sparky.sh deploy --check       # dry-run (--check --diff); makes nothing
+./sparky.sh deploy --check --evict   # …and what an evicting deploy would delete
 ./sparky.sh admin-password       # set the /admin basic_auth password (once)
 
 # activate — choose what IS running (no root; this is the agent-drivable half)
@@ -59,6 +76,8 @@ system, so it's worth reading before anything else:
 ./sparky.sh logs [head|worker]   # follow a node's vLLM journal
 
 # measure it
+./sparky.sh sweep <spec.yml>     # run a job list end to end (ADR-0016) — resumable
+#   long ones: detach with setsid (skills/operations) — it needs no TTY, unlike deploy
 ./sparky.sh smoke                # gate: readiness + tool-shape + multiturn quality
 ./sparky.sh bench <label>        # run vllm bench serve scenarios → record to the trend store
 ./sparky.sh report <a> <b>       # compare two benchmark labels (direction-aware A/B)
@@ -136,13 +155,39 @@ engines"; `activate` then picks one to serve. Two gestures follow:
 
 *Block to park it; delete the file to evict it.*
 
+**Big-shared (TP=2 across both nodes)** — the shape, not *a* shape. Measured 2026-08-10
+across three paired profiles: TP=2 beats TP=1 on decode (1.34–1.59×), throughput (+41–50%)
+and KV capacity, on every model tried. The `-single` twins were deleted once that landed —
+see [`docs/profile-tuning.md`](docs/profile-tuning.md), which used to claim the opposite.
+
+| Profile | Shape | decode | usable ctx / KV |
+|---|---|---|---|
+| `qwen3-vl-235b-a22b-instruct-nvfp4` | Qwen3-VL-235B — **75.0%** MMLU-Pro subset, vision + tools (`hermes`) | 23.8 tok/s | 131k / 534k |
+| `nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4` | Nemotron-3-Puzzle-75B — hybrid Mamba; **the long-context model** | 32.0 tok/s | 131k / **35.2M** |
+| `nvidia-nemotron-3-super-120b-a12b-nvfp4` | Nemotron-3-Super-120B-A12B — Puzzle's uncompressed upstream; `MIXED_PRECISION` despite the name | *new* | 262k / ~31M est |
+| `qwen3.6-35b-a3b-nvfp4` | Qwen3.6-35B-A3B — the fast generalist | **100.2 tok/s** | 262k / 16.3M |
+| `qwen3-coder-next-nvfp4` | Qwen3-Coder-Next | 54.0 tok/s | 262k / 5.98M |
+| `minimax-m2.7-nvfp4` | MiniMax-M2.7 — soaked 64 min clean; reasons past the eval's cap on 32% of items | 24.9 tok/s | 131k / 449k |
+| `mistral-medium-3.5-128b-nvfp4` | Mistral-Medium-3.5 (`MIXED_PRECISION`, `--tokenizer-mode mistral`) — the European option | — | — |
+| `step-3.7-flash-nvfp4` | **⛔ parked** (`blocked: true`; upstream VL bug, DEF-0006 — re-probed on 26.07, still missing) | — | — |
+
+**Every profile is offering far less context than it holds.** The `usable ctx` column is
+`max_model_len` — a number we chose — against the KV cache actually allocated. Nemotron
+serves 131k out of 35.2M. Raising these is config, not hardware.
+
+**Single-node (TP=1 on snoopy)** — one left, and it is parked. The performance case for this
+shape is gone; the only remaining argument is fleet occupancy, since TP=2 takes both nodes
+and leaves ~24 GiB of dev headroom on sparky rather than the whole box.
+
+None are live. The last one, `qwen3-vl-32b-instruct-nvfp4-single`, was retired on 2026-08-10 —
+not because [DEF-0013](docs/defects.md) still blocks it (it does), but because its niche
+closed: it existed as the cheapest route to vision, and `qwen3-vl-235b-a22b-instruct-nvfp4` serves vision
+*and* tools at 75.0%. Retired configs are kept in
+[`ansible/profiles/retired/`](ansible/profiles/retired/) — the memory math and the verified
+parser names, so reviving one costs no re-derivation.
+
 | Profile | Shape |
 |---|---|
-| `step-3.5-fp8` | Step-3.5-Flash-FP8 TP=2 across both nodes (fully-committed big-shared) — stable |
-| `step-3.7-nvfp4` | Step-3.7-Flash-NVFP4 TP=2 on 26.07 — **⛔ parked** (`blocked: true`; upstream vLLM VL bug, DEF-0006) |
-| `minimax-m2.7-nvfp4` | MiniMax-M2.7-NVFP4 TP=2 across both nodes (big-shared, ~24 GiB/node dev headroom) — soaked 64 min clean on 26.07 |
-| `qwen3-coder-nvfp4-single` | Qwen3-Coder-Next (NVFP4) on snoopy, TP=1 (sparky free for dev) |
-| `qwen3.6-35b-nvfp4-mtp3-single` | Qwen3.6-35B-A3B (NVFP4, **MTP-3**) on snoopy — reasoning-generalist; 2.3× single-stream decode (ADR-0014) |
 | `empty` | nothing serving; full hardware available. Also the **fail-safe target** — always activatable |
 
 Every engine serves on **port 8000**, and at most one is live fleet-wide at a time.
@@ -169,7 +214,7 @@ Two entries today: `Qwen3.5-122B-A10B-FP8` (froze sparky during load — never d
 `metrics.{web_domain}`), and `node-exporter` + `nvidia-gpu-exporter` on both nodes.
 
 **Per-engine**: **one systemd template unit**, `vllm@.service`, instanced per engine —
-`vllm@step-3.5-fp8.service` — with the *same* instance name on every node it spans
+`vllm@qwen3-vl-235b-a22b-instruct-nvfp4.service` — with the *same* instance name on every node it spans
 (head vs. worker is computed from the node's position in the engine's `nodes` list,
 not baked into the name; see ADR-0003). Everything that varies per engine lives in
 `/opt/vllm/engines/<engine>.env`, rendered by `deploy`: image, model, rank, ports,
@@ -293,18 +338,21 @@ All CUDA-linked code runs inside an `nvcr.io/nvidia/vllm` image — the pypi aar
 torch wheel is CPU-only, so a pip/venv install can't serve on this hardware; NVIDIA's
 image ships matching torch + vLLM compiled for sm_121.
 
-**The container is per-profile, and the fleet deliberately spans two of them.**
+**The container is per-profile — and as of 2026-08-10 the fleet is back to one.**
 `vllm_image` in a profile overrides the `group_vars` default, so a container bump is
 adopted model by model rather than fleet-wide — which is what made the 26.07 campaign
-survivable when one model turned out to be a node-killer on it.
+survivable when one model turned out to be a node-killer on it. The mechanism stays; it
+simply has nothing to straddle right now.
 
 | Container | Runs | Why |
 |---|---|---|
-| **26.07-py3** (vLLM 0.24.0, NCCL 2.30.7) — via the derived `dgx-spark/vllm:26.07-xgrammar-fix` | every NVFP4 profile | current. The derived image patches xgrammar (DEF-0010) — NVIDIA shipped it *below* vLLM's own declared minimum, breaking all tool-calling |
-| **26.04-py3** (vLLM 0.19, NCCL 2.29.7) | `step-3.5-fp8` | FP8 works and has no reason to move yet. SM12.1 CUTLASS kernels were broken in 26.03 (fixed in vLLM PR #38126), so 26.04 is the floor |
+| **26.07-py3** (vLLM 0.24.0, NCCL 2.30.7) — via the derived `dgx-spark/vllm:26.07-xgrammar-fix` | **every profile** | current. The derived image patches xgrammar (DEF-0010) — NVIDIA shipped it *below* vLLM's own declared minimum, breaking all tool-calling |
 
 Nothing runs on 26.06 any more: 26.07 fixed its fastapi defect (DEF-0005) and the
-derived image built for it has been deleted. Progress is tracked in
+derived image built for it has been deleted. **26.04 left with `step-3.5-flash-fp8`**, the last
+profile pinned to it — retired on measurement, see
+[`docs/models/tombstones.md`](docs/models/tombstones.md). A single-container fleet is a
+simplification, not a policy: the next model that needs a different image gets one. Progress is tracked in
 [`docs/upgrades/container-nvidia-vllm-26.07-py3.md`](docs/upgrades/container-nvidia-vllm-26.07-py3.md).
 - **Multi-node:** vLLM 0.19 dropped Ray; native multinode uses
   `--nnodes / --node-rank / --master-addr / --headless` over torch.distributed. Both
@@ -406,7 +454,7 @@ bash <repo>/ansible/bootstrap-deploy.sh
 
 # 5. Log out/in (or `newgrp activate`) to pick up the activation group, then choose
 #    what serves. This one needs no password.
-./sparky.sh activate step-3.5-fp8
+./sparky.sh activate qwen3-vl-235b-a22b-instruct-nvfp4
 ```
 
 The `model` role is idempotent (skips install if weights are already at
@@ -484,17 +532,25 @@ rarely matches its own repo name — `Mistral-Medium-3.5-128B-NVFP4` is actually
 change the flags and the memory math. And an architecture the container does not know
 fails minutes into a load rather than in the twenty seconds a probe costs.
 
-For step 5, copy the profile whose *shape* matches: `minimax-m2.7-nvfp4.yml` or
-`step-3.5-fp8.yml` for big-shared TP=2, `qwen3-coder-nvfp4-single.yml` for single-node
-on snoopy.
+For step 5, copy the profile whose *shape* matches — every live profile is big-shared
+TP=2, so start from `minimax-m2.7-nvfp4.yml`, or `nvidia-nemotron-3-super-120b-a12b-nvfp4.yml` when the
+checkpoint is `MIXED_PRECISION` (which the repo name will not tell you). If you genuinely
+need TP=1 to leave a node free, take a config from
+[`ansible/profiles/retired/`](ansible/profiles/retired/) and re-verify its parsers first.
 
 **Removing** is the same mechanism, run backwards: delete the `.yml` and
 `./sparky.sh deploy`. The deploy reports which weights are now unreferenced and
 leaves them alone; `./sparky.sh deploy --evict` deletes them. It will never delete the
 model that is currently serving — if the live profile is the one leaving the
 allowlist, the deploy drives the fleet to `empty` first and waits for the engine to
-stop. Images are left to Docker's GC: shared base layers make convergent image
-deletion unsafe.
+stop. **`--evict` reclaims images too** (since 2026-08-10), converging the image store
+to `container_images` exactly as it converges weights to the allowlist — plus the dangling
+layers that every rebuild of the derived image leaves behind. It was previously claimed
+that shared base layers made this unsafe; that was wrong. Docker refcounts layers, so
+removing an image frees only what nothing else needs, and `docker rmi` refuses outright
+while a container holds it — including the engine serving right now, which is exactly the
+behaviour we want. Those failures are reported, not fatal. The cost of the old belief was
+26.04 and 26.06 sitting on both nodes long after nothing ran them.
 
 One authoring constraint (ADR-0018): a serve flag travels to systemd as one
 single-quoted env value that is re-split on whitespace, with no quote processing.
@@ -624,33 +680,30 @@ changes on deploy.
   practice: a small error message inside a full-screen screenshot may be misread, not
   flagged. Crop to the region of interest. There is no transport limit — the proxy
   passed 12 MB without complaint.
-- **`--kv-cache-dtype fp8` + `--enable-prefix-caching` are disabled on `step-3.5-fp8`**
-  for stable multi-turn operation (Nth-turn garbage / nonstop thinking on vLLM 0.19).
-  Tracked as DEF-0007 ([`docs/defects.md`](docs/defects.md)); re-enabling is governed by
-  ADR-0014's optimization register; use `./sparky.sh bench` to quantify the win once
-  re-enabled.
+- ~~**`--kv-cache-dtype fp8` + `--enable-prefix-caching` disabled**~~ — **resolved
+  2026-08-10.** This was a vLLM 0.19 multi-turn corruption (DEF-0007) carried by
+  `step-3.5-flash-fp8`, the only profile where it was ever observed. Both options ran clean for
+  30 growing-context turns on 0.24.0, and that profile has since been retired along with
+  the 26.04 container, so no configuration can exhibit it. The defect is **closed** —
+  deliberately, rather than watched forever on a shape that no longer exists.
 
 ---
 
 ## Future work
 
-The near-term direction is a **fleet orchestrator**: a single head that autonomously
-sweeps the whole fleet — verify every profile (activate → smoke regression), re-take
-benchmarks across every model (activate → bench → store), and update models.
+The **fleet orchestrator is built** (ADR-0016, accepted 2026-08-10). `./sparky.sh sweep
+<spec.yml>` runs a flat `profile × regiment` job list end to end: exclusive lock so nothing
+else touches the cluster, breadcrumbs after every regiment so an interrupted run resumes
+rather than restarts, and per-profile quarantine so a node-killer costs one activation
+instead of the night. Regiments today: `bench`, `quality`, `tools` (all four `tool_choice`
+shapes — the smoke gate only sends one, which is how DEF-0011 hid), and `soak` (sustained
+concurrency, watching for a stall rather than a crash).
 
-The control model it needed is now **built**: `deploy` + `activate`
-([ADR-0018](docs/adr/0018-provision-select-split.md)) makes a sweep "the human deploys
-the variant set once, then the agent activates across it" — with no privilege, no
-per-step hand-off, and no argument about containment, because the agent genuinely
-cannot provision. What remains is the loop itself, specified as the
-**continuous-evaluation outer loop** in
-[ADR-0016](docs/adr/0016-continuous-evaluation-outer-loop.md): the sweep runner over a
-flat `(profile × variant × regiment)` job list, with durable breadcrumbs so a
-multi-hour run resumes and quarantines a node-killer instead of re-freezing; the
-missing **quality** regiment (an MMLU-Pro/LiveBench-class number, sized as a subset);
-a **soak** regiment long enough to catch the DEF-0002 deadlock class (35–55 min in);
-and node-aware benching. A sweep commandeers the cluster, so human-facing serving is
-suspended for its duration and the promoted model restored at the end.
+What that leaves is a **measurement gap, not a mechanism gap**: there is still no coding
+benchmark, and for software-development work that is the axis that matters most. Every
+off-the-shelf option is contaminated for models this recent — LiveCodeBench, the
+contamination-free one, stopped updating in June 2025 — and a real one needs an execution
+sandbox for untrusted model output. That is the next ADR.
 
 Also: voice mode (STT/TTS) alongside Open WebUI, and re-enabling the tabled perf
 options (ADR-0014).

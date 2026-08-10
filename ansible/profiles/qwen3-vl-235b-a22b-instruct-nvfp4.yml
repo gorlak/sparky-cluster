@@ -1,7 +1,7 @@
 ---
 # Qwen3-VL-235B-A22B-Instruct (NVFP4) — TP=2 across both nodes. Vision at scale.
 #
-# The big-shared sibling of `qwen3-vl-32b-nvfp4-single`: same family and flags, ~6× the
+# The big-shared sibling of `qwen3-vl-32b-instruct-nvfp4-single`: same family and flags, ~6× the
 # parameters. Bring the 32B up FIRST — it proves the architecture, the quant path and the
 # parser names on one node for 21 GiB, and everything learned there transfers here.
 #
@@ -16,16 +16,20 @@
 #
 # FLAGS MINIMAL for the same reason as the 32B — parser names pending
 # `./sparky.sh probe parsers`.
-profile_name: qwen3-vl-235b-nvfp4
+# ONE NAME. profile == engine == served_as == the lowercased canonical HF model
+# name, so the scoreboard, the systemd unit, the API and huggingface.co all agree.
+# `hf_repo` is the exact upstream id for eyeball-matching against the Hub.
+profile_name: qwen3-vl-235b-a22b-instruct-nvfp4
+hf_repo: nvidia/Qwen3-VL-235B-A22B-Instruct-NVFP4
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [big-shared, tool-calling, vision]
 vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
 serving_topology:
-  - name: qwen3-vl-235b-nvfp4
+  - name: qwen3-vl-235b-a22b-instruct-nvfp4
     kind: vllm
-    nodes: [sparky, snoopy]      # nodes[0]=sparky is rank 0 / the API host
-    port: 8000
     model: Qwen3-VL-235B-A22B-Instruct-NVFP4
-    served_as: qwen3-vl-235b
-    tensor_parallel_size: 2
+    served_as: qwen3-vl-235b-a22b-instruct-nvfp4
     gpu_memory_utilization: "0.80"
     max_model_len: 131072
     head_extra_args:

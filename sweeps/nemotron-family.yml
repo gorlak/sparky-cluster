@@ -1,0 +1,21 @@
+# Does NVIDIA's NAS compression cost quality?
+#
+# Puzzle is the compressed derivative of Super — same NemotronH hybrid family, one
+# variable. That makes it the one true PAIR in the fleet, and the shape that produced our
+# best result this week (TP=1 vs TP=2, three models, one variable each).
+#
+# The decision rule was agreed before the numbers exist, which is the point:
+#   Super clearly more accurate -> it earns 19% less context and slower decode; drop Puzzle
+#   they tie                    -> compression is free; drop SUPER, keep the smaller model
+#   Puzzle more accurate        -> drop Super; this quant is not worth the disk
+# Two of three outcomes retire something.
+#
+# Super has NEVER been activated. `NemotronHForCausalLM` probes true, but that only proves
+# vLLM knows the name — the first activation is the real test, which is why `tools` runs
+# before the long regiments rather than after.
+name: nemotron-family-r1
+defaults:
+  regiments: [tools, bench, quality]
+jobs:
+  - profile: nvidia-nemotron-3-super-120b-a12b-nvfp4
+  - profile: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4

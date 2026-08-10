@@ -1,0 +1,57 @@
+---
+# qwen3-coder-next-nvfp4 — the TP=2 twin of `qwen3-coder-next-nvfp4-single`, existing ONLY to measure
+# what tensor parallelism costs and buys for a model that fits on one node.
+#
+# THE QUESTION. Our tuning doc asserts that cross-node TP=2 for a small model "only
+# costs decode throughput", because the two Sparks have no NVLink and every layer pays
+# an all-reduce over RoCE. That was reasoned, never measured — and it only addresses
+# SPEED. It says nothing about the other side of the trade:
+#
+#   weights shard across both nodes, so KV capacity roughly 2.5x
+#   -> much longer usable context, which is the binding constraint for
+#      long-document and whole-codebase work
+#
+# So: paired rows, one variable. `bench` gives the decode cost (TPOT) and the prefill
+# gain (TTFT); `context_capacity` gives the KV tokens actually available. Together they
+# answer whether "big-shared" should mean big models only, or any model, for the cache.
+#
+# gmu rises from 0.55 to 0.80: with the weights halved per node there is room
+# to spend, and spending it on KV is the entire point of the experiment.
+#
+# ANSWERED 2026-08-10 — this profile WON and its `-single` twin is retired
+# (config kept in profiles/retired/). Measured back to back on the ADR-0016
+# harness: 1.47x decode (TPOT 26.5 -> 18.0 ms), +41% throughput, 7.6x KV.
+# The tuning doc asserted cross-node TP=2 "only costs decode throughput" for a
+# model this size; it was reasoned from having no NVLink and is wrong. GB10 decode
+# is MEMORY-BANDWIDTH bound, so sharding weights across two nodes buys more than
+# the RoCE all-reduce costs. See docs/profile-tuning.md.
+# Caveat kept honest: the pair differed in TWO variables (TP and gmu 0.55->0.80),
+# so the KV multiple overstates the pure TP effect; the speed rows do not.
+# ONE NAME. profile == engine == served_as == the lowercased canonical HF model
+# name, so the scoreboard, the systemd unit, the API and huggingface.co all agree.
+# `hf_repo` is the exact upstream id for eyeball-matching against the Hub.
+profile_name: qwen3-coder-next-nvfp4
+hf_repo: RedHatAI/Qwen3-Coder-Next-NVFP4
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [big-shared, tool-calling]
+# ON 26.07 (2026-08-08). This profile has NO spec-decode, so unlike the qwen3.6
+# canary it does NOT mask DEF-0003 — activating it runs FULL_AND_PIECEWISE
+# cudagraphs for the first time ever on GB10. That is the point: it is the DEF-0003
+# experiment. Run it AFTER the canary proves the container itself is sound.
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
+serving_topology:
+  - name: qwen3-coder-next-nvfp4
+    kind: vllm
+    model: Qwen3-Coder-Next-NVFP4
+    served_as: qwen3-coder-next-nvfp4
+    gpu_memory_utilization: "0.80"
+    max_model_len: 262144
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --enable-auto-tool-choice
+      - --tool-call-parser qwen3_coder
+    worker_extra_args:
+      - --enable-chunked-prefill
+
+

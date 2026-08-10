@@ -43,7 +43,7 @@ deploy` repairs it.
 
 ```bash
 ./sparky.sh activate                    # what's live, and what's activatable
-./sparky.sh activate qwen3-coder-nvfp4-single   # make it live
+./sparky.sh activate qwen3-vl-235b-a22b-instruct-nvfp4        # make it live
 ./sparky.sh activate empty              # stop serving; free the hardware
 ```
 
@@ -91,10 +91,10 @@ print("go" if s["ok"] else ("wait — "+s["phase"] if s["phase"]=="loading" else
 `--json` shape (`/admin/status.json` on the panel):
 
 ```json
-{ "has_topology": true, "ok": true, "phase": "serving", "profile": "step-3.5-fp8",
-  "requested": "step-3.5-fp8", "pending": [],
+{ "has_topology": true, "ok": true, "phase": "serving", "profile": "qwen3-vl-235b-a22b-instruct-nvfp4",
+  "requested": "qwen3-vl-235b-a22b-instruct-nvfp4", "pending": [],
   "deployed_at": "2026-08-04T00:16:49Z", "failsafe": false,
-  "engines": [ { "name": "step-3.5-fp8", "kind": "vllm", "api_ok": true,
+  "engines": [ { "name": "qwen3-vl-235b", "kind": "vllm", "api_ok": true,
                  "model": "step-3.5-flash", "failsafe": false,
                  "nodes": [ { "node": "sparky", "state": "active", "failsafe": false },
                             { "node": "snoopy", "state": "active", "failsafe": false } ] } ],
@@ -146,6 +146,41 @@ don't treat a stale-looking file as evidence.
   `./sparky.sh smoke` (~2 min/engine — actually exercises the model; use when you need
   a fresh quality verdict, not just liveness).
 - "What could we run?" → `./sparky.sh fleet`.
+
+## Run a long sweep without your session holding it up
+
+A sweep commandeers the cluster for hours — it activates one profile after another, so
+serving is whatever it is currently measuring. Two consequences.
+
+**Detach it.** Unlike `deploy`, a sweep needs no TTY (it is unprivileged — no sudo
+password to type), so it can simply be backgrounded. A dropped SSH session sends SIGHUP
+and would otherwise kill it mid-regiment:
+
+```bash
+setsid nohup ./sparky.sh sweep sweeps/nemotron-family.yml > /opt/cluster/sweep.log 2>&1 &
+```
+
+**Then check on it from anywhere**, including a fresh shell after the connection dropped.
+This reads the breadcrumbs on disk, so it is accurate even if the process that wrote them
+is gone:
+
+```bash
+python3 -c "from sparky import sweep; print(sweep.holder() or 'no sweep running'); print(sweep.progress(sweep.load_state()))"
+```
+
+```bash
+tail -f /opt/cluster/sweep.log
+```
+
+**Being killed is safe, and that is deliberate.** Breadcrumbs are written after every
+*regiment*, so re-running resumes rather than restarts — a 45-minute soak is never repeated
+because the bench after it died. The exclusive lock expires after six hours, so a killed
+run does not block the next one forever; if you know it is dead sooner, delete
+`/opt/cluster/sweep.lock`.
+
+**Do not start a second sweep.** It will refuse, and that refusal is the point: two sweeps
+interleaving activations would each measure whatever the other last activated, and the
+numbers would look fine while belonging to no configuration.
 
 ## See also
 

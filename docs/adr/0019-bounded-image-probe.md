@@ -26,7 +26,7 @@ each one became a request for geoff to paste a `sudo docker run …` line. Over 
 inverted the cost gradient the checklists depend on: a probe that should cost seconds
 cost a human round-trip, so the tempting shortcut was to skip it and let a failed
 activation be the test. On 2026-08-08 that is exactly what happened — the
-`mistral-medium-3.5-nvfp4` profile was written against an **unverified** architecture
+`mistral-medium-3.5-128b-nvfp4` profile was written against an **unverified** architecture
 because verifying it was more expensive than trying it.
 
 Two non-answers were considered first, because they are the obvious ones:

@@ -8,6 +8,32 @@
   ansible.builtin.set_fact:
     _p: "{{ lookup('file', profile_path) | from_yaml }}"
 
+# Engine defaults, so a profile states only what makes it DIFFERENT. Since 2026-08-10
+# every serving profile is TP=2 across both nodes on port 8000; repeating that in eight
+# files was ceremony, and it hardcoded hostnames into files with no business knowing
+# them — adding a third node would have been an edit to every profile.
+#
+# `combine` with the DEFAULTS as the base is what makes them lose to anything the profile
+# states: the retired single-node configs keep `nodes: [snoopy]` and `tensor_parallel_size: 1`
+# and are unaffected. Node order is head-then-workers because `nodes[0]` is rank 0, the API
+# host and the NCCL master (ADR-0003) — the same order `topology.fleet_nodes()` derives, from
+# this same inventory, so the two readers cannot disagree about what an omitted value means.
+- name: Reset the engine accumulator for {{ profile_path | basename }}
+  ansible.builtin.set_fact:
+    _norm: []
+
+- name: Apply engine defaults for {{ profile_path | basename }}
+  ansible.builtin.set_fact:
+    _norm: "{{ _norm + [_engine_defaults | combine(item)] }}"
+  loop: "{{ _p.serving_topology | default([]) | selectattr('kind', 'defined') | selectattr('kind', 'equalto', 'vllm') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    _engine_defaults:
+      nodes: "{{ groups['head'] + (groups['worker'] | default([])) }}"
+      port: 8000
+      tensor_parallel_size: "{{ (groups['head'] + (groups['worker'] | default([]))) | length }}"
+
 - name: Register {{ profile_path | basename }} in the fleet
   ansible.builtin.set_fact:
     fleet_profiles: "{{ fleet_profiles | default([]) + [_entry] }}"
@@ -16,7 +42,7 @@
     _pname: "{{ _p.profile_name | default(profile_path | basename | regex_replace('\\.ya?ml$', '')) }}"
     _blocked: "{{ _p.blocked | default(false) | bool }}"
     _image: "{{ _p.vllm_image | default(vllm_image) }}"
-    _vllm: "{{ _p.serving_topology | default([]) | selectattr('kind', 'defined') | selectattr('kind', 'equalto', 'vllm') | list }}"
+    _vllm: "{{ _norm }}"
     # Per-engine provenance: which profile selects it, which image it runs, and
     # whether that profile is parked. Carried on the engine so the vllm role can
     # render an env file from the engine alone.

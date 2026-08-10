@@ -8,22 +8,25 @@
 # on the same cluster. Whatever a profile selects must be listed in `container_images`
 # below, which the `images` role guarantees present on every node (ADR-0013).
 #
-# Default 26.04 (vLLM 0.19, NCCL 2.29.7) is the stable, known-good image. AWQ /
-# compressed-tensors MoE models (minimax, step-3.5) MUST stay here — 26.06 hangs loading
-# them (Marlin-MoE load bug on sm_121). 26.06 (needed for NVFP4) is opt-in per profile:
-# profiles/step-3.7-nvfp4.yml pins it. Full story + WAR register + fail-safe boot (ADR-0009):
-# docs/upgrades/container-nvidia-vllm-26.06-py3.md.
-# Referenced by DIGEST, not by tag. `docker pull repo@sha256:…` creates no local tag,
-# so a unit that ran `…:26.04-py3` would, on a fresh node, find nothing and trigger an
-# unpinned runtime pull — reintroducing the very drift ADR-0013 pins against. Pull and
-# run must name the same immutable thing.
-vllm_image: nvcr.io/nvidia/vllm@sha256:98494fdaea68ad892c107180b0be41c99caa3c77683175becc4e202b2cb75b27  # :26.04-py3 — vLLM 0.19
-# The 26.06 base the derived image builds FROM (its Dockerfile pins the same digest).
-vllm_image_2606: nvcr.io/nvidia/vllm@sha256:6e537fc8d84beb9b60e789236168141d2ef4420bc28cbb85ec7d4318ca918b6c  # :26.06-py3 — vLLM 0.22.1
-# 26.07: vLLM 0.24.0, NCCL 2.30.7, and fastapi CAPPED at 0.136.3 — which is what lets
-# the derived 26.06-fastapi-fix image be retired once every NVFP4 profile has moved.
-# Being rolled out per-profile (ADR-0013), not as the default, so a bad 26.07 can only
-# affect the profiles that opted in. See docs/upgrades/container-nvidia-vllm-26.07-py3.md.
+# THE DEFAULT IS THE CURRENT IMAGE. It used to be 26.04 (vLLM 0.19) while the fleet
+# straddled containers; as of 2026-08-10 every profile runs the derived 26.07 image and
+# `step-3.5-flash-fp8` — the last 26.04 profile — was retired. A default nobody selects is not
+# harmless: a new profile that forgot `vllm_image:` would silently inherit vLLM 0.19, two
+# releases behind everything we test against. The per-profile override (ADR-0013) is what
+# makes a container bump adoptable model by model and it stays; what changed is only which
+# image you get by saying nothing.
+#
+# This default is a BUILT image, not a pulled one, so it is absent from the `pull:` list
+# below — the `build:` entry is what guarantees it on every node.
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
+# 26.07 upstream: vLLM 0.24.0, NCCL 2.30.7. Pulled because the derived image builds FROM
+# this exact digest — roles/images/files/vllm-26.07-xgrammar-fix/Dockerfile pins the same
+# one, and the two must not drift. Referenced by DIGEST, not tag: `docker pull repo@sha…`
+# creates no local tag, so a unit naming `:26.07-py3` would find nothing on a fresh node
+# and trigger an unpinned runtime pull — the drift ADR-0013 exists to prevent.
+#
+# 26.06 was dropped 2026-08-10: nothing ran it and nothing built from it, yet every deploy
+# pulled it to both nodes.
 vllm_image_2607: nvcr.io/nvidia/vllm@sha256:95c498a475142c20c989c65e5d223348c09fed83ba17ddf44f117610c0bd3268  # :26.07-py3 — vLLM 0.24.0
 
 # Container images required on every node (ADR-0013), ensured by the `images` role
@@ -45,8 +48,7 @@ vllm_image_2607: nvcr.io/nvidia/vllm@sha256:95c498a475142c20c989c65e5d223348c09f
 # the pull, the compose file and the unit can never disagree.
 container_images:
   # --- serving: any node may run any engine, so these go everywhere -------------
-  - pull: "{{ vllm_image }}"
-  - pull: "{{ vllm_image_2606 }}"
+  # Only the build BASE is pulled; the image every profile runs is built below.
   - pull: "{{ vllm_image_2607 }}"
   # dgx-spark/vllm:26.07-xgrammar-fix — 26.07 + `xgrammar>=0.2.1` WAR for DEF-0010 (see
   # the Dockerfile). Built locally, so it has no registry digest to pin. Replaces the
@@ -270,3 +272,9 @@ landing_services:
   - name: Metrics
     url: "http://metrics.{{ web_domain }}"
     blurb: "Grafana dashboards — throughput, GPU, latency"
+  # Open, unlike /admin: this is measurement, not control. Grafana answers "how is the
+  # live model doing right now"; the scoreboard answers "which model should be serving",
+  # which is not a time series and has no home in Grafana.
+  - name: Scoreboard
+    url: "/scoreboard"
+    blurb: "Every model side by side — accuracy, speed, context, nodes used"

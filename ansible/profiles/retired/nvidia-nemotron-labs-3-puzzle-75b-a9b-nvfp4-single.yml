@@ -1,4 +1,12 @@
 ---
+# ⚰️ RETIRED 2026-08-10 — NOT IN THE ALLOWLIST. Loaders glob profiles/*.yml
+#    non-recursively, so nothing here installs, serves, or keeps weights.
+#    Why: the TP=1 shape lost: its TP=2 twin measured 1.59x decode, +50% throughput and 4.65x KV.
+#    Verdict is owned by docs/models/tombstones.md; this file keeps only the
+#    CONFIG and what was learned building it. Re-verify parsers, architecture
+#    and quant algo before reviving — all three have cost a deploy when assumed.
+#    See ansible/profiles/retired/README.md.
+#
 # NVIDIA Nemotron-3-Puzzle-75B-A9B (NVFP4) on snoopy, TP=1.
 #
 # WHY: a US/NVIDIA model — a third ecosystem alongside the Chinese incumbents and the
@@ -27,15 +35,18 @@
 # (`hermes`, `pythonic`) are unverified for this model. A wrong name is a refusal to
 # start, and it costs a whole deploy to discover, so this profile serves without tools
 # until one is confirmed. Plain chat and reasoning are unaffected.
-profile_name: nemotron-3-puzzle-75b-nvfp4-single
+profile_name: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4-single
+hf_repo: nvidia/NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [single-node]
 vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
 serving_topology:
-  - name: nemotron-3-puzzle-snoopy
+  - name: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4-single
     kind: vllm
     nodes: [snoopy]
-    port: 8000
     model: NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4
-    served_as: nemotron-3-puzzle
+    served_as: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4-single
     tensor_parallel_size: 1
     gpu_memory_utilization: "0.65"
     max_model_len: 131072

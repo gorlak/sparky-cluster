@@ -10,7 +10,7 @@ one — see ADR-0018's errata for why that hole exists and why it is left open. 
 the 2026-08-08 bring-ups showed both are load-bearing capabilities that nothing scored,
 and three of four failures that evening were in the vision path. Same revision: the
 **tuning knobs are named as the variant axis `soak` exists to validate**.)
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
@@ -73,10 +73,10 @@ defaults:                        # merged into each job — the one non-literal 
     - tools                        # all four tool_choice shapes, not just liveness
     - soak: {minutes: 10}
 jobs:                            # explicit, reviewed as-is — what you read is what runs
-  - profile: mistral-medium-3.5-nvfp4    # DEF-0002-risky TP=2/26.06 → carries the long soak
+  - profile: mistral-medium-3.5-128b-nvfp4    # DEF-0002-risky TP=2/26.06 → carries the long soak
     variant: base
     regiments: [smoke, {bench: [latency, throughput, prefix]}, {soak: {minutes: 45}}]
-  - {profile: mistral-medium-3.5-nvfp4,   variant: fp8-kv+prefix}
+  - {profile: mistral-medium-3.5-128b-nvfp4,   variant: fp8-kv+prefix}
   - {profile: nemotron-puzzle-75b-single, variant: base}
   - {profile: nemotron-puzzle-75b-single, variant: mtp}
 ```
@@ -135,7 +135,7 @@ jobs:                            # explicit, reviewed as-is — what you read is
       A text-only model scores `n/a`, never a failure.
 
     The 2026-08-08 evidence for making this first-class: `mistral-medium-3.5` (DEF-0012)
-    and `step-3.7-nvfp4` (DEF-0006) both **fail before serving** on a vision processor, and
+    and `step-3.7-flash-nvfp4` (DEF-0006) both **fail before serving** on a vision processor, and
     `qwen3.6-35b` serves vision *today* while being deliberately run text-first. None of
     that was visible to any regiment.
   - **`tools`** — does tool calling actually work, across the shapes callers send? Not the
@@ -215,3 +215,68 @@ and the authorization/trust boundary are all in **[ADR-0018](0018-provision-sele
 Status flips to **Accepted** when a first human-kicked sweep runs end to end (deploy the
 set → activate → soak → eval → bench → record → next, with quarantine). Build/progress tracking
 lives in README / TODO, not this status.
+
+---
+
+## Errata — 2026-08-10, on acceptance: what shipped, and two things that did not
+
+Accepted with the runner built (`sparky/sweep.py`, `./sparky.sh sweep <spec>`). Recording
+the deltas here rather than editing the decision above, so the original reasoning stays
+readable.
+
+### The `variant` axis was dropped — ADR-0018 removed the thing it varied
+
+The job list was specified as `profile × variant × regiment`, where a variant was a flag
+set (`variant: fp8-kv+prefix`). **That cannot exist.** ADR-0018 moved serve flags into
+deploy-rendered engine env files, so changing one is a privileged, password-gated deploy —
+precisely what an unattended agent-driven sweep cannot do. This ADR was written first and
+scoped afterwards; the axis is a leftover from before the split.
+
+A variant IS a profile. That is already how we express an A/B: `qwen3.6-35b-a3b-nvfp4`
+beside `qwen3.6-35b-a3b-nvfp4-mtp3-single`, one variable apart, compared by label in the
+trend store. The ADR's own claim that "optimization A/Bs are just paired rows" survives —
+it is the *rows* that are paired, and a row is a profile.
+
+### `livebench` was dropped from the `quality` regiment
+
+Specified as `quality: [mmlu-pro, livebench]`. Only `mmlu-pro` shipped, and the second
+should not be added on the same terms. Investigating a coding benchmark on 2026-08-10
+established that **every off-the-shelf set is contaminated for models this recent**:
+LiveCodeBench — the contamination-free option — stopped updating in June 2025, so its
+newest problems predate every model we serve. A benchmark whose headline property has
+expired is worse than none, because the number still looks authoritative.
+
+The regiment mechanism is pluggable and unchanged; what is missing is a dataset worth
+plugging in. **We still have no measurement of coding ability**, which for this cluster's
+operator is the most decision-relevant axis there is. That gap is now the largest one in
+the loop and belongs to a future ADR, along with the execution sandbox it requires.
+
+### What the runner is, concretely
+
+Four features, and each is here because of a specific incident during the 2026-08-09/10
+campaign, when the sweep was a bash script in `/tmp`:
+
+| feature | the incident |
+|---|---|
+| flat job list, enumerated | three scripts rewritten for one campaign |
+| breadcrumbs, per **regiment** | a brownout landed mid-run; a finished 25-min eval was re-run |
+| quarantine, per **profile** | DEF-0004 froze a node during weight load — a retry costs the night |
+| exclusive lock | a stray manual bench overlapped the sweep's own and silently contaminated a TP=1 baseline |
+
+Two bugs found while building it, both worth recording because they are the same class —
+*a mechanism defeating its own purpose*:
+
+- `soak` used `with ThreadPoolExecutor(...)`, whose exit calls `shutdown(wait=True)` — so
+  the regiment built to **detect** a hang would itself hang on the request it had just
+  detected as stuck, holding the whole sweep behind it.
+- The readiness check in the throwaway script polled the head's IP, while single-node
+  profiles serve on snoopy by design. It would have completed **green** having measured
+  three TP=2 profiles with no TP=1 baselines to compare them against.
+
+Neither was caught by a passing test suite, because neither had a test. Both do now.
+
+### Still outstanding, deliberately
+
+`tools` and `soak` ship as regiments but have never run against hardware — the fleet was
+mid-rename when they were written. The first real sweep (`sweeps/nemotron-family.yml`) is
+their first exercise, and it should be read as testing the runner as much as the models.

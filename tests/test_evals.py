@@ -169,3 +169,116 @@ def test_a_failed_rescue_still_counts_as_wrong(monkeypatch):
     item = result.items[0]
     assert item.truncated and not item.rescued and not item.ok
     assert result.unparseable == 1
+
+
+def test_the_rescue_fires_when_truncation_left_no_text_at_all(monkeypatch):
+    """The bug this fixes: a reasoning model that hits the cap without closing its
+    </think> block returns EMPTY content — vLLM cannot split an unclosed block. The
+    rescue required text to feed back, so it skipped exactly the case it existed for
+    (14 of 28 items on 2026-08-09)."""
+    monkeypatch.setattr(evals, "load_items", lambda limit=None, path=None: [
+        {"id": 1, "category": "math", "question": "q", "options": ["x"] * 4, "answer": "C"}])
+    client = _Client("", "length", followup_text="C")
+    result = evals.run(client, "m", limit=1, concurrency=1)
+    item = result.items[0]
+    assert item.truncated and item.rescued and item.ok
+    assert client.calls == 2
+
+
+def test_timeouts_are_counted_separately_from_wrong_answers():
+    """41 of MiniMax's 140 items were ReadTimeouts at a flat 600s client ceiling on
+    2026-08-09 — scored as wrong, costing ~29 points that were never about the model.
+    A harness failure must be visible as one."""
+    result = evals.EvalResult(items=[
+        evals.ItemResult(0, "math", "A", None, False, 600.0, finish="error:ReadTimeout"),
+        evals.ItemResult(1, "math", "B", "B", True, 3.0, finish="stop"),
+    ])
+    assert result.timed_out == 1
+    assert result.unparseable == 1
+
+
+def test_the_rescue_budget_assumes_nothing_about_thinking_being_disabled():
+    """The retry asks for thinking off via `chat_template_kwargs` — a Qwen convention.
+    StepFun's Step-3.5 ignores it and kept reasoning, so a 512-token retry truncated on
+    all 58 of its truncated items and rescued none. The budget must survive a model that
+    does not obey."""
+    assert evals.FOLLOWUP_MAX_TOKENS >= 2048
+
+
+# --- streaming the first attempt (2026-08-10) --------------------------------
+
+class _StreamClient:
+    """A reasoning model that blows the cap without closing `</think>`.
+
+    Non-streaming, vLLM hands back EMPTY content for this; streaming yields every delta.
+    """
+
+    def __init__(self, streamed, finish="length", followup_text="Answer: C"):
+        self.streamed, self.finish, self.followup_text = streamed, finish, followup_text
+        self.seen_followup = None
+
+    def stream_text(self, messages, model, **kw):
+        if len(messages) > 1:                       # the rescue turn
+            self.seen_followup = messages
+            return self.followup_text, "stop"
+        return self.streamed, self.finish
+
+    def chat(self, messages, model, **kw):
+        self.seen_followup = messages
+        return type("R", (), {
+            "content": self.followup_text, "reasoning_content": None, "status_code": 200,
+            "raw": {"choices": [{"finish_reason": "stop"}]}})()
+
+
+def _one_item(monkeypatch):
+    monkeypatch.setattr(evals, "load_items", lambda limit=None, path=None: [
+        {"id": 1, "category": "math", "question": "q", "options": ["x"] * 4, "answer": "C"}])
+
+
+def test_streaming_preserves_reasoning_that_non_streaming_would_drop(monkeypatch):
+    """THE FIX: 58 of Step-3.5's 59 truncations returned empty content non-streaming,
+    starving the rescue that works 100% of the time when it has text."""
+    _one_item(monkeypatch)
+    client = _StreamClient("long unclosed <think> reasoning, no verdict")
+    result = evals.run(client, "m", limit=1, concurrency=1)
+    item = result.items[0]
+    assert item.truncated and item.rescued and item.ok
+    # the rescue got the model's own working handed back, not a bare re-ask
+    assert any(m["role"] == "assistant" for m in client.seen_followup)
+
+
+def test_the_reply_tail_is_captured_from_the_stream(monkeypatch):
+    """Diagnosis depends on it: an aggregate that cannot be audited is not evidence."""
+    _one_item(monkeypatch)
+    client = _StreamClient("partial working here")
+    result = evals.run(client, "m", limit=1, concurrency=1)
+    assert "partial working here" in (result.items[0].reply_tail or "")
+
+
+def test_a_client_without_streaming_still_works(monkeypatch):
+    """The fallback keeps the regiment runnable against any client shape."""
+    _one_item(monkeypatch)
+    client = _Client("Answer: C", "stop")
+    assert evals.run(client, "m", limit=1, concurrency=1).items[0].ok
+
+
+def test_the_rescue_streams_too(monkeypatch):
+    """Streaming ONLY the first attempt fixed nothing measurable (2026-08-10): empty
+    truncations went 58/59 -> 0/8, and then the rescue returned empty 8 times out of 8.
+    A model that reasons past the cap once does it again on the retry, so both call
+    sites need the stream."""
+    _one_item(monkeypatch)
+
+    class _RescueStreams(_StreamClient):
+        def __init__(self):
+            super().__init__("unclosed reasoning")
+            self.chat_calls = 0
+
+        def chat(self, messages, model, **kw):      # must NOT be reached
+            self.chat_calls += 1
+            raise AssertionError("rescue fell back to non-streaming chat")
+
+    client = _RescueStreams()
+    result = evals.run(client, "m", limit=1, concurrency=1)
+    assert client.chat_calls == 0
+    assert result.items[0].rescued and result.items[0].ok

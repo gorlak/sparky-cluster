@@ -54,6 +54,20 @@ http://metrics.{{ web_domain }} {
 		reverse_proxy 127.0.0.1:{{ control_panel_port }}
 	}
 
+	# The fleet scoreboard — measurement results, open like the health sliver above.
+	#
+	# It lived under /admin only because that is where the panel is mounted, which put
+	# read-only benchmark data behind the ACTIVATION gate. Those are different things:
+	# basic_auth on /admin exists because the panel can change what is serving (ADR-0018),
+	# and nothing here can. This route is a single exact path — NOT a prefix — so opening
+	# it exposes one GET that renders a JSON file, rather than the panel's whole surface.
+	#
+	# Deliberately no auth: a scoreboard you have to log in to read is a scoreboard nobody
+	# reads, and every number on it is an aggregate about models we chose to run.
+	handle /scoreboard {
+		reverse_proxy 127.0.0.1:{{ control_panel_port }}
+	}
+
 	# Control panel at /admin (prefix stripped before proxying). ADR-0008 built this
 	# auth seam and deferred it while the panel was human-only behind the firewall;
 	# ADR-0018 turns it ON — the panel is now deliberately agent-drivable and holds

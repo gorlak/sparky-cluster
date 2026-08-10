@@ -1,6 +1,6 @@
 ---
-# Profile: step-3.7-nvfp4 — Step-3.7-Flash-NVFP4, big-shared TP=2 across sparky + snoopy.
-# The successor candidate to `step-3.5-fp8` (activate each in turn to A/B; both are
+# Profile: step-3.7-flash-nvfp4 — Step-3.7-Flash-NVFP4, big-shared TP=2 across sparky + snoopy.
+# The successor candidate to `step-3.5-flash-fp8` (activate each in turn to A/B; both are
 # full-cluster TP=2, so the comparison is sequential).
 #
 # ⛔ PARKED (`blocked: true` below) — tracked as DEF-0006 (docs/defects.md).
@@ -17,7 +17,13 @@
 #   Full story: docs/upgrades/container-nvidia-vllm-26.06-py3.md and
 #   docs/upgrades/profile-step-3.7-flash.md. Weights already staged on both nodes.
 
-profile_name: step-3.7-nvfp4
+# ONE NAME. profile == engine == served_as == the lowercased canonical HF model
+# name, so the scoreboard, the systemd unit, the API and huggingface.co all agree.
+# `hf_repo` is the exact upstream id for eyeball-matching against the Hub.
+profile_name: step-3.7-flash-nvfp4
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [big-shared, vision]
 
 # Parked (ADR-0018). Every `deploy` still installs this profile's weights and engine
 # env files — so re-testing when the fix lands costs no download — but it is left OUT
@@ -36,13 +42,10 @@ blocked: true
 vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 
 serving_topology:
-  - name: step-3.7-nvfp4
+  - name: step-3.7-flash-nvfp4
     kind: vllm
-    nodes: [sparky, snoopy]      # order = ranks; nodes[0] is rank 0 / the API host
-    port: 8000
     model: Step-3.7-Flash-NVFP4  # dir under /opt/vllm/models (stage first — see PREREQ)
-    served_as: step-3.7-flash
-    tensor_parallel_size: 2
+    served_as: step-3.7-flash-nvfp4
     # NVFP4 is ~62 GiB/shard → "big-shared with headroom": gmu 0.75 leaves ~30 GiB/node
     # free. See docs/models/step-3.7-flash.md.
     gpu_memory_utilization: "0.75"

@@ -79,7 +79,7 @@ integration is explicitly **out of scope**.
      set is running and pruned units are gone. Also cover the **GPU-teardown race**
      (found 2026-07-03): switching *off* a memory-heavy engine and immediately
      bringing up the next can race the old engine's GPU-context/memory release
-     against the new engine's CUDA init. Concretely — `step-3.5-fp8` (holding
+     against the new engine's CUDA init. Concretely — `step-3.5-flash-fp8` (holding
      ~97 GiB on the head) → `qwen3-coder-nvfp4-dual`: sparky's incoming engine
      **crashed on its first load attempt** (`cudaErrorIllegalInstruction` /
      `CUBLAS_STATUS_INTERNAL_ERROR`) and only succeeded after `Restart=on-failure`

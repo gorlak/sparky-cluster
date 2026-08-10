@@ -8,6 +8,7 @@ and probe the tool-call shape Open WebUI actually sends.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 
@@ -122,6 +123,118 @@ class VllmClient:
             raw=data,
             status_code=r.status_code,
         )
+
+    def stream_chat(self, messages: list[dict], model: str, *, max_tokens: int = 128,
+                    temperature: float = 0.0, extra: dict | None = None):
+        """Yield `(monotonic_time, text)` per streamed delta.
+
+        **Benchmarking needs this and non-streaming cannot provide it.** TTFT is the wait
+        for the FIRST token and inter-token latency is the gap between consecutive ones;
+        a single blocking response collapses both into one number, which is why the old
+        regiment had to shell into the container and let `vllm bench serve` do it.
+        Against the stable endpoint (ADR-0016) an SSE stream gives the same timings with
+        no root, no docker, and no head-locality.
+
+        The timestamps are taken as each chunk arrives, so they include network time —
+        which is correct: we are measuring what a client experiences, not what the engine
+        privately achieved.
+        """
+        body: dict = {
+            "model": model, "messages": messages, "max_tokens": max_tokens,
+            "temperature": temperature, "stream": True,
+        }
+        if extra:
+            body.update(extra)
+        with self._client.stream("POST", "/v1/chat/completions", json=body) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(payload)["choices"][0]["delta"]
+                except (ValueError, KeyError, IndexError):
+                    continue
+                # vLLM 0.24.0 streams `reasoning` where the non-streaming API returns
+                # `reasoning_content` — checking only the latter made a reasoning
+                # model's entire output invisible and every bench request "fail" with
+                # zero tokens. Reasoning tokens ARE decode work, so they must be timed.
+                text = (delta.get("content") or delta.get("reasoning")
+                        or delta.get("reasoning_content") or "")
+                if text:
+                    yield time.monotonic(), text
+
+    def stream_text(self, messages: list[dict], model: str, *, max_tokens: int = 128,
+                    temperature: float = 0.0, extra: dict | None = None
+                    ) -> tuple[str, str | None]:
+        """Collect a streamed reply as `(text, finish_reason)`.
+
+        **Why the quality regiment must stream.** When a reasoning model hits the token
+        cap without closing its ``</think>`` block, the non-streaming API returns EMPTY
+        content — vLLM cannot split a block that never ended — even though thousands of
+        reasoning tokens were generated. The text is not missing, it is unsplittable.
+
+        Measured on 2026-08-10: the truncation rescue succeeded **3 of 3** times when it
+        had that text to feed back and **11 of 101** when it did not, which is the whole
+        difference between Step-3.5 and MiniMax being rankable and not. Streaming sees
+        every delta as it arrives, so an unclosed block costs nothing.
+
+        `stream_chat` stays the timing generator that bench needs; this is the blocking
+        convenience wrapper, and it is the only one that reports why generation stopped.
+        """
+        body: dict = {
+            "model": model, "messages": messages, "max_tokens": max_tokens,
+            "temperature": temperature, "stream": True,
+            # ask for the terminal chunk that carries finish_reason
+            "stream_options": {"include_usage": False},
+        }
+        if extra:
+            body.update(extra)
+        parts: list[str] = []
+        finish: str | None = None
+        with self._client.stream("POST", "/v1/chat/completions", json=body) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    choice = json.loads(payload)["choices"][0]
+                except (ValueError, KeyError, IndexError):
+                    continue
+                if choice.get("finish_reason"):
+                    finish = choice["finish_reason"]
+                delta = choice.get("delta") or {}
+                parts.append(delta.get("content") or delta.get("reasoning")
+                             or delta.get("reasoning_content") or "")
+        return "".join(parts), finish
+
+    def post_chat(self, *, model: str, messages: list[dict], tools: list | None = None,
+                  tool_choice: str | dict | None = None, max_tokens: int = 256,
+                  temperature: float = 0.0, timeout: float | None = None) -> httpx.Response:
+        """The raw response, WITHOUT `raise_for_status()`.
+
+        `chat()` raises on a non-200, which is right for callers that want a reply and
+        wrong for anything measuring the endpoint's behaviour: the `tools` regiment has to
+        tell a 400 (engine started without tool flags) from a 200 carrying a malformed
+        call, and report the body either way. An exception erases both.
+
+        `tool_choice` may be a dict — a named-function choice is
+        `{"type": "function", "function": {"name": ...}}`, one of the two shapes DEF-0011
+        broke while `auto` kept passing the smoke gate.
+        """
+        body: dict = {"model": model, "messages": messages,
+                      "max_tokens": max_tokens, "temperature": temperature}
+        if tools is not None:
+            body["tools"] = tools
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
+        return self._client.post("/v1/chat/completions", json=body,
+                                 timeout=timeout or self._client.timeout)
 
     def probe_tool_support(self, model: str) -> httpx.Response:
         """Send the tool shape Open WebUI uses on ordinary chats — a dummy `tools`

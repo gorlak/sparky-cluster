@@ -146,7 +146,7 @@ highest quality that loads with acceptable headroom) and present *that* as the c
 model's quants are not competing options to A/B — the quant is chosen to fit the hardware
 (e.g. for a big-shared TP=2 slot, take NVFP4 over FP8 when NVFP4 fits with headroom and FP8 is
 fully-committed). Profiles are named with the `<model>-<version>-<quant>` triple — the chosen
-quant *is* in the name (`step-3.5-fp8`, `minimax-m2.7-nvfp4`), plus a `-single` topology
+quant *is* in the name (`qwen3-coder-next-nvfp4`, `minimax-m2.7-nvfp4`), plus a `-single` topology
 suffix for the single-node (snoopy) shape. Quant-to-fit still governs *which* quant you pick; the name
 just records it.
 

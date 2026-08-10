@@ -49,6 +49,7 @@ ACTIVATE_SSH_USER = os.environ.get("ACTIVATE_SSH_USER", "activator")
 RUNS_DIR = Path(os.environ.get("RUNS_DIR", "runs")).resolve()
 TOPOLOGY_FILE = os.environ.get("CLUSTER_TOPOLOGY", "/opt/cluster/current-topology.json")
 FLEET_FILE = os.environ.get("CLUSTER_FLEET", "/opt/cluster/fleet.json")
+SCOREBOARD_FILE = os.environ.get("SCOREBOARD_FILE", "/opt/cluster/scoreboard.json")
 PANEL_NODE = os.environ.get("PANEL_NODE", "sparky")  # which topology node is local
 FALLBACK_PROFILE = os.environ.get("CLUSTER_PROFILE", "empty")
 WEBUI_URL = os.environ.get("WEBUI_URL", "http://127.0.0.1:8080/health")
@@ -552,3 +553,40 @@ def run_view(request: Request):
     if not run:
         return templates.TemplateResponse(request, "_actions.html", _actions_ctx(request))
     return templates.TemplateResponse(request, "_run.html", _ctx(request, run=run))
+
+
+@app.get("/scoreboard", response_class=HTMLResponse)
+def scoreboard(request: Request):
+    """Render the fleet scoreboard snapshot written by `sparky scoreboard --json`.
+
+    The panel does no analysis: it reads a file. Recomputing dominance here would mean
+    two implementations of the one piece of logic that makes a claim about which models
+    are never worth serving — and they would drift.
+    """
+    try:
+        with open(SCOREBOARD_FILE) as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return HTMLResponse(
+            "<p style='font:15px system-ui;margin:2rem'>No scoreboard yet. "
+            "Run <code>sparky scoreboard --json " + SCOREBOARD_FILE + "</code> "
+            "after a sweep.</p>", status_code=404)
+
+    # Project the scatter into SVG coordinates here rather than in the template: Jinja
+    # arithmetic is unreadable, and the axes need min/max over the whole set.
+    points = data.get("scatter", {}).get("points", [])
+    if len(points) >= 2:
+        xs = [p["x"] for p in points]
+        ys = [p["y"] for p in points]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        sx = (x1 - x0) or 1.0
+        sy = (y1 - y0) or 1.0
+        data["plot_points"] = [{
+            "label": p["label"], "dominated": p["dominated"],
+            "cx": 60 + (p["x"] - x0) / sx * 520,
+            "cy": 290 - (p["y"] - y0) / sy * 250,
+        } for p in points]
+    else:
+        data["plot_points"] = []
+    return templates.TemplateResponse(request, "scoreboard.html", {"data": data})

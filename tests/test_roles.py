@@ -134,13 +134,18 @@ def test_images_are_run_by_the_same_reference_they_are_pulled_by():
     a compose file or unit naming `repo:tag` would find nothing on a fresh node and
     trigger an unpinned runtime pull — reintroducing the drift the digest prevents."""
     gv = _group_vars()
-    pulled = set()
+    # An image is guaranteed present by EITHER a pull (upstream, digest-pinned) or a
+    # build (derived, no registry digest to pin). Since 2026-08-10 `vllm_image` is the
+    # derived 26.07 image, so a pull-only check would fail on the fleet's only container.
+    # The invariant is unchanged — every runnable reference is guaranteed — but "pulled"
+    # was only ever a proxy for it.
+    guaranteed = set()
     for entry in gv["container_images"]:
-        if entry.get("pull"):
-            pulled.add(gv.get(entry["pull"].strip("{} \"'"), entry["pull"]))
+        ref = entry.get("pull") or entry.get("build")
+        guaranteed.add(gv.get(ref.strip("{} \"'"), ref))
     for var in ("vllm_image", "webui_image", "caddy_image", "prometheus_image",
                 "grafana_image", "node_exporter_image", "nvidia_exporter_image"):
-        assert gv[var] in pulled, f"{var} is run but never pulled: {gv[var]}"
+        assert gv[var] in guaranteed, f"{var} is run but never pulled or built: {gv[var]}"
 
 
 def test_head_only_images_are_not_pushed_to_workers():
@@ -151,8 +156,11 @@ def test_head_only_images_are_not_pushed_to_workers():
                  for e in gv["container_images"]}
     for var in ("webui_image", "caddy_image", "prometheus_image", "grafana_image"):
         assert placement.get("{{ %s }}" % var) == "head", f"{var} should be head-only"
-    for var in ("vllm_image", "node_exporter_image", "nvidia_exporter_image"):
+    for var in ("node_exporter_image", "nvidia_exporter_image"):
         assert placement.get("{{ %s }}" % var) == "all", f"{var} should be on all nodes"
+    # `vllm_image` is a BUILT image, so it appears under its literal name rather than as
+    # a `{{ var }}` reference. Any node may run any engine, so it must still be everywhere.
+    assert placement.get(gv["vllm_image"]) == "all", "vllm_image should be on all nodes"
 
 
 def test_the_panel_is_tested_against_the_fastapi_it_deploys():
@@ -225,3 +233,18 @@ def test_engine_env_file_is_rendered_even_when_empty():
     block = tasks[tasks.index("engine.docker-env.j2"):]
     guard = block[:block.index("loop:")]
     assert "when:" not in guard, "rendering the container env file must be unconditional"
+
+
+def test_the_model_mirror_excludes_huggingface_download_metadata():
+    """`hf download` leaves `.cache/huggingface/` inside the model dir, and the newer CLI
+    writes `trees/*.json` as **0600 owned by `vllm`**. The mirror's sender runs as
+    `deploy` and cannot read it, so rsync aborts rc 23 — after moving 75 GiB, which is how
+    it failed for NVIDIA-Nemotron-3-Super on 2026-08-10.
+
+    It is also just not model data: resume metadata for an interrupted fetch, which vLLM
+    never reads."""
+    tasks = (Path(__file__).resolve().parent.parent / "ansible" / "roles" / "model" /
+             "tasks" / "main.yml").read_text()
+    mirror = tasks[tasks.index("Mirror the models this node runs from the head"):]
+    cmd = mirror[:mirror.index("delegate_to")]
+    assert "--exclude=.cache/" in cmd, "mirror would abort on 0600 hf metadata"

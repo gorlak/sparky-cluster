@@ -21,13 +21,13 @@ from dataclasses import dataclass
 
 import yaml
 
-from sparky.topology import PROFILES_DIR, Engine, Profile, all_profiles
+from sparky.topology import (API_PORT, PROFILES_DIR, Engine, Profile,  # noqa: F401
+                             all_profiles)
 
 GROUP_VARS = PROFILES_DIR.parent / "group_vars" / "all.yml"
 
 # The one well-known front port. At most one live engine per port fleet-wide is what
 # lets the stable endpoint be a static health-checked upstream list.
-API_PORT = 8000
 # Always activatable: `empty` is the fail-safe target, so it can never depend on a
 # file being right.
 EMPTY = "empty"
@@ -118,6 +118,19 @@ class Fleet:
                 f"engine names must be unique FLEET-wide, not just within a profile — "
                 f"an engine name is its systemd instance (vllm@<name>.service) and its "
                 f"env file: {dupes}")
+
+        # Archetypes are what tests bind to instead of model names, so a typo does not
+        # fail — it silently matches nothing, and the test passes while checking nothing.
+        # This is also the guard that catches YAML's `[null]` parsing as `[None]`, which
+        # is how the `empty` profile lost its only tag on 2026-08-10.
+        from .topology import ARCHETYPES
+        for prof in self.profiles:
+            unknown = [a for a in prof.archetypes if a not in ARCHETYPES]
+            if unknown:
+                problems.append(
+                    f"{prof.name}: unknown archetype(s) {unknown} — known: "
+                    f"{sorted(ARCHETYPES)}. (A bare `null` in YAML parses as None, not "
+                    f'the string "null".)')
 
         offenders = sorted({pl.engine.name for pl in self.placements if pl.engine.port != API_PORT})
         if offenders:

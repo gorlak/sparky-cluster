@@ -103,10 +103,21 @@
 # --timeout=600 is rsync's I/O timeout: it keeps running as long as bytes flow, but
 # aborts if the link goes dead silent for 10 min (instead of hanging forever); a
 # re-deploy then resumes mid-file thanks to --partial.
+# `--exclude=.cache/` is REQUIRED, not tidiness. `hf download` leaves its bookkeeping
+# inside the model directory — locks, `.metadata` stubs and, since the newer CLI, a
+# `.cache/huggingface/trees/*.json` written **mode 0600 and owned by `vllm`**. The sender
+# side of this rsync runs as `deploy`, which cannot read a 0600 file owned by someone
+# else, so the whole mirror aborts with rc 23 after transferring 75 GiB — as it did for
+# NVIDIA-Nemotron-3-Super on 2026-08-10. Every model carries a `.cache`; only the newest
+# download carried `trees/`, which is why nothing tripped it before.
+#
+# Excluding it is correct on the merits: this is download-time metadata for resuming an
+# interrupted `hf` fetch. vLLM never reads it, and the mirror is not a resumable fetch.
 - name: Mirror the models this node runs from the head
   ansible.builtin.command:
     cmd: >-
       rsync -a --size-only --partial --timeout=600 --itemize-changes
+      --exclude=.cache/
       -e "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ServerAliveInterval=30"
       --rsync-path="sudo rsync"
       {{ vllm_models_dir }}/{{ item }}/ deploy@{{ vllm_host_ip }}:{{ vllm_models_dir }}/{{ item }}/

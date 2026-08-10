@@ -14,6 +14,7 @@ loads main.py as a standalone module.
 """
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -164,7 +165,7 @@ def test_status_json_reports_the_request_alongside_what_came_up(panel, monkeypat
 
 def test_build_cmd_is_only_the_reconciler(panel):
     main, _ = panel
-    activate = main._build_cmd("activate", "step-3.5-fp8")
+    activate = main._build_cmd("activate", "step-3.5-flash-fp8")
     assert activate.endswith("&& sudo -n /usr/local/sbin/vllm-activate")
     assert main._build_cmd("reactivate", "x") == "sudo -n /usr/local/sbin/vllm-activate --force"
     assert main._build_cmd("bogus", "x") is None
@@ -315,9 +316,9 @@ def test_status_json_phase_serving_when_healthy(panel, monkeypatch):
 
 def test_switching_detected_when_request_and_live_differ(panel):
     main, _ = panel
-    assert main.switching("step-3.5-fp8", "minimax-m2.7-awq") is True
-    assert main.switching("step-3.5-fp8", "step-3.5-fp8") is False
-    assert main.switching("", "step-3.5-fp8") is False
+    assert main.switching("step-3.5-flash-fp8", "minimax-m2.7-awq") is True
+    assert main.switching("step-3.5-flash-fp8", "step-3.5-flash-fp8") is False
+    assert main.switching("", "step-3.5-flash-fp8") is False
 
 
 def test_outgoing_engines_read_as_switching_not_down(panel, monkeypatch):
@@ -325,7 +326,7 @@ def test_outgoing_engines_read_as_switching_not_down(panel, monkeypatch):
     the panel is describing engines that are legitimately stopping. True, but useless
     — and indistinguishable from a broken cluster."""
     main, client = panel
-    Path(main.DESIRED_PROFILE).write_text("step-3.5-fp8\n")   # asked for
+    Path(main.DESIRED_PROFILE).write_text("step-3.5-flash-fp8\n")   # asked for
     monkeypatch.setattr(main, "load_topology", lambda: _topo())  # profile 'p' still live
     monkeypatch.setattr(main, "node_engine_states", lambda: _states("inactive"))
     monkeypatch.setattr(main, "_vllm_api", lambda base: (False, "down"))
@@ -339,7 +340,7 @@ def test_outgoing_engines_read_as_switching_not_down(panel, monkeypatch):
 def test_a_real_failsafe_is_never_masked_by_a_switch(panel, monkeypatch):
     """The one state that must survive every other consideration."""
     main, client = panel
-    Path(main.DESIRED_PROFILE).write_text("step-3.5-fp8\n")
+    Path(main.DESIRED_PROFILE).write_text("step-3.5-flash-fp8\n")
     monkeypatch.setattr(main, "load_topology", lambda: _topo())
     monkeypatch.setattr(main, "node_engine_states", lambda: _states("inactive", failsafe=True))
     monkeypatch.setattr(main, "_vllm_api", lambda base: (False, "down"))
@@ -415,3 +416,82 @@ def test_metrics_checks_the_panels_own_node_too(panel, monkeypatch):
     labels = [name for name, _ in main.metrics_services()]
     assert any(main.PANEL_NODE in label for label in labels), labels
     assert any("snoopy" in label for label in labels), labels
+
+
+# --- the scoreboard page (2026-08-10) ---------------------------------------
+
+def test_scoreboard_renders_the_snapshot(panel, tmp_path, monkeypatch):
+    """The panel READS the analysis; it never recomputes it. Dominance and best-marking
+    live in `sparky scoreboard` alone — two implementations of that logic would drift,
+    and a scoreboard that disagrees with itself is worse than none."""
+    main, client = panel
+    snapshot = tmp_path / "scoreboard.json"
+    snapshot.write_text(json.dumps({
+        "generated": "2026-08-10T00:00:00Z",
+        "columns": ["accuracy", "out tok/s"],
+        "rows": [
+            {"label": "good", "profile": "p", "nodes": 2, "unreliable": False,
+             "legacy_perf": False, "missing": [],
+             "cells": [{"text": "75.0%", "best": True, "value": 0.75},
+                       {"text": "110", "best": False, "value": 110.0}]},
+            {"label": "beaten", "profile": "q", "nodes": 2, "unreliable": True,
+             "legacy_perf": False, "missing": [],
+             "cells": [{"text": "48.0%", "best": False, "value": 0.48},
+                       {"text": "100", "best": False, "value": 100.0}]},
+        ],
+        "scatter": {"points": [{"label": "good", "x": 110.0, "y": 0.75, "dominated": False},
+                               {"label": "beaten", "x": 100.0, "y": 0.48, "dominated": True}],
+                    "x_label": "output tok/s", "y_label": "accuracy"},
+        "dominated": ["beaten"],
+    }))
+    monkeypatch.setattr(main, "SCOREBOARD_FILE", str(snapshot))
+    body = client.get("/scoreboard").text
+    assert "75.0%" in body and "beaten" in body
+    assert "†" in body, "an unreliable accuracy must stay flagged in the UI"
+    assert "Dominated: beaten" in body
+
+
+def test_scoreboard_says_so_when_there_is_no_snapshot(panel, monkeypatch):
+    """A missing snapshot is a normal state (no sweep yet) — say what to run, do not 500."""
+    main, client = panel
+    monkeypatch.setattr(main, "SCOREBOARD_FILE", "/nonexistent/scoreboard.json")
+    response = client.get("/scoreboard")
+    assert response.status_code == 404
+    assert "sparky scoreboard" in response.text
+
+
+def test_scoreboard_links_model_names_to_the_hub():
+    """The model name is the link, so a row and its Hub page are visibly the same thing.
+
+    The URL must come from `hf_repo` and never be constructed from the label: the profile
+    name is the model name lowercased, but the ORG is not recoverable from it —
+    `Qwen3-Coder-Next-NVFP4` is RedHatAI's, not Qwen's, and a guessed
+    `huggingface.co/qwen/...` would 404 while looking authoritative.
+    """
+    import json
+    from jinja2 import Environment, FileSystemLoader
+    tpl_dir = (Path(__file__).resolve().parent.parent / "ansible" / "roles" /
+               "control-panel" / "files" / "app" / "templates")
+    data = {
+        "columns": ["accuracy"],
+        "column_meta": [{"name": "accuracy", "higher_is_better": True}],
+        "generated": "now",
+        "rows": [
+            {"label": "qwen3-coder-next-nvfp4", "profile": "p", "nodes": 2,
+             "hf_repo": "RedHatAI/Qwen3-Coder-Next-NVFP4", "retired": False,
+             "unreliable": False, "legacy_perf": False, "missing": [],
+             "cells": [{"text": "60.0%", "best": True, "value": 0.6}]},
+            {"label": "no-repo-recorded", "profile": "q", "nodes": 2, "hf_repo": None,
+             "retired": True, "unreliable": False, "legacy_perf": False, "missing": [],
+             "cells": [{"text": "—", "best": False, "value": None}]},
+        ],
+        "scatter": {"points": [], "x_label": "x", "y_label": "y"},
+        "plot_points": [], "dominated": [],
+    }
+    html = Environment(loader=FileSystemLoader(str(tpl_dir))).get_template(
+        "scoreboard.html").render(data=data)
+    assert 'href="https://huggingface.co/RedHatAI/Qwen3-Coder-Next-NVFP4"' in html
+    # a row without a recorded repo must stay plain text, not link somewhere invented
+    assert "huggingface.co/no-repo-recorded" not in html
+    assert "no-repo-recorded" in html
+    assert ">retired<" in html          # and it is marked as no longer activatable

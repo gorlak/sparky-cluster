@@ -177,6 +177,26 @@ suggests a parser at all (as for Nemotron), ship **without** tool flags rather t
 guessing: plain chat is unaffected, and a wrong name costs a deploy.
 *2026-08-08 · the Qwen3-VL / Nemotron / DeepSeek profiles*
 
+### Smoke gate fails `tool-shape: 400` — model loads, serves, and is still refused
+**Cause.** The engine has **no** tool parser at all, so it rejects the request shape Open
+WebUI sends. Note what this is *not*: the model is fine. `ready: yes`, `quality: pass`,
+weights loaded, endpoint answering. Only the gate says no.
+**This is the bill for the entry above.** "Ship without tool flags rather than guessing"
+is safe for *serving* — plain chat is unaffected — but it is not free: a profile that
+cannot pass the smoke gate **cannot be activated by a sweep**, so it silently drops out
+of every measurement. Nemotron's TP=1 and TP=2 halves both failed this way on 2026-08-10,
+costing a whole pair of the TP=2 comparison.
+**Check — read the chat template; it is authoritative and costs nothing.**
+`chat_template.jinja` (or `chat_template` inside `tokenizer_config.json`) spells out the
+exact tool syntax the model was trained on:
+- `<tool_call>{"name": …, "arguments": …}</tool_call>` → **hermes**
+- `<tool_call><function=NAME><parameter=KEY>value</parameter></function>` → **qwen3_coder**
+This is how `hermes` was settled for Qwen3-VL after `qwen3_xml` returned HTTP 200 with
+garbage, and how `qwen3_coder` was settled for Nemotron-3-Puzzle. The template plus a name
+**already proven on this cluster** is evidence, not a guess — which is the bar, since the
+failure mode for a wrong *name* is a refusal to start and another deploy.
+*2026-08-10 · `nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4{,-single}`*
+
 ### Metrics silently stop: dashboards empty, Prometheus targets still `up`
 **Two independent causes, both on 2026-08-09, both invisible to a liveness check.**
 
@@ -218,3 +238,21 @@ Two consequences worth keeping:
    *default*, and the smoke gate silently skipped `quality` whenever tool-shape failed.
    None were discovered by thinking; all three came from reading what the engine actually
    logged. When a doc asserts a runtime state, **go and check the runtime**.
+
+### `rsync: send_files failed to open ".cache/huggingface/trees/….json": Permission denied (13)`
+**Cause.** `hf download` leaves its own bookkeeping *inside* the model directory —
+`.cache/huggingface/` with locks, `.metadata` stubs and, since a newer CLI, a
+`trees/*.json` written **mode 0600 owned by `vllm`**. The model mirror's sender runs as
+`deploy`, which cannot read another user's 0600 file, so rsync exits **rc 23** and fails
+the deploy. Note where it fails: *after* transferring the weights. 75 GiB moved, then the
+task aborts on a 7 KiB metadata file.
+**Why it had never fired.** Every staged model carries a `.cache`; only the newest
+download carried `trees/`. A latent break in the mirror, waiting for an upstream CLI to
+add one subdirectory.
+**Check.** There isn't a useful pre-flight — the fix is structural, and it is in place:
+the mirror now passes `--exclude=.cache/`, asserted by `tests/test_roles.py`. That is
+correct on the merits rather than a workaround: this is resume metadata for an interrupted
+fetch, and the mirror is not a resumable fetch. vLLM never reads any of it.
+**Recovery.** Re-run the deploy. rsync `--size-only --partial` resumes, so the 75 GiB
+already on the worker is not re-sent.
+*2026-08-10 · NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4*

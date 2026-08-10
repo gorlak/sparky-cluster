@@ -1,0 +1,180 @@
+{# Fleet scoreboard. The panel renders ONLY — every number, the best-marking and the
+   dominance verdict come from `sparky scoreboard --json`. A second implementation of
+   that logic would drift, and a scoreboard that disagrees with itself is worse than
+   none.
+
+   The A/B view below computes b/a-1 in the browser. That is arithmetic, not judgement:
+   which DIRECTION counts as better travels in `column_meta.higher_is_better`, because
+   getting it backwards (colouring a latency regression green) is the one mistake a
+   comparison view must not make.
+
+   No CDN, no framework, no fonts — the page must render on a LAN with no egress. #}
+<!doctype html>
+<title>fleet scoreboard</title>
+<style>
+  :root { color-scheme: light dark; --good:#16a34a; --bad:#ef4444; --line:rgba(128,128,128,.25); }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 66rem; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; margin-bottom: .2rem; }
+  h2 { font-size: 1rem; margin: 2.5rem 0 .3rem; }
+  .sub { opacity: .65; font-size: .85rem; margin-bottom: 1.5rem; }
+  .hint { opacity: .65; font-size: .85rem; margin: 0 0 .8rem; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: .45rem .6rem; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; font-family: ui-monospace, monospace; }
+  th { font-weight: 600; font-size: .8rem; opacity: .7; text-transform: lowercase; }
+  .best { font-weight: 700; color: var(--good); }
+  .flag { opacity: .6; font-size: .8rem; }
+  .missing { opacity: .35; }
+  .model { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+  .model:hover { color: #2563eb; border-bottom-style: solid; }
+  .repo { display: block; font-size: .78rem; opacity: .55;
+          font-family: ui-monospace, monospace; }
+  .retired { font-size: .7rem; border: 1px solid currentColor; border-radius: 3px;
+             padding: 0 .25rem; margin-left: .3rem; vertical-align: .1em; }
+  td:first-child { white-space: normal; }
+  figure { margin: 1rem 0 0; }
+  figcaption { opacity: .65; font-size: .85rem; margin-top: .5rem; }
+  .note { margin-top: 1.5rem; padding: .75rem 1rem; border-left: 3px solid #f59e0b;
+          background: rgba(245,158,11,.08); font-size: .88rem; }
+  select { font: inherit; padding: .3rem .4rem; max-width: 20rem; }
+  .pickers { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+  .delta-up { color: var(--good); font-weight: 600; }
+  .delta-down { color: var(--bad); font-weight: 600; }
+  .bar { height: .75rem; border-radius: 2px; background: currentColor; opacity: .8; display: block; }
+  .barcell { width: 45%; }
+</style>
+<h1>fleet scoreboard</h1>
+<div class="sub">
+  {{ data.rows | length }} models · generated {{ data.generated }}
+  · <a href="/admin">control panel</a>
+</div>
+
+<div class="scroll">
+<table>
+  <tr><th>model</th>{% for c in data.columns %}<th>{{ c }}</th>{% endfor %}</tr>
+  {% for row in data.rows %}
+  <tr>
+    <td>
+      {# The NAME is the link — the profile name is the model name lowercased, so the row
+         and the Hub page are visibly the same thing. The org is not recoverable from the
+         name (Qwen3-Coder-Next-NVFP4 is RedHatAI's, not Qwen's), so `hf_repo` carries it
+         and is shown beneath for anyone matching by eye rather than by click. A row with
+         no recorded repo stays plain text rather than guessing a URL. #}
+      {% if row.hf_repo %}<a class="model" href="https://huggingface.co/{{ row.hf_repo }}"
+         target="_blank" rel="noopener noreferrer" title="{{ row.hf_repo }} on huggingface.co">{{ row.label }}</a>{% else %}{{ row.label }}{% endif %}{% if row.unreliable %}<span class="flag" title="many unparseable answers — this is a floor, not a score">†</span>{% endif %}{% if row.legacy_perf %}<span class="flag" title="perf measured by the old container-bound harness — not comparable">⚠︎</span>{% endif %}{% if row.retired %}<span class="flag retired" title="measured, but this profile has left the allowlist — it cannot be activated">retired</span>{% endif %}
+      {% if row.hf_repo %}<span class="repo">{{ row.hf_repo }}</span>{% endif %}
+    </td>
+    {% for cell in row.cells %}
+    <td class="{{ 'best' if cell.best else '' }}{{ ' missing' if cell.value is none else '' }}">{{ cell.text }}</td>
+    {% endfor %}
+  </tr>
+  {% endfor %}
+</table>
+</div>
+
+<h2>compare two</h2>
+<p class="hint">Green means the second model is better <em>on that metric's own terms</em> —
+lower latency counts as an improvement, higher throughput counts as an improvement.</p>
+<div class="pickers">
+  <label>A <select id="pa"></select></label>
+  <label>B <select id="pb"></select></label>
+</div>
+<div class="scroll"><table id="cmp"></table></div>
+
+<h2>one metric at a time</h2>
+<p class="hint">Every model on a single axis, longest bar = largest value. Use it to see
+the spread; the table above says which direction is good.</p>
+<div class="pickers">
+  <label>metric <select id="pm"></select></label>
+</div>
+<div class="scroll"><table id="bars"></table></div>
+
+{% if data.scatter.points | length >= 2 %}
+<h2>the trade-off</h2>
+<figure>
+  {# Inline SVG: no CDN, no JS, nothing to load. Upper-right is better on both axes,
+     which is the convention the Pareto literature settled on. #}
+  <svg viewBox="0 0 640 340" width="100%" role="img" aria-label="quality against throughput">
+    <line x1="60" y1="290" x2="620" y2="290" stroke="currentColor" opacity=".3"/>
+    <line x1="60" y1="20"  x2="60"  y2="290" stroke="currentColor" opacity=".3"/>
+    {% for p in data.plot_points %}
+      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="6"
+              fill="{{ '#ef4444' if p.dominated else '#16a34a' }}" opacity=".85"/>
+      <text x="{{ p.cx + 10 }}" y="{{ p.cy + 4 }}" font-size="11" fill="currentColor">{{ p.label }}</text>
+    {% endfor %}
+    <text x="340" y="325" font-size="12" text-anchor="middle" fill="currentColor" opacity=".7">{{ data.scatter.x_label }} →</text>
+    <text x="18" y="155" font-size="12" text-anchor="middle" fill="currentColor" opacity=".7" transform="rotate(-90 18 155)">{{ data.scatter.y_label }} →</text>
+  </svg>
+  <figcaption>
+    Upper-right is better on both axes. Red = <strong>dominated</strong>: another model is
+    at least as good on accuracy, throughput <em>and</em> node occupancy, so there is no
+    workload where it is the right choice. Everything green is a legitimate pick — which
+    one depends on whether you want context, speed, or a free node.
+  </figcaption>
+</figure>
+{% endif %}
+
+{% if data.dominated %}
+<div class="note">Dominated: {{ data.dominated | join(', ') }}</div>
+{% endif %}
+
+<script>
+const DATA = {{ data | tojson }};
+const META = DATA.column_meta || DATA.columns.map(n => ({name: n, higher_is_better: true}));
+const rows = DATA.rows;
+const $ = id => document.getElementById(id);
+
+function fill(sel, opts, pick) {
+  sel.innerHTML = opts.map((o, i) =>
+    `<option value="${i}"${i === pick ? " selected" : ""}>${o}</option>`).join("");
+}
+
+// --- compare two ------------------------------------------------------------
+function renderCompare() {
+  const a = rows[+$("pa").value], b = rows[+$("pb").value];
+  let html = `<tr><th>metric</th><th>${a.label}</th><th>${b.label}</th><th>change</th></tr>`;
+  META.forEach((m, i) => {
+    const va = a.cells[i], vb = b.cells[i];
+    let change = '<span class="missing">—</span>';
+    // A ratio needs both numbers AND a non-zero base; without either, say nothing
+    // rather than print a confident Infinity.
+    if (va.value != null && vb.value != null && va.value !== 0) {
+      const ratio = vb.value / va.value - 1;
+      const better = m.higher_is_better ? ratio > 0 : ratio < 0;
+      const cls = Math.abs(ratio) < 0.005 ? "" : (better ? "delta-up" : "delta-down");
+      const sign = ratio > 0 ? "+" : "";
+      change = `<span class="${cls}">${sign}${(ratio * 100).toFixed(1)}%</span>`;
+    }
+    html += `<tr><td>${m.name}</td><td>${va.text}</td><td>${vb.text}</td><td>${change}</td></tr>`;
+  });
+  $("cmp").innerHTML = html;
+}
+
+// --- one metric at a time ---------------------------------------------------
+function renderBars() {
+  const i = +$("pm").value;
+  const vals = rows.map(r => r.cells[i].value).filter(v => v != null);
+  const max = Math.max(...vals, 0);
+  const order = rows.slice().sort((x, y) =>
+    (y.cells[i].value ?? -Infinity) - (x.cells[i].value ?? -Infinity));
+  $("bars").innerHTML = order.map(r => {
+    const c = r.cells[i];
+    if (c.value == null)
+      return `<tr><td>${r.label}</td><td class="missing">—</td><td class="barcell"></td></tr>`;
+    const pct = max > 0 ? (c.value / max) * 100 : 0;
+    const colour = c.best ? "var(--good)" : "currentColor";
+    return `<tr><td>${r.label}</td><td${c.best ? ' class="best"' : ""}>${c.text}</td>` +
+           `<td class="barcell"><span class="bar" style="width:${pct}%;color:${colour}"></span></td></tr>`;
+  }).join("");
+}
+
+const labels = rows.map(r => r.label);
+fill($("pa"), labels, 0);
+fill($("pb"), labels, Math.min(1, labels.length - 1));
+fill($("pm"), META.map(m => m.name), 0);
+["pa", "pb"].forEach(id => $(id).addEventListener("change", renderCompare));
+$("pm").addEventListener("change", renderBars);
+renderCompare();
+renderBars();
+</script>

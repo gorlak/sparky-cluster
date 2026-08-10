@@ -1,55 +1,253 @@
-"""Unit tests for the benchmark runner's pure seams (ADR-0012).
+"""The HTTP-native bench (ADR-0016, ADR-0011 Layer 3) — no hardware, no engine.
 
-The live run (docker exec into the container) isn't unit-tested; the JSON->store
-mapping and the command assembly are.
+The old regiment could not be tested this way at all: it assembled a `sudo docker exec`
+command line, so everything past that point needed root and a live container. Rebuilt
+against the endpoint, the whole measurement is arithmetic over timestamps — and
+arithmetic is testable, which is a second reason the rebuild was worth doing.
+
+What matters here is that the METRICS are right. A bench that reports plausible-looking
+wrong numbers is worse than no bench, because it will be believed.
 """
+
+from __future__ import annotations
+
+import time
 
 import pytest
 
-from sparky.bench import SCENARIOS, bench_command, metrics_from_summary
+from sparky import bench
 
 
-def test_metrics_from_summary_maps_keys():
-    summary = {
-        "output_throughput": 100.0, "total_token_throughput": 150.0, "request_throughput": 2.5,
-        "mean_ttft_ms": 30.0, "p99_ttft_ms": 60.0,
-        "mean_tpot_ms": 5.0, "p99_tpot_ms": 9.0,
-        "mean_itl_ms": 4.0, "p99_itl_ms": 8.0,
-        "unrelated": 123,
-    }
-    m = metrics_from_summary(summary)
-    assert m["output_toks_s"] == 100.0
-    assert m["total_toks_s"] == 150.0
-    assert m["requests_s"] == 2.5
-    assert m["ttft_p99_ms"] == 60.0
-    assert m["itl_mean_ms"] == 4.0
-    assert "unrelated" not in m
+class _FakeClient:
+    """Emits deltas at controlled intervals so the timing maths has a known answer."""
+
+    def __init__(self, ttft_s=0.10, itl_s=0.02, tokens=5, fail=False):
+        self.ttft_s, self.itl_s, self.tokens, self.fail = ttft_s, itl_s, tokens, fail
+        self.prompts: list[str] = []
+
+    def stream_chat(self, messages, model, **kw):
+        self.prompts.append(messages[0]["content"])
+        if self.fail:
+            raise RuntimeError("engine down")
+        time.sleep(self.ttft_s)
+        yield time.monotonic(), "first"
+        for _ in range(self.tokens - 1):
+            time.sleep(self.itl_s)
+            yield time.monotonic(), "tok"
 
 
-def test_metrics_missing_keys_are_none():
-    assert metrics_from_summary({})["output_toks_s"] is None
+def test_ttft_and_itl_come_from_the_stream():
+    """The reason streaming was added: a blocking response collapses these into one
+    number, which is why the old bench had to run inside the container."""
+    client = _FakeClient(ttft_s=0.15, itl_s=0.03, tokens=4)
+    result = bench.run_one(client, "m", "hello", 16)
+    assert result.ok
+    assert 130 < result.ttft_ms < 260, result.ttft_ms
+    assert result.output_tokens == 4
+    assert len(result.itls_ms) == 3
+    assert all(15 < x < 90 for x in result.itls_ms), result.itls_ms
 
 
-def test_scenarios_are_the_three():
-    assert set(SCENARIOS) == {"latency", "throughput", "prefix_cache"}
+def test_a_failed_request_is_recorded_not_raised():
+    """One dead request must not abort a scenario — it is excluded from the metrics and
+    counted, so a partial failure is visible rather than silently averaged in."""
+    result = bench.run_one(_FakeClient(fail=True), "m", "hello", 16)
+    assert not result.ok and "RuntimeError" in result.error
 
 
-def test_bench_command_shape():
-    cmd = bench_command(
-        "vllm-minimax-m2.7-nvfp4", "/models/M", "minimax-m2", "throughput", "out.json",
-        port=8000, label="26.04",
-    )
-    assert cmd[:5] == ["sudo", "docker", "exec", "vllm-minimax-m2.7-nvfp4", "vllm"]
-    assert cmd[5:7] == ["bench", "serve"]
-    assert "--served-model-name" in cmd and "minimax-m2" in cmd
-    assert "--result-filename" in cmd and "out.json" in cmd
-    assert "--request-rate" in cmd and "inf" in cmd  # throughput floods
-    assert cmd[cmd.index("--temperature") + 1] == "0"  # greedy for reproducibility
-    i = cmd.index("--metadata")
-    assert cmd[i + 1] == "scenario=throughput"
-    assert cmd[i + 2] == "label=26.04"
+def test_metrics_exclude_failed_requests():
+    good = bench.RequestResult(ttft_ms=100.0, itls_ms=[20.0, 20.0],
+                                   output_tokens=3, total_s=0.14)
+    bad = bench.RequestResult(ttft_ms=None, error="boom")
+    metrics = bench.ScenarioResult("latency", [good, bad], wall_s=1.0).metrics()
+    assert metrics["ttft_mean_ms"] == 100.0
+    assert metrics["requests_s"] == 1.0          # one good request in one second
+    assert metrics["output_toks_s"] == 3.0
 
 
-def test_bench_command_rejects_unknown_scenario():
-    with pytest.raises(ValueError):
-        bench_command("c", "/m", "s", "nonsense", "f.json")
+def test_metrics_are_empty_when_everything_failed():
+    """Better to record nothing than to record zeros that look like a slow model."""
+    bad = bench.RequestResult(ttft_ms=None, error="boom")
+    assert bench.ScenarioResult("latency", [bad], wall_s=1.0).metrics() == {}
+
+
+def test_tpot_measures_decode_after_the_first_token():
+    """TPOT must exclude TTFT — otherwise a slow prefill masquerades as slow decode."""
+    r = bench.RequestResult(ttft_ms=1000.0, itls_ms=[10.0] * 4,
+                                output_tokens=5, total_s=1.04)
+    metrics = bench.ScenarioResult("latency", [r], wall_s=1.04).metrics()
+    assert 5 < metrics["tpot_mean_ms"] < 15, metrics["tpot_mean_ms"]
+
+
+def test_p99_is_index_based_not_interpolated():
+    """With 20 samples an interpolated p99 is a fiction — it reports a value no request
+    ever experienced."""
+    values = [float(i) for i in range(1, 21)]
+    assert bench._p99(values) in values
+
+
+# --- prompts ----------------------------------------------------------------
+
+def test_prompts_are_deterministic():
+    """Two runs must measure the same work, or a comparison measures the prompts."""
+    assert bench.make_prompt(64, 4.0, seed=3) == bench.make_prompt(64, 4.0, seed=3)
+
+
+def test_prompt_length_tracks_the_requested_token_count():
+    short = bench.make_prompt(32, 4.0)
+    long = bench.make_prompt(512, 4.0)
+    assert len(long) > 8 * len(short)
+
+
+def test_the_shared_prefix_is_byte_identical_across_requests():
+    """The whole point of the prefix_cache scenario: if the prefix varied, nothing would
+    hit the cache and the scenario would silently measure the wrong thing."""
+    client = _FakeClient(tokens=2)
+    scenario = bench.Scenario("prefix_cache", prompt_tokens=8, max_tokens=4,
+                                  requests=3, concurrency=1, shared_prefix_tokens=32,
+                                  warmup=0)
+    bench.run_scenario(client, "nonexistent-model", scenario)
+    prefixes = {p.split("\n\n")[0] for p in client.prompts}
+    assert len(prefixes) == 1, "shared prefix differed between requests"
+    bodies = {p.split("\n\n")[1] for p in client.prompts}
+    assert len(bodies) == 3, "request bodies should differ so each does real work"
+
+
+def test_chars_per_token_falls_back_when_the_tokenizer_is_missing(tmp_path):
+    """Never fail a bench because a tokenizer could not be read — prompt sizing only
+    needs to be consistent, not exact."""
+    assert bench.chars_per_token("no-such-model", models_dir=tmp_path) == 4.0
+
+
+def test_warmup_requests_are_excluded_from_the_measurement():
+    """The first requests after an activation pay for cudagraph replay and a cold prefix
+    cache; counting them would put a startup artefact in the p99."""
+    client = _FakeClient(tokens=2)
+    scenario = bench.Scenario("latency", prompt_tokens=8, max_tokens=4,
+                                  requests=2, concurrency=1, warmup=3)
+    result = bench.run_scenario(client, "m", scenario)
+    assert len(result.results) == 2          # measured
+    assert len(client.prompts) == 5          # 3 warmup + 2 measured
+
+
+def test_scenarios_cover_the_three_shapes():
+    assert set(bench.SCENARIOS) == {"latency", "throughput", "prefix_cache"}
+    assert bench.SCENARIOS["latency"].concurrency == 1
+    assert bench.SCENARIOS["throughput"].concurrency > 1
+    assert bench.SCENARIOS["prefix_cache"].shared_prefix_tokens > 0
+
+
+def test_to_run_maps_onto_the_trend_store():
+    result = bench.ScenarioResult("latency", [
+        bench.RequestResult(ttft_ms=100.0, itls_ms=[20.0], output_tokens=2, total_s=0.12)
+    ], wall_s=1.0)
+    run = bench.to_run(result, label="lbl", model="m", profile="p")
+    assert run.scenario == "latency" and run.label == "lbl"
+    assert run.ttft_mean_ms == 100.0
+
+
+def test_streaming_counts_reasoning_deltas():
+    """vLLM 0.24.0 streams `reasoning`; the non-streaming API returns `reasoning_content`.
+    Reading only the latter made every request from a reasoning model look like a
+    zero-token failure — which is exactly what the first live bench reported."""
+    import json as _json
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            for field in ("content", "reasoning", "reasoning_content"):
+                yield "data: " + _json.dumps(
+                    {"choices": [{"delta": {field: "tok"}}]})
+            yield "data: [DONE]"
+
+    class _Ctx:
+        def __enter__(self):
+            return _Resp()
+
+        def __exit__(self, *a):
+            return False
+
+    from sparky.api import VllmClient
+    client = VllmClient.__new__(VllmClient)
+    client._client = type("C", (), {"stream": lambda *a, **k: _Ctx()})()
+    deltas = list(client.stream_chat([{"role": "user", "content": "x"}], model="m"))
+    assert len(deltas) == 3, "all three delta field spellings must be counted"
+
+
+def test_requests_address_the_served_name_not_the_weights_directory():
+    """`engine["model"]` is a directory on disk; the API only answers to `served_as`.
+    Sending the directory name 400s every request — the first live bench reported
+    20/20 failures for exactly this."""
+    seen = {}
+
+    class _C:
+        def stream_chat(self, messages, model, **kw):
+            seen["model"] = model
+            yield 0.0, "t"
+
+    scenario = bench.Scenario("latency", prompt_tokens=8, max_tokens=4,
+                              requests=1, concurrency=1, warmup=0)
+    bench.run_scenario(_C(), "minimax-m2", scenario, model_dir="MiniMax-M2.7-NVFP4")
+    assert seen["model"] == "minimax-m2"
+
+
+# --- context capacity (the number long-context work is actually bound by) -----
+
+class _Resp:
+    def __init__(self, text="", payload=None):
+        self.text, self._payload = text, payload
+
+    def json(self):
+        return self._payload
+
+
+# vLLM 0.24's real shape: cache_config_info carries the BLOCK numbers and nothing else.
+_METRICS = ('vllm:cache_config_info{block_size="16",num_gpu_blocks="33761",'
+            'cache_dtype="auto"} 1.0\n'
+            'vllm:num_requests_running 0.0\n')
+
+
+def _fake_http(monkeypatch, metrics=_METRICS, cards=None):
+    import httpx
+
+    def get(url, **_kw):
+        if url.endswith("/metrics"):
+            return _Resp(text=metrics)
+        return _Resp(payload={"data": cards if cards is not None else []})
+
+    monkeypatch.setattr(httpx, "get", get)
+
+
+def test_max_model_len_comes_from_the_model_card_not_the_metric(monkeypatch):
+    """THE BUG (2026-08-10, qwen3-vl-235b): max_model_len was read as a label of
+    `vllm:cache_config_info`, which vLLM 0.24 does not publish. It defaulted to 0, so the
+    bench reported "0 usable tokens" beside a perfectly healthy 540,176-token cache —
+    a plausible-looking wrong number in the one column long-context work depends on."""
+    _fake_http(monkeypatch, cards=[{"id": "sparky", "max_model_len": 262144},
+                                   {"id": "qwen3-vl-235b", "max_model_len": 262144}])
+    out = bench.context_capacity("http://x")
+    assert out["kv_tokens"] == 33761 * 16          # 540,176
+    assert out["max_model_len"] == 262144
+    assert out["usable_context"] == 262144         # the cache is the larger of the two
+    assert out["full_slots"] == pytest.approx(540176 / 262144)
+
+
+def test_usable_context_is_capped_by_the_cache_not_the_promise(monkeypatch):
+    """A max_model_len larger than the whole KV cache is a promise the engine cannot
+    keep for a single request — reporting it as usable context would overstate what the
+    profile can actually read."""
+    _fake_http(monkeypatch, cards=[{"id": "m", "max_model_len": 1_000_000}])
+    out = bench.context_capacity("http://x")
+    assert out["usable_context"] == 540176
+
+
+def test_a_missing_model_card_does_not_fabricate_a_context(monkeypatch):
+    """Better to report nothing than a zero that reads as "this model has no context"."""
+    _fake_http(monkeypatch, cards=[])
+    out = bench.context_capacity("http://x")
+    assert out["kv_tokens"] == 540176
+    assert "usable_context" not in out and "max_model_len" not in out

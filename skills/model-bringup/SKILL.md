@@ -98,7 +98,7 @@ honest number. `max_model_len` is a memory decision.
 ## Writing the profile
 
 Copy the profile whose **shape** matches — `minimax-m2.7-nvfp4.yml` for big-shared TP=2,
-`qwen3-coder-nvfp4-single.yml` for single-node on snoopy — then per
+`nvidia-nemotron-3-super-120b-a12b-nvfp4.yml` if the checkpoint is `MIXED_PRECISION` — then per
 [[model-evaluation]]'s memory math set `gpu_memory_utilization` from your
 *outside-headroom* target, not from "as high as it goes".
 

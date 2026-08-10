@@ -91,6 +91,21 @@ The mechanical steps are in the README ("Adding models / profiles"); the fan-out
    — memory math, `config.json`, never `--quantization` on a self-declaring checkpoint.
 3. **Profile:** copy the nearest-shape `ansible/profiles/<name>.yml` and edit
    `serving_topology` + `vllm_image`. Confirm its image is in `container_images`.
+   Three fields are **required and enforced by `lint`** (all added 2026-08-10):
+   - **the name itself** is the lowercased canonical HF model name, plus an optional
+     `-flavour` suffix for a second way of serving the same weights. `profile_name`,
+     the engine `name` and `served_as` are all that same string — one name everywhere,
+     so a scoreboard row, a systemd unit and a Hub page are obviously the same model.
+   - **`hf_repo:`** the exact upstream `org/Name`. The org is *not* recoverable from
+     the model name (`Qwen3-Coder-Next-NVFP4` is RedHatAI's, not Qwen's), and this is
+     what makes a scoreboard row link to the Hub.
+   - **`archetypes:`** what the profile is an example of, from `topology.ARCHETYPES`.
+     Tests bind to the shape rather than to a model name, so a fleet change does not
+     break tests that never cared about that model.
+
+   You may now **omit** `nodes`, `port` and `tensor_parallel_size` — they default to
+   the whole fleet (head first), 8000, and `len(nodes)`. State them only to differ, as
+   the retired single-node configs do.
 4. **Docs:** a fact sheet `docs/models/<model>.md`; the profile table in
    [`profiles.md`](profiles.md) and the README profile table.
 5. **Defect register** → check [`defects.md`](defects.md) for anything gating this
@@ -105,16 +120,30 @@ The mechanical steps are in the README ("Adding models / profiles"); the fan-out
 Deletion is the same mechanism run backwards — there is no separate `prune` command
 (ADR-0018 rejected ADR-0017 for exactly this reason):
 
-1. **Delete** `ansible/profiles/<name>.yml`. That takes it out of the allowlist.
+1. **Archive, don't just delete:** `git mv ansible/profiles/<name>.yml
+   ansible/profiles/retired/` and add the retirement banner (date, one-line reason, link
+   to the tombstone). The directory is invisible to both profile loaders — they glob
+   `profiles/*.yml` non-recursively — and a test asserts it can never leak into the
+   allowlist. It exists because deleting the `.yml` threw away the *engineering*: the
+   memory math, the parser names read from chat templates, the quant findings. Recovering
+   those from `git log` requires knowing they exist, so in practice nobody looks and the
+   next person re-derives them — which for a parser name costs a deploy.
 2. **`./sparky.sh deploy`** — reports which weights are now unreferenced, per node, and
    deletes nothing.
 3. **`./sparky.sh deploy --evict`** when you've read the plan — *read it*, don't skim:
    anything in the store that no profile claims is on that list. Three guards apply: it
-   plans first, it converges **weights only** (images are left to Docker's GC — shared
-   base layers make convergent image deletion unsafe), and it **never deletes the
+   plans first, it converges weights **and images** (since 2026-08-10 — the image store is
+   converged to `container_images` the same way, plus dangling layers; the old claim that
+   shared base layers made this unsafe was wrong, since Docker refcounts layers and
+   `docker rmi` refuses an image a container holds), and it **never deletes the
    active model** — if the live profile is the one leaving, the deploy drives the fleet
    to `empty` and waits for the engine to stop first.
-4. **Docs:** drop its rows from [`profiles.md`](profiles.md) and the README table.
+4. **Tombstone:** add a row to [`models/tombstones.md`](models/tombstones.md) with a
+   falsifiable *reconsider-when*. Required whenever the weights are **evicted**, even if
+   the model is not rejected — once they are gone a discovery sweep will propose
+   re-downloading, which is the exact waste that register exists to prevent. Mark those
+   "evicted, not condemned" so the verdict is not overstated.
+5. **Docs:** drop its rows from [`profiles.md`](profiles.md) and the README table.
 
 To keep the weights but stop it being activatable — a candidate parked on an upstream
 fix — set **`blocked: true`** instead of deleting. *Block to park it; delete the file

@@ -34,14 +34,24 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
     -- rather than only compared on throughput. NULL for bench rows.
     accuracy      REAL,
     items         INTEGER,
-    unparseable   INTEGER
+    unparseable   INTEGER,
+    -- Which harness produced this row. `vllm bench serve` measured inside the container;
+    -- the HTTP-native regiment (ADR-0016) measures client-side and includes network and
+    -- client overhead. Mixing them in one table would invite a false comparison, so rows
+    -- carry their provenance and the scoreboard says so.
+    harness       TEXT,
+    -- Context capacity. Speed metrics cannot express "how much can this READ", which is
+    -- the binding constraint for long-document and whole-codebase work.
+    kv_tokens     INTEGER,
+    max_model_len INTEGER
 );
 """
 
 # Columns added after the table shipped. SQLite has no "ADD COLUMN IF NOT EXISTS", and
 # the trend store is a live file on the cluster — dropping it would discard the
 # benchmark history the whole A/B story rests on, so migrate in place.
-_MIGRATIONS = ("accuracy REAL", "items INTEGER", "unparseable INTEGER")
+_MIGRATIONS = ("accuracy REAL", "items INTEGER", "unparseable INTEGER",
+               "harness TEXT", "kv_tokens INTEGER", "max_model_len INTEGER")
 
 _METRIC_COLS = (
     "output_toks_s", "total_toks_s", "requests_s",
@@ -73,6 +83,9 @@ class Run:
     accuracy: float | None = None
     items: int | None = None
     unparseable: int | None = None
+    harness: str | None = None
+    kv_tokens: int | None = None
+    max_model_len: int | None = None
 
 
 class Store:
@@ -102,13 +115,15 @@ class Store:
     def record(self, run: Run) -> int:
         """Insert one run; returns its row id."""
         cols = ["ts", "label", "model", "profile", "scenario", "skipped", "quality_pass",
-                "accuracy", "items", "unparseable", *_METRIC_COLS]
+                "accuracy", "items", "unparseable", "harness", "kv_tokens", "max_model_len",
+                *_METRIC_COLS]
         vals = [
             run.ts or int(time.time()),
             run.label, run.model, run.profile, run.scenario,
             int(run.skipped),
             None if run.quality_pass is None else int(run.quality_pass),
-            run.accuracy, run.items, run.unparseable,
+            run.accuracy, run.items, run.unparseable, run.harness,
+            run.kv_tokens, run.max_model_len,
             *(getattr(run, c) for c in _METRIC_COLS),
         ]
         placeholders = ", ".join("?" * len(cols))

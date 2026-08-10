@@ -112,7 +112,7 @@ upgrading our models"**, after a notable release, or when a blocking dependency 
 **Assessment only — never change a profile or deploy as part of the sweep.**
 
 1. **Enumerate the fleet.** List each Ansible profile and the model it serves
-   (`ansible/profiles/*.yml` → `model:`), grouped by shape: big-shared TP=2 (`step-3.5-fp8`,
+   (`ansible/profiles/*.yml` → `model:`), grouped by shape: big-shared TP=2 (`qwen3-vl-235b-a22b-instruct-nvfp4`,
    `minimax-m2.7-nvfp4`) vs per-node (`qwen3-coder-nvfp4-*`, `qwen3.6-35b-nvfp4-*`). Note the current quant and its
    fact sheet under `docs/models/`.
 

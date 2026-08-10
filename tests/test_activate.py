@@ -194,15 +194,15 @@ def test_a_missing_request_reads_as_empty(rec, tmp_path, monkeypatch):
 
 def test_a_good_request_reads_back(rec, tmp_path, monkeypatch):
     f = tmp_path / "desired-profile"
-    f.write_text("step-3.5-fp8\ntrailing junk\n")
+    f.write_text("step-3.5-flash-fp8\ntrailing junk\n")
     monkeypatch.setattr(rec, "DESIRED_PROFILE", f)
-    assert rec.read_request() == "step-3.5-fp8"
+    assert rec.read_request() == "step-3.5-flash-fp8"
 
 
 # --- the forced-command grammar ---------------------------------------------
 
 @pytest.mark.parametrize("request_", [
-    "status", "stop step-3.5-fp8", "start empty", "all qwen3.6-35b force",
+    "status", "stop step-3.5-flash-fp8", "start empty", "all qwen3.6-35b force",
     "start step preserve", "stop step force preserve",
 ])
 def test_accepted_ssh_requests(rec, request_):
@@ -263,7 +263,7 @@ def test_a_failed_marker_write_rolls_the_whole_set_back(rec, tmp_path, monkeypat
 
 
 def test_unit_and_container_naming(rec):
-    assert rec.unit_of("step-3.5-fp8") == "vllm@step-3.5-fp8.service"
+    assert rec.unit_of("step-3.5-flash-fp8") == "vllm@step-3.5-flash-fp8.service"
 
 
 # --- driving one node: marker-first, then systemd ---------------------------

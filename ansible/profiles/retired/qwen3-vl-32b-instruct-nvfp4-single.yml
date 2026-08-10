@@ -1,4 +1,14 @@
 ---
+# ⚰️ RETIRED 2026-08-10 — NOT IN THE ALLOWLIST. Loaders glob profiles/*.yml
+#    non-recursively, so nothing here installs, serves, or keeps weights.
+#    Why: NOT because DEF-0013 still blocks it (re-probed 2026-08-10: modelopt_algos is
+#    still [FP8, NVFP4], no NVFP4_AWQ — the park was legitimate). Retired because its
+#    ARGUMENT died: it existed as the cheapest vision option — 21 GiB, one node, sparky
+#    free — and the single-node shape lost on measurement the same day, while
+#    qwen3-vl-235b-nvfp4 serves vision + tools at 75.0%. Unblocking it would not make us
+#    run it.
+#    Verdict is owned by docs/models/tombstones.md. See retired/README.md.
+#
 # Qwen3-VL-32B-Instruct (NVFP4) on snoopy, TP=1 — the fleet's first VISION model.
 #
 # WHY: nothing in the fleet currently accepts an image. `step-3.7-nvfp4` was supposed to
@@ -37,15 +47,18 @@
 # UNBLOCK WHEN: `./sparky.sh probe quant` lists NVFP4_AWQ under `modelopt_algos`.
 # ALTERNATIVE: stage a plain-NVFP4 or FP8 build of Qwen3-VL-32B instead.
 blocked: true
-profile_name: qwen3-vl-32b-nvfp4-single
+profile_name: qwen3-vl-32b-instruct-nvfp4-single
+hf_repo: cybermotaz/Qwen3-VL-32B-Instruct-NVFP4
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [single-node, vision]
 vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
 serving_topology:
-  - name: qwen3-vl-32b-snoopy
+  - name: qwen3-vl-32b-instruct-nvfp4-single
     kind: vllm
     nodes: [snoopy]
-    port: 8000
     model: Qwen3-VL-32B-Instruct-NVFP4
-    served_as: qwen3-vl-32b
+    served_as: qwen3-vl-32b-instruct-nvfp4-single
     tensor_parallel_size: 1
     gpu_memory_utilization: "0.55"
     max_model_len: 131072

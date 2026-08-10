@@ -58,16 +58,20 @@
 # groups correctly before failing on the tokenizer alone. See
 # docs/models/mistral-medium-3.5.md.
 
-profile_name: mistral-medium-3.5-nvfp4
+# ONE NAME. profile == engine == served_as == the lowercased canonical HF model
+# name, so the scoreboard, the systemd unit, the API and huggingface.co all agree.
+# `hf_repo` is the exact upstream id for eyeball-matching against the Hub.
+profile_name: mistral-medium-3.5-128b-nvfp4
+hf_repo: nvidia/Mistral-Medium-3.5-128B-NVFP4
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [big-shared, mixed-precision, vision]
 vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
-  - name: mistral-medium-3.5-nvfp4
+  - name: mistral-medium-3.5-128b-nvfp4
     kind: vllm
-    nodes: [sparky, snoopy]      # nodes[0]=sparky is rank 0 / the API host
-    port: 8000
     model: Mistral-Medium-3.5-128B-NVFP4
-    served_as: mistral-medium
-    tensor_parallel_size: 2
+    served_as: mistral-medium-3.5-128b-nvfp4
     gpu_memory_utilization: "0.75"
     max_model_len: 131072
     head_extra_args:

@@ -5,7 +5,7 @@ corruption heuristics (`quality.check_turn`) per turn, holding chat history acro
 turns. ~8 turns, ~2 minutes against a live engine. The client is injected, so the
 conversation logic is unit-tested without hardware.
 
-This catches the exact failure class that shipped on `step-3.5-fp8` (Nth-turn
+This catches the exact failure class that shipped on `step-3.5-flash-fp8` (Nth-turn
 garbage / nonstop thinking) — a throughput benchmark would pass it blind.
 
 **TPOT-spike detection is deliberately not applied here.** It needs a real

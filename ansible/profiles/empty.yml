@@ -21,4 +21,7 @@
 # and the metrics dashboards.
 
 profile_name: empty
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [fail-safe]
 serving_topology: []

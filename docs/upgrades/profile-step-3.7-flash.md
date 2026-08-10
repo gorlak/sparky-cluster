@@ -1,19 +1,19 @@
 # Upgrade: `step` profile → Step-3.7-Flash
 
 **Status:** ⛔ Blocked on upstream vLLM (parked; `blocked: true` in the profile)
-**Profiles:** `step-3.5-fp8` (serves `Step-3.5-Flash-FP8`, 26.04, stable) · `step-3.7-nvfp4`
+**Profiles:** `step-3.5-flash-fp8` (serves `Step-3.5-Flash-FP8`, 26.04, stable) · `step-3.7-flash-nvfp4`
 (candidate: `Step-3.7-Flash-NVFP4`, 26.06 — **parked/hidden**)
 **Target:** Step-3.7-Flash-NVFP4 on 26.06 (the two profiles A/B against each other)
 **Last updated:** 2026-07-02
 
-> **Result (2026-07-02):** deployed `step-3.7-nvfp4` — **NVFP4 loaded + ran on 26.06 with no
+> **Result (2026-07-02):** deployed `step-3.7-flash-nvfp4` — **NVFP4 loaded + ran on 26.06 with no
 > hang.** The hard part works and per-profile container pinning is validated (26.06 for
-> `step-3.7-nvfp4`, 26.04 for everything else). The remaining blocker is an **upstream vLLM VL
+> `step-3.7-flash-nvfp4`, 26.04 for everything else). The remaining blocker is an **upstream vLLM VL
 > bug, not NVFP4/the container**: Step-3.7's `Step3VLProcessor` crash-loops on startup —
 > `AttributeError: … has no attribute '_get_num_multimodal_tokens'`
 > (`vllm/model_executor/models/transformers/multimodal.py`).
 > **Unblock when:** vLLM ships a `Step3VLProcessor` with `_get_num_multimodal_tokens`
-> (bump `step-3.7-nvfp4`'s `vllm_image` to the container that carries it), then remove
+> (bump `step-3.7-flash-nvfp4`'s `vllm_image` to the container that carries it), then remove
 > `blocked: true` and re-test. Detail: `docs/upgrades/container-nvidia-vllm-26.06-py3.md`.
 
 This tracks what changes for the **`step` Ansible profile** if it moves from
@@ -74,8 +74,8 @@ Revisit when the container upgrade clears.
 
 Step-3.7 weights are not downloaded (`Installed: None`). Whichever quant is chosen, stage
 it into the inbox first (`/opt/cluster/model-cache/Step-3.7-Flash-<QUANT>`), then point
-`ansible/profiles/step-3.7-nvfp4.yml` at it, drop its `blocked: true` line, then
-`./sparky.sh deploy` (installs it) and `./sparky.sh activate step-3.7-nvfp4`.
+`ansible/profiles/step-3.7-flash-nvfp4.yml` at it, drop its `blocked: true` line, then
+`./sparky.sh deploy` (installs it) and `./sparky.sh activate step-3.7-flash-nvfp4`.
 
 ## References
 

@@ -73,6 +73,32 @@ class Engine:
         return self.nodes.index(node)
 
 
+# --- archetypes: what a profile is an EXAMPLE OF ------------------------------
+#
+# Tests kept naming specific models — `step-3.5-flash-fp8` for "a profile on the old container",
+# `qwen3-coder-next-nvfp4-single` for "a TP=1 shape". Both are instances standing in for a
+# SHAPE, and on 2026-08-10 seven profiles were retired in one afternoon and four tests
+# broke, none of which cared about those models at all.
+#
+# An archetype names the property a test is actually reaching for, so the fleet can churn
+# underneath it and the test still says what it means. `by_archetype("single-node")` reads
+# as the reason it is there; `load_profile("qwen3-coder-next-nvfp4-single")` does not.
+#
+# Keep this vocabulary SMALL. An archetype per profile would be a second naming scheme
+# with no leverage — the point is that several profiles share one, and that a test binds
+# to the shared property rather than to whichever profile happens to have it today.
+ARCHETYPES: dict[str, str] = {
+    "big-shared":      "TP=2 across every node — one model sharded, the whole fleet committed",
+    "single-node":     "TP=1 on one worker, leaving the other node free for dev work",
+    # NOT "null": YAML parses a bare `null` as None, so `archetypes: [null]` silently
+    # becomes `[None]` and matches nothing. Named for what a test wants it FOR.
+    "fail-safe":       "no engines: the `empty` profile, always activatable, the recovery target",
+    "mixed-precision": "checkpoint self-declares MIXED_PRECISION — never pass --quantization",
+    "tool-calling":    "carries a verified --tool-call-parser (a guessed name refuses to start)",
+    "vision":          "multimodal — the vision gate applies",
+}
+
+
 @dataclass(frozen=True)
 class Profile:
     """A profile: its serving topology, and whether it may be activated.
@@ -88,6 +114,14 @@ class Profile:
     vllm_image: str | None = None
     blocked: bool = False
     path: Path | None = None
+    # What this profile is an EXAMPLE OF. See ARCHETYPES above; validated by lint, so a
+    # typo is caught at Layer 1 rather than by a test quietly matching nothing.
+    archetypes: tuple[str, ...] = ()
+    # The exact upstream repo, `org/Name`. The profile name is that name lowercased, which
+    # is enough to operate but not enough to paste into huggingface.co — the org is not
+    # recoverable from it (`Qwen3-Coder-Next-NVFP4` is RedHatAI's, not Qwen's). Kept so the
+    # scoreboard can show what a human would search for.
+    hf_repo: str | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -100,13 +134,48 @@ class Profile:
         raise KeyError(f"no engine {name!r} in profile {self.name!r}")
 
 
+
+# The one well-known front port. At most ONE live engine per port fleet-wide is what
+# lets the stable endpoint be a static upstream list (ADR-0018), so this is an invariant
+# `lint` asserts — which makes stating it per profile a request for a value that can only
+# have one answer. Defined here rather than in `fleet` because the PARSER needs it and
+# fleet imports topology, not the other way round.
+API_PORT = 8000
+
+INVENTORY = Path(__file__).resolve().parent.parent / "ansible" / "inventory.yml"
+
+
+def fleet_nodes(inventory: Path = INVENTORY) -> tuple[str, ...]:
+    """Every node, head first — the default `nodes` for an engine.
+
+    Order is not cosmetic: `nodes[0]` is rank 0, the API host and the NCCL master
+    (ADR-0003), so head-then-workers is the only ordering that means anything.
+
+    Read from the INVENTORY rather than hardcoded, because the inventory is already the
+    file that owns node names. Before 2026-08-10 all eight profiles repeated
+    `nodes: [sparky, snoopy]`, which meant adding a third node was an edit to every
+    profile — and put hostnames in eight places that had no business knowing them.
+    """
+    data = yaml.safe_load(inventory.read_text()) or {}
+    children = ((data.get("all") or {}).get("children") or {})
+    head = list(((children.get("head") or {}).get("hosts") or {}))
+    workers = [h for group, spec in children.items() if group != "head"
+               for h in ((spec or {}).get("hosts") or {})]
+    return tuple(head + workers)
+
+
 def _engine_from_dict(d: dict) -> Engine:
-    nodes = tuple(d["nodes"])
+    # Defaults, so a profile states only what makes it DIFFERENT. Since 2026-08-10 every
+    # profile is TP=2 across both nodes on port 8000, and repeating that eight times was
+    # ceremony that also hardcoded hostnames into files with no business knowing them.
+    # A profile can still say something else — the constraint is measured, not structural,
+    # and it is six hours old (docs/profile-tuning.md).
+    nodes = tuple(d.get("nodes") or fleet_nodes())
     return Engine(
         name=d["name"],
         kind=d.get("kind", "vllm"),
         nodes=nodes,
-        port=int(d["port"]),
+        port=int(d.get("port", API_PORT)),
         model=d["model"],
         served_as=d["served_as"],
         tensor_parallel_size=int(d.get("tensor_parallel_size", len(nodes))),
@@ -137,6 +206,8 @@ def load_profile(name_or_path: str | Path) -> Profile:
         engines=engines,
         vllm_image=data.get("vllm_image"),
         blocked=bool(data.get("blocked", False)),
+        archetypes=tuple(data.get("archetypes") or ()),
+        hf_repo=data.get("hf_repo"),
         path=path,
     )
 
@@ -151,3 +222,40 @@ def load_current_topology(path: Path = CURRENT_TOPOLOGY) -> dict | None:
     if not path.exists():
         return None
     return json.loads(path.read_text())
+
+
+def by_archetype(name: str, *, include_retired: bool = False,
+                 profiles_dir: Path = PROFILES_DIR) -> list[Profile]:
+    """Every profile that is an example of `name`. See `ARCHETYPES`.
+
+    `include_retired` also searches `profiles/retired/`, which is NOT the allowlist and
+    is invisible to `all_profiles()`. That is deliberate rather than a loophole: a shape
+    can have no live example and still need its projection tested — `single-node` has
+    none today, yet the rendering must stay correct for the day fleet occupancy makes it
+    worth reviving one. A test that silently found nothing would pass while checking
+    nothing at all.
+    """
+    if name not in ARCHETYPES:
+        raise KeyError(f"unknown archetype {name!r}; known: {sorted(ARCHETYPES)}")
+    found = [p for p in all_profiles(profiles_dir) if name in p.archetypes]
+    if include_retired:
+        retired = profiles_dir / "retired"
+        if retired.is_dir():
+            found += [p for p in (load_profile(f) for f in sorted(retired.glob("*.yml")))
+                      if name in p.archetypes]
+    return found
+
+
+def one_of(name: str, **kw) -> Profile:
+    """The first example of an archetype, or a loud failure.
+
+    Tests want "a profile of this shape" far more often than a particular one. Raising
+    here rather than returning None means a vocabulary that has drifted out of sync with
+    the fleet is reported as a broken test, not as a passing one.
+    """
+    found = by_archetype(name, **kw)
+    if not found:
+        raise LookupError(
+            f"no profile has archetype {name!r} ({ARCHETYPES[name]}). "
+            f"Either tag one, or pass include_retired=True if an archived example will do.")
+    return found[0]

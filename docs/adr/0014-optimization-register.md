@@ -57,11 +57,11 @@ Keep a knob only if it's stable *and* wins; otherwise revert and record why.
 
 | Optimization | Where | Why disabled | Re-test | Expected win | Status |
 |---|---|---|---|---|---|
-| **FP8 KV cache** (`--kv-cache-dtype fp8`) — DEF-0007 | `step-3.5-fp8` (and other FP8/AWQ profiles on 26.04) | Multi-turn corruption (Nth-turn garbage / nonstop thinking), vLLM 0.19 — suspected interaction with prefix caching | Enable alone, run multi-turn convos; **also re-test on 26.06 (0.22.1)** — may be fixed | ~2× KV capacity → longer context / more concurrency | ⚪ tabled (README "Pending investigation") |
-| **Prefix caching** (`--enable-prefix-caching`) — DEF-0007 | `step-3.5-fp8` | Same corruption; suspected FP8-KV × prefix-cache interaction | Enable alone (BF16 KV) → then with FP8 KV | Large TTFT win on shared prefixes (system prompts, multi-turn) | ⚪ tabled |
-| **MTP / speculative decoding** (MTP-3) | `qwen3.6-35b-nvfp4-*`; `step-3.7-nvfp4` (native MTP-3) | First-bring-up caution; GB10 forum: MTP causes **image** number-misreads (VL) | Enable **text-only**, A/B single-stream TPS behind fail-safe | **~3× single-stream** on qwen3.6-35b (~28–30 → ~97 tok/s, community) | 🟢 **KEEP** — A/B'd 2026-07-27 (qwen3.6-35b mtp3 profile, text-only, behind fail-safe): single-stream decode **2.3× faster** (TPOT 37.6→16.6 ms, ~27→~60 tok/s), stable (draft accept ~55→84%). Cost: flood-TTFT regresses (12→26 s) from the spec-decode `max_num_scheduled_tokens=2048` cap → **follow-up: raise `max_num_batched_tokens`**. Bench labels `q36-nomtp`/`q36-mtp3`. |
+| **FP8 KV cache** (`--kv-cache-dtype fp8`) — DEF-0007 | `step-3.5-flash-fp8` (and other FP8/AWQ profiles on 26.04) | Multi-turn corruption (Nth-turn garbage / nonstop thinking), vLLM 0.19 — suspected interaction with prefix caching | Enable alone, run multi-turn convos; **also re-test on 26.06 (0.22.1)** — may be fixed | ~2× KV capacity → longer context / more concurrency | ⚪ tabled (README "Pending investigation") |
+| **Prefix caching** (`--enable-prefix-caching`) — DEF-0007 | `step-3.5-flash-fp8` | Same corruption; suspected FP8-KV × prefix-cache interaction | Enable alone (BF16 KV) → then with FP8 KV | Large TTFT win on shared prefixes (system prompts, multi-turn) | ⚪ tabled |
+| **MTP / speculative decoding** (MTP-3) | `qwen3.6-35b-nvfp4-*`; `step-3.7-flash-nvfp4` (native MTP-3) | First-bring-up caution; GB10 forum: MTP causes **image** number-misreads (VL) | Enable **text-only**, A/B single-stream TPS behind fail-safe | **~3× single-stream** on qwen3.6-35b (~28–30 → ~97 tok/s, community) | 🟢 **KEEP** — A/B'd 2026-07-27 (qwen3.6-35b mtp3 profile, text-only, behind fail-safe): single-stream decode **2.3× faster** (TPOT 37.6→16.6 ms, ~27→~60 tok/s), stable (draft accept ~55→84%). Cost: flood-TTFT regresses (12→26 s) from the spec-decode `max_num_scheduled_tokens=2048` cap → **follow-up: raise `max_num_batched_tokens`**. Bench labels `q36-nomtp`/`q36-mtp3`. |
 | **flashinfer attention** (`--attention-backend flashinfer`) | `qwen3.6-35b-nvfp4-*` (community-recommended for GB10) | Not set — vLLM auto-selects | Pin it, A/B | Recommended backend for this model on GB10 | ⚪ candidate |
-| **Relax conservative gmu / `max_model_len`** | `step-3.7-nvfp4` (ctx 32768 → "raise toward 131072"); qwen gmu 0.55 | First-bring-up conservatism | Raise once stable; trust vLLM's *estimated max model length* | More context / concurrency | ⚪ per-profile tuning |
+| **Relax conservative gmu / `max_model_len`** | `step-3.7-flash-nvfp4` (ctx 32768 → "raise toward 131072"); qwen gmu 0.55 | First-bring-up conservatism | Raise once stable; trust vLLM's *estimated max model length* | More context / concurrency | ⚪ per-profile tuning |
 | **Full cudagraphs / TP=2 restore on 26.06** — DEF-0003 / DEF-0002 | container-level | 26.06 WARs — cudagraph inference hang ([vllm#40969](https://github.com/vllm-project/vllm/issues/40969)), TP=2 deadlock ([#41725](https://github.com/vllm-project/vllm/issues/41725)) | Restore when upstream fixes land | throughput / latency | ⚪ upstream-gated — see the 26.06 tracker WAR register |
 
 ## Consequences
@@ -87,7 +87,7 @@ win, "stable, exact output". That measurement stands. What was missing is the co
 because there was nothing to compare against — the MTP profile was the only one of its
 weights.
 
-`qwen3.6-35b-nvfp4-single` (same weights, same container, same parsers, spec-decode
+`qwen3.6-35b-a3b-nvfp4-single` (same weights, same container, same parsers, spec-decode
 removed) now makes the trade explicit:
 
 | | MTP-3 | no-MTP |
@@ -101,3 +101,38 @@ defensible trade for a throughput-oriented slot and a bad one for an agentic or
 multimodal slot — which is an argument for keeping *both* siblings rather than choosing,
 and for letting the sweep's paired rows (ADR-0016) decide per workload rather than
 globally. The `KEEP` verdict is not withdrawn; its scope is.
+
+## Errata — 2026-08-10: MTP-3 retired; the register's numbers were harness-bound
+
+The 2026-07-27 entry recorded MTP-3 as 🟢 **KEEP** on a **2.3× single-stream decode** win
+(TPOT 37.6 → 16.6 ms). The 2026-08-08 errata narrowed its *scope* — it costs vision and
+constrained tool calling. This errata retires it, and the reason is not the cost side.
+
+Re-measured on the **ADR-0016 HTTP-native harness**, all three shapes of the same weights,
+same container, back to back:
+
+| shape | single-stream | TPOT | vision | `tool_choice: required` |
+|---|---|---|---|---|
+| `qwen3.6-35b-a3b-nvfp4-mtp3-single` | 35.3 tok/s | 26.7 ms | ❌ | ❌ (DEF-0011) |
+| `qwen3.6-35b-a3b-nvfp4-single` | 74.9 tok/s | 12.9 ms | ✅ | ✅ |
+| `qwen3.6-35b-a3b-nvfp4` (TP=2) | **100.2 tok/s** | **9.6 ms** | ✅ | ✅ |
+
+**MTP-3 is the slowest of the three here** — the reverse of the recorded 2.3×.
+
+**The old measurement is not withdrawn; it is declared incomparable.** Its no-MTP baseline
+read 37.6 ms TPOT where this harness reads 12.9 ms for the same profile — the *baseline*
+moved 3×, so the two regiments were never measuring the same thing. That is precisely what
+the scoreboard's `⚠︎ legacy_perf` flag marks, and this is the first time it has mattered.
+
+**A second explanation is live and unresolved:** speculative decoding pays only when draft
+tokens are *accepted*, and this bench uses synthetic prompts. ADR-0014 recorded ~84%
+acceptance on its workload; real code completion is far more predictable than a benchmark
+prompt, so MTP-3 may still win on Geoff's actual work. **We did not measure that**, and the
+retirement does not claim otherwise.
+
+**Why retire anyway.** The decision does not need that question resolved. Taking MTP-3's
+best-ever recorded figure (~60 tok/s) at face value, plain TP=2 measures **100.2 tok/s**
+while keeping vision *and* constrained tool calling. MTP-3's sole argument is beaten by a
+configuration that costs no capability, so the profile is deleted. Should acceptance-rate
+evidence ever revive it, MTP is a two-line flag change on the surviving TP=2 profile — the
+weights never left.

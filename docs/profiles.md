@@ -11,11 +11,13 @@ Adding a profile and *running* it are separate acts at separate privilege levels
 first is a password-gated deploy, the second needs no root at all.
 
 **Naming.** Profile names are the `<model>-<version>-<quant>` triple
-(e.g. `step-3.5-fp8`, `minimax-m2.7-nvfp4`). A `-single` / `-dual` **topology
-suffix** marks the per-node (TP=1) shapes — `-dual` = one independent engine on
-*each* node, `-single` = snoopy only. The **suffixless** big-model profiles are
-**TP=2 across both nodes** (one model sharded); TP=2 is used only where a model
-is too big for one node. `empty` is the special "nothing serving" profile.
+(e.g. `qwen3-coder-next-nvfp4`, `minimax-m2.7-nvfp4`). A **bare name is the TP=2
+big-shared shape**, which since 2026-08-10 is every serving profile. A `-single`
+suffix marks the snoopy-only TP=1 shape; none remain live, and the retired ones are
+in [`../ansible/profiles/retired/`](../ansible/profiles/retired/). (`-dual` — one
+independent engine per node — was retired earlier: two endpoints of one model buy
+nothing without a round-robin in front.) TP=2 is no longer reserved for models too
+big for one node; it measured faster for models that fit, too. `empty` is the special "nothing serving" profile.
 
 This doc is the **catalog** of profiles that exist today. Companion docs:
 
@@ -27,97 +29,91 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
 
 ## Catalog
 
-| Profile | Shape | gmu | `max_model_len` | Outside headroom (per node) | Workflow archetype |
-|---|---|---|---|---|---|
-| [`step-3.5-fp8`](#step-35-fp8) | TP=2 big-shared | 0.90 | 32768 | ~5 GiB | fully-committed |
-| [`step-3.7-nvfp4`](#step-37-nvfp4) | TP=2 big-shared (**26.07**) | 0.75 | 32768 | ~30 GiB | ⛔ **PARKED** (`blocked: true`) — upstream vLLM VL bug |
-| [`minimax-m2.7-nvfp4`](#minimax-m27-nvfp4) | TP=2 big-shared (**26.07**) | 0.80 | 131072 | ~24 GiB | big-shared with dev headroom |
-| [`qwen3-coder-nvfp4-single`](#qwen3-coder-nvfp4-single) | snoopy TP=1 (**26.07**) | 0.55 | 262144 | sparky free + ~55 GiB on snoopy | coder, sparky-free for dev |
-| [`qwen3.6-35b-nvfp4-mtp3-single`](#qwen36-35b-nvfp4-mtp3-single) | snoopy TP=1 (**26.07**, MTP-3) | 0.55 | 262144 | sparky free + ~55 GiB on snoopy | reasoning-generalist (2.3× single-stream) |
-| [`empty`](#empty) | no engines | — | — | full hardware | bare cluster |
+Measured 2026-08-10 on the ADR-0016 HTTP-native harness. **`ctx` is what one request may
+use (`max_model_len`); `KV` is what the cache actually holds** — the gap is the headroom
+we are choosing not to offer, and on this fleet it is enormous.
 
-### step-3.5-fp8
-- **Model:** `Step-3.5-Flash-FP8` (~195 GiB total, ~97.5 GiB per shard); container 26.04.
-- **Serves as:** `step-3.5-flash` at `sparky:8000` (TP=2 across sparky + snoopy)
-- **Why this tuning:** weights nearly fill the per-node budget. At `gmu 0.90`
-  KV available is ~11.7 GiB — `max_model_len 32768` is the
-  empirically-confirmed value (sliding_window=512 may allow more; not measured).
-- **Workflow:** fully committed. Use other machines for dev that day.
+| Profile | Model | decode | ctx / KV | notes |
+|---|---|---|---|---|
+| [`qwen3-vl-235b-a22b-instruct-nvfp4`](#qwen3-vl-235b-a22b-instruct-nvfp4) | Qwen3-VL-235B-A22B | 23.8 tok/s | 131k / 534k | **75.0%** MMLU-Pro subset — the accuracy leader. Vision + tools verified |
+| [`nvidia-nemotron-3-super-120b-a12b-nvfp4`](#nvidia-nemotron-3-super-120b-a12b-nvfp4) | Nemotron-3-Super-120B-A12B | *unmeasured* | 262k / ~31M est | new 2026-08-10; Puzzle's uncompressed upstream |
+| [`nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4`](#nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4) | Nemotron-3-Puzzle-75B-A9B | 32.0 tok/s | 131k / **35.2M** | the long-context model — hybrid Mamba, 8 of 88 layers attention |
+| [`qwen3.6-35b-a3b-nvfp4`](#qwen36-35b-nvfp4) | Qwen3.6-35B-A3B | **100.2 tok/s** | 262k / 16.3M | the fast generalist; TPOT 9.6 ms |
+| [`qwen3-coder-next-nvfp4`](#qwen3-coder-next-nvfp4) | Qwen3-Coder-Next | 54.0 tok/s | 262k / 5.98M | coding; also the DEF-0003 exercise (no spec-decode masking it) |
+| [`minimax-m2.7-nvfp4`](#minimax-m27-nvfp4) | MiniMax-M2.7 | 24.9 tok/s | 131k / 449k | best raw throughput (148.9 tok/s @16); reasons past the eval cap on 32% of items |
+| [`mistral-medium-3.5-128b-nvfp4`](#mistral-medium-35-nvfp4) | Mistral-Medium-3.5-128B | *unmeasured* | 131k / — | the European option; `MIXED_PRECISION`, `--tokenizer-mode mistral` |
+| [`step-3.7-flash-nvfp4`](#step-37-nvfp4) | Step-3.7-Flash-NVFP4 | — | — | ⛔ **PARKED** — DEF-0006, re-probed on 26.07 and still missing |
+| [`empty`](#empty) | — | — | — | nothing serving; the fail-safe target |
 
-### step-3.7-nvfp4
-- **Model:** `Step-3.7-Flash-NVFP4` (~129 GiB total, ~64.5 GiB per shard); **pins container 26.07**
-  (per-profile override — NVFP4/modelopt needs it).
-- **Serves as:** `step-3.7-flash` at `sparky:8000` (TP=2 across sparky + snoopy)
-- **Status:** ⛔ **PARKED** — `blocked: true`, so it stays out of the allowlist file the
-  reconciler validates against: its weights and engine env files are installed by every
-  deploy (re-testing costs no download), but `activate` refuses it on every node. Drop
-  the `blocked:` line and deploy to re-test when the fix lands.
-  **NVFP4 loaded + ran on 26.06 with no hang** (2026-07-02) — the hard part works
-  and per-profile pinning is validated. The remaining blocker is an upstream vLLM bug, not
-  NVFP4/the container: Step-3.7's `Step3VLProcessor` crash-loops on startup (missing
-  `_get_num_multimodal_tokens`). **Unblock when** vLLM ships the fix. See
-  [`docs/upgrades/container-nvidia-vllm-26.06-py3.md`](upgrades/container-nvidia-vllm-26.06-py3.md)
-  and [`docs/models/step-3.7-flash.md`](models/step-3.7-flash.md).
-- **Workflow:** big-shared with ~30 GiB/node headroom (NVFP4 roughly halves the FP8 footprint).
+**Every profile is TP=2 across both nodes.** That is not a coincidence and not a policy —
+it is what the measurement said. Three paired TP=1/TP=2 profiles were benched back to
+back on 2026-08-10 and TP=2 won on decode (1.34–1.59×), throughput (+41–50%) **and** KV
+capacity, on a dense-MoE model, a second dense-MoE model, and a hybrid-Mamba model. The
+`-single` twins were retired the same day; their configs live in
+[`ansible/profiles/retired/`](../ansible/profiles/retired/). See
+[`profile-tuning.md`](profile-tuning.md), which used to assert the opposite.
+
+The remaining cost of TP=2 is **fleet occupancy**: both nodes are committed, leaving
+~24 GiB of dev headroom on sparky rather than the whole box. That is the only surviving
+argument for a single-node profile, and no current model makes it.
+
+### qwen3-vl-235b-a22b-instruct-nvfp4
+- **Model:** `Qwen3-VL-235B-A22B-Instruct-NVFP4` (~127 GiB, ~63.5 GiB/shard); 26.07.
+- **Serves as:** `qwen3-vl-235b` (plus the stable `sparky` alias) at `sparky:8000`.
+- **Measured:** 75.0% on the committed MMLU-Pro subset with **zero** unparseable answers,
+  reproduced to the decimal across two runs. 23.8 tok/s single-stream, 110.5 @16.
+- **Tools:** `hermes`, and that name was *read from the chat template*, not guessed —
+  `qwen3_xml` returned HTTP 200 with `{}` and garbage arguments, which a status-code check
+  called a pass. Vision verified end to end.
+- **Workflow:** the default when you want the smartest answer and can wait for it.
+
+### nvidia-nemotron-3-super-120b-a12b-nvfp4
+- **Model:** `NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4` (~74.8 GiB, ~37.4 GiB/shard); 26.07.
+- **Status:** new 2026-08-10, **unmeasured** — treat the first activation as the test.
+- **Why:** the uncompressed upstream of Puzzle (120B/A12B vs 75B/A9B) in the same NemotronH
+  hybrid family, so it should inherit the enormous cache for ~25 GiB more disk.
+- ⚠️ **`MIXED_PRECISION` despite the `-NVFP4` name**, and it declares an FP8 KV cache.
+  Never pass `--quantization`. Same shape as `mistral-medium-3.5-128b-nvfp4`.
+
+### nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
+- **Model:** `NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4` (~50 GiB); 26.07.
+- **Measured:** **35.2M KV tokens** — the largest cache in the fleet by 2×, against a
+  131,072 ceiling. That is 268 full-length conversations, or 0.4% of the cache in use.
+- **Why so large:** of 88 layers only 8 are attention; the rest are Mamba and MLP, and a
+  Mamba layer's state is fixed rather than growing per token. Context is nearly free here.
+- **Workflow:** long documents, whole-codebase reading. Raise `max_model_len` before
+  reaching for another model.
+
+### qwen3.6-35b-a3b-nvfp4
+- **Model:** `Qwen3.6-35B-A3B-NVFP4` (~22 GiB); 26.07. FP8 KV cache.
+- **Measured:** the fastest thing we serve — **100.2 tok/s** single-stream, **9.6 ms** TPOT,
+  540 tok/s at concurrency 16, with 16.3M KV tokens.
+- **On MTP-3:** a `-mtp3-single` sibling ran spec-decode for a recorded 2.3× win. Re-measured
+  on this harness it was the *slowest* of three shapes (35.3 tok/s) while forfeiting vision
+  and constrained tool calling, and was retired — see [ADR-0014](adr/0014-optimization-register.md)'s
+  second errata, including the caveat that its acceptance rate was never re-measured.
+
+### qwen3-coder-next-nvfp4
+- **Model:** `Qwen3-Coder-Next-NVFP4` (~45 GiB); 26.07. Tools via `qwen3_coder`.
+- **Measured:** 54.0 tok/s, TPOT 18.0 ms, 5.98M KV.
+- **Also the DEF-0003 exercise:** it runs no speculative decoding, so unlike the MTP sibling
+  it does not accidentally mask the GB10 cudagraph hang. No hang observed on 26.07.
 
 ### minimax-m2.7-nvfp4
-- **Model:** `MiniMax-M2.7-NVFP4` (~131 GiB total, ~70 GiB per shard; modelopt NVFP4 MoE);
-  **pins container 26.07**.
-- **Serves as:** `minimax-m2` at `sparky:8000` (TP=2 across sparky + snoopy)
-- **Retired its AWQ sibling (2026-08-08).** `minimax-m2.7-awq` served the same model as
-  compressed-tensors int4 on container 26.04. It is gone: the Marlin MoE loader that
-  quant needs is [DEF-0004](defects.md), which **froze a node outright** on 26.07, so AWQ
-  could never leave 26.04 — while this profile serves the same model on the current
-  container with hardware FP4 on Blackwell. Keeping a permanently-pinned duplicate of a
-  model we already serve better cost 122 GiB per node and bought nothing.
-- **Why this tuning:** NVFP4 weights are *bigger* than the retired AWQ (~70 vs ~61 GiB/node), so
-  `gmu 0.80` → ~26 GiB KV/rank budgeted (**30.58 GiB measured**, 449,664 tokens) and
-  ~24 GiB/node outside headroom. Soaked 64 min at concurrency 8, **1312/1312 HTTP 200**
-  with flat latency (p50 21.8 s / max 23.4 s) — DEF-0002's deadlock window passed clean.
-- **Workflow:** big-shared with ~24 GiB/node headroom.
+- **Model:** `MiniMax-M2.7-NVFP4` (~131 GiB, ~65.5 GiB/shard); 26.07. Soaked 64 min clean.
+- **Measured:** best raw throughput at concurrency (148.9 tok/s @16) and the best
+  prefix-cache TTFT. Accuracy reads 57.1% but is a **floor**, not a score: it ran past the
+  4096-token cap on 32% of items, taking a median 821 s on those and still not concluding.
+- **Workflow:** batch and concurrent work. Not interactive reasoning.
 
-### qwen3-coder-nvfp4-single
-- **Model:** `Qwen3-Coder-Next-NVFP4` (80B-A3B linear-attention hybrid, ~45 GiB NVFP4;
-  compressed-tensors — staged as the `RedHatAI/Qwen3-Coder-Next-NVFP4` build; the
-  GB10-targeted `saricles/Qwen3-Coder-Next-NVFP4-GB10` is an alternative if needed);
-  **pins container 26.07**. Coding-tuned agent.
-- **Engine:** `qwen3-coder-snoopy` (`snoopy:8000`), TP=1. Single-node serving runs on
-  snoopy by design — sparky stays free for the frontends + dev.
-- **Why per-node, not TP=2:** weights fit one node with room to spare; with no NVLink between
-  the Sparks, cross-node TP=2 for a 3B-active model is bandwidth/latency-bound and would only
-  *cost* decode throughput. See the tuning doc for the full TP=2 cost analysis.
-- **Why this tuning:** `gmu 0.55` → ~20 GiB KV (cheap here — hybrid attn), ~55 GiB/node free
-  for dev/builds. **Fallback:** if compressed-tensors won't load, use the official
-  `Qwen/Qwen3-Coder-Next-FP8` (80 GiB) and rename the family to `-fp8`.
-
-### qwen3.6-35b-nvfp4-mtp3-single
-- **Model:** `Qwen3.6-35B-A3B-NVFP4` (35B-A3B MoE, ~22 GiB NVFP4; **nvidia modelopt** —
-  the proven-loads path); **pins container 26.07**. Reasoning-generalist (also VL —
-  run **text-first**; **MTP-3 on** — 2.3× single-stream decode, ADR-0014; MTP corrupts
-  image number-reads so it stays text-only). Arch `Qwen3_5MoeForConditionalGeneration`,
-  registry-confirmed on 26.07's vLLM 0.24.0. **Constrained tool choice (`required`,
-  named-function) 500s here** — MTP breaks structured output on 0.24.0 (DEF-0011);
-  `auto`, which is what Open WebUI sends, is unaffected.
-- **Engine:** `qwen3.6-35b-snoopy` (`snoopy:8000`), TP=1. Single-node serving on snoopy
-  by design.
-- **Why per-node, not TP=2:** same as the coder family — fits one node, cross-node TP=2 is a
-  throughput loss for a 3B-active model.
-- **Why this tuning:** `gmu 0.55` → ~43 GiB KV (ample; cheap hybrid-attn KV), ~55 GiB/node
-  free. Drop to ~0.45 for more dev headroom — KV is already overkill.
-
-### empty
-- **What it serves:** nothing. Only the always-on services (Caddy, control panel,
-  Open WebUI, Prometheus, Grafana, exporters) — the cluster stays observable and
-  reachable while both GPUs are free.
-- **What activating it does:** declares no engines, so the reconciler clears every
-  desired marker fleet-wide and stops every engine. Nothing is *uninstalled* — weights,
-  env files and enabled units all stay, so the next activation is just a start.
-- **Also the fail-safe target.** Any uncertainty — an unreadable request, an unknown
-  profile, a node that fails to reconcile — lands here rather than guessing a model
-  onto the GPU. It is always activatable, even if the allowlist file is missing, so
-  recovery never depends on a file being right.
-- **Workflow:** working with cloud AI (Claude etc.), running the cluster as a
-  build farm, or just freeing the hardware.
+### mistral-medium-3.5-128b-nvfp4
+- **Model:** `Mistral-Medium-3.5-128B-NVFP4` (~89 GiB); 26.07. **Unmeasured.**
+- **Why it is here:** deliberate vendor diversity — every other model in the fleet is
+  Chinese, and a European option is a tiebreaker worth keeping.
+- ⚠️ Two traps, both paid for: the checkpoint is **`MIXED_PRECISION`**, not NVFP4 as the
+  repo name says, and it needs **`--tokenizer-mode mistral`** on *both* ranks or it refuses
+  to start with `must be an instance of MistralTokenizer`.
+- **Open:** DEF-0012 — `--limit-mm-per-prompt` does not skip multimodal profiling.
 
 ## Switching what serves
 
@@ -168,14 +164,17 @@ engine to stop first. To keep the weights but stop it being activatable, set
    `hf` install needed) and writes a flat copy into the inbox. The next deploy moves it
    into the canonical store and mirrors to every node.
 2. **Copy** an existing profile that matches your shape:
-   - big-shared TP=2 → start from `step-3.5-fp8.yml` or `minimax-m2.7-nvfp4.yml`
-   - single-node small → start from `qwen3-coder-nvfp4-single.yml` (snoopy, TP=1)
+   - big-shared TP=2 (the default, and what every live profile is) → start from
+     `minimax-m2.7-nvfp4.yml`, or `nvidia-nemotron-3-super-120b-a12b-nvfp4.yml` if the checkpoint
+     is `MIXED_PRECISION`
+   - single-node TP=1 → only if you specifically need a node left free; copy one from
+     [`retired/`](../ansible/profiles/retired/) and re-verify its parsers first
 3. **Pick `gpu_memory_utilization` and `max_model_len`** per
    [`profile-tuning.md`](profile-tuning.md) — decide your *outside-headroom*
    target first, give vLLM the rest.
 4. **`./sparky.sh lint`** (validates the whole allowlist — fleet-wide-unique engine
    names, the one front port, flags that survive the env-file round trip), then
-   **`./sparky.sh check`** to dry-run and **`./sparky.sh deploy`** to install it.
+   **`./sparky.sh deploy --check`** to dry-run and **`./sparky.sh deploy`** to install it.
 5. **`./sparky.sh activate <name>`** to serve it.
 
 Two constraints the fleet enforces, worth knowing before you write the file:

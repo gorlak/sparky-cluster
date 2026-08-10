@@ -1,11 +1,11 @@
 # Upgrade: `nvcr.io/nvidia/vllm` → `26.07-py3` (the defect-clearing candidate)
 
 **Status:** ✅ **Done — all six campaign steps complete (2026-08-08).** Every NVFP4
-profile serves on `dgx-spark/vllm:26.07-xgrammar-fix`; `step-3.5-fp8` stays on 26.04 by
+profile serves on `dgx-spark/vllm:26.07-xgrammar-fix`; `step-3.5-flash-fp8` stays on 26.04 by
 choice. **DEF-0001 and DEF-0005 closed and deleted from the register**, DEF-0002 and
 DEF-0003 downgraded to watch, DEF-0010 WAR'd and verified, DEF-0011 filed and scoped —
 and DEF-0004 escalated to 🔴, taking the AWQ profile with it.
-**Current pins:** `26.04-py3` (vLLM 0.19, NCCL 2.29.7) for `step-3.5-fp8` alone · `dgx-spark/vllm:26.07-xgrammar-fix` (vLLM 0.24.0, NCCL 2.30.7) for everything else
+**Current pins:** `26.04-py3` (vLLM 0.19, NCCL 2.29.7) for `step-3.5-flash-fp8` alone · `dgx-spark/vllm:26.07-xgrammar-fix` (vLLM 0.24.0, NCCL 2.30.7) for everything else
 **Target:** `26.07-py3` — **vLLM 0.24.0, NCCL 2.30.7, fastapi 0.136.3** (probed 2026-08-08)
 **Last updated:** 2026-08-08
 
@@ -33,7 +33,7 @@ them is conditioned on what the container ships:
 | **DEF-0003** | vllm#40969 — GB10 cudagraph hang | full cudagraphs, and an ADR-0014 throughput A/B |
 | **DEF-0004** | Marlin WNA16 MoE load path on sm_121 | AWQ/compressed-tensors profiles off 26.04 |
 | **DEF-0005** | a `fastapi<0.137` cap upstream | **delete the derived image entirely** — Dockerfile, build entry, and all |
-| **DEF-0006** | `Step3VLProcessor._get_num_multimodal_tokens` | un-park `step-3.7-nvfp4` |
+| **DEF-0006** | `Step3VLProcessor._get_num_multimodal_tokens` | un-park `step-3.7-flash-nvfp4` |
 
 Nothing else in the sweep unblocks anything. That is the argument for probing this
 before spending a bump cycle on Grafana.
@@ -103,14 +103,14 @@ failure early makes every later result unattributable.
 
 | # | activate | isolates | tells us | result (2026-08-08) |
 |---|---|---|---|---|
-| 1 | `qwen3.6-35b-nvfp4-mtp3-single` | the container alone — MTP-3 keeps cudagraphs downgraded, so DEF-0003 stays masked | do our serve flags survive vLLM 0.24.0 | ✅ flags survive — but found **DEF-0010** (all tool-calling 500s) and, after WAR'ing it, **DEF-0011** |
-| 2 | `qwen3-coder-nvfp4-single` | **no spec-decode** → `FULL_AND_PIECEWISE` for the first time on GB10 | **DEF-0003** | ✅ **no hang** — first real exercise ever; DEF-0003 → 🔵 watch |
+| 1 | `qwen3.6-35b-a3b-nvfp4-mtp3-single` | the container alone — MTP-3 keeps cudagraphs downgraded, so DEF-0003 stays masked | do our serve flags survive vLLM 0.24.0 | ✅ flags survive — but found **DEF-0010** (all tool-calling 500s) and, after WAR'ing it, **DEF-0011** |
+| 2 | `qwen3-coder-next-nvfp4-single` | **no spec-decode** → `FULL_AND_PIECEWISE` for the first time on GB10 | **DEF-0003** | ✅ **no hang** — first real exercise ever; DEF-0003 → 🔵 watch |
 | 3 | `minimax-m2.7-nvfp4` + a **concurrency** soak | TP=2 on 26.07 | **DEF-0002** | ✅ loads and serves on 26.07 (KV 30.58 GiB / 449,664 tok); soak result below |
 | 4 | ~~`minimax-m2.7-awq-2607`~~ | AWQ/Marlin MoE load path on 0.24.0 | **DEF-0004** | ❌ **froze sparky** during weight load — profile deleted, DEF-0004 escalated to 🔴 |
 | 5 | — delete the derived image | | **DEF-0005** closed | ✅ done — `vllm-26.06-fastapi-fix` removed |
 | 6 | drop `NCCL_NVLS_ENABLE=0`, TP=2 bring-up | cluster-wide, cannot be isolated per profile | **DEF-0001** | ✅ **cleared** — NVLS-enabled TP=2 bring-up clean on NCCL 2.30.7; WAR removed, row deleted |
 
-`minimax-m2.7-awq` and `step-3.5-fp8` were held on 26.04 throughout as the fallback if
+`minimax-m2.7-awq` and `step-3.5-flash-fp8` were held on 26.04 throughout as the fallback if
 26.07 disappointed. That is why step 4 used a temporary `-2607` twin rather than
 repointing the real AWQ profile — it was the only known-good AWQ configuration we had,
 and DEF-0004 is precisely the defect that could take it away.
@@ -118,7 +118,7 @@ and DEF-0004 is precisely the defect that could take it away.
 **That caution paid for itself**: step 4 froze the node, and the real AWQ profile was
 never at risk. It was retired afterwards anyway, but by *choice* rather than by
 accident — DEF-0004 means AWQ can never leave 26.04, while `minimax-m2.7-nvfp4` serves
-the same model on the current container. Only `step-3.5-fp8` remains on 26.04.
+the same model on the current container. Only `step-3.5-flash-fp8` remains on 26.04.
 
 Step 5 was deliberately last-but-one: keeping `dgx-spark/vllm:26.06-fastapi-fix`
 buildable through steps 1–4 is what made rollback a one-line profile edit.
@@ -283,7 +283,7 @@ mechanism ADR-0013 exists for, and it means a bad 26.07 affects exactly one prof
   Rollback, if ever needed, is git: the 26.06 Dockerfile and pins are one revert away and
   the image itself is still resident on both nodes until pruned.
 
-- **2026-08-08 (step 2 — DEF-0003 exercised, NO HANG)** — `qwen3-coder-nvfp4-single`
+- **2026-08-08 (step 2 — DEF-0003 exercised, NO HANG)** — `qwen3-coder-next-nvfp4-single`
   activated on 26.07. It carries **no speculative decoding**, so nothing downgraded the
   cudagraph mode and `FULL_AND_PIECEWISE` ran for real — the first time on this hardware:
 
@@ -307,7 +307,7 @@ mechanism ADR-0013 exists for, and it means a bad 26.07 affects exactly one prof
   **below vLLM's own declared minimum**, so `pip check` inside the image would have
   caught it. The WAR is exact: `pip install 'xgrammar>=0.2.1'` in a derived image.
 
-- **2026-08-08 (step 1 — canary, FAILED)** — `qwen3.6-35b-nvfp4-mtp3-single` activated on
+- **2026-08-08 (step 1 — canary, FAILED)** — `qwen3.6-35b-a3b-nvfp4-mtp3-single` activated on
   26.07. The engine **loaded and served plain chat correctly**; the smoke gate then
   failed on the tool-shape probe with HTTP 500:
 

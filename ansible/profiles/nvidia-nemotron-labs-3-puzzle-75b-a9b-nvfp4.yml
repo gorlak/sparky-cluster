@@ -1,0 +1,74 @@
+---
+# nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4 — the TP=2 twin of `nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4-single`, existing ONLY to measure
+# what tensor parallelism costs and buys for a model that fits on one node.
+#
+# THE QUESTION. Our tuning doc asserts that cross-node TP=2 for a small model "only
+# costs decode throughput", because the two Sparks have no NVLink and every layer pays
+# an all-reduce over RoCE. That was reasoned, never measured — and it only addresses
+# SPEED. It says nothing about the other side of the trade:
+#
+#   weights shard across both nodes, so KV capacity roughly 2.5x
+#   -> much longer usable context, which is the binding constraint for
+#      long-document and whole-codebase work
+#
+# So: paired rows, one variable. `bench` gives the decode cost (TPOT) and the prefill
+# gain (TTFT); `context_capacity` gives the KV tokens actually available. Together they
+# answer whether "big-shared" should mean big models only, or any model, for the cache.
+#
+# gmu rises from 0.65 to 0.80: with the weights halved per node there is room
+# to spend, and spending it on KV is the entire point of the experiment.
+#
+# ANSWERED 2026-08-10 — this profile WON and its `-single` twin is retired
+# (config kept in profiles/retired/). Measured back to back on the ADR-0016
+# harness: 1.59x decode (TPOT 48.5 -> 30.6 ms), +50% throughput, 4.65x KV.
+# The tuning doc asserted cross-node TP=2 "only costs decode throughput" for a
+# model this size; it was reasoned from having no NVLink and is wrong. GB10 decode
+# is MEMORY-BANDWIDTH bound, so sharding weights across two nodes buys more than
+# the RoCE all-reduce costs. See docs/profile-tuning.md.
+# Caveat kept honest: the pair differed in TWO variables (TP and gmu 0.55->0.80),
+# so the KV multiple overstates the pure TP effect; the speed rows do not.
+# ONE NAME. profile == engine == served_as == the lowercased canonical HF model
+# name, so the scoreboard, the systemd unit, the API and huggingface.co all agree.
+# `hf_repo` is the exact upstream id for eyeball-matching against the Hub.
+#
+# THE PAIR, MEASURED 2026-08-11. Puzzle is the NAS-compressed derivative of
+# `nvidia-nemotron-3-super-120b-a12b-nvfp4` — 40% fewer total parameters, 25% fewer
+# active — and gives up 1.4 points of MMLU-Pro (70.7% vs 72.1%, a two-question swing on
+# 140 items) for 29% faster decode, 68% more throughput and 26% more KV cache.
+# NVIDIA's compression is close to free on this workload. Both are kept until a coding
+# benchmark can test the axis MMLU-Pro cannot see; see the Super profile for that bet.
+profile_name: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
+hf_repo: nvidia/NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [big-shared, tool-calling]
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
+serving_topology:
+  - name: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
+    kind: vllm
+    model: NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4
+    served_as: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
+    gpu_memory_utilization: "0.80"
+    max_model_len: 131072
+    head_extra_args:
+      - --enable-chunked-prefill
+      # Tool calling, added 2026-08-10 after the smoke gate refused this profile with
+      # `tool-shape: 400` — the model loaded and served fine, but an engine with no tool
+      # parser rejects the request shape Open WebUI sends, so it can never pass the gate
+      # and can never be swept.
+      #
+      # `qwen3_coder` is NOT a guess (a guessed parser name is a refusal to start —
+      # skills/model-bringup). Two pieces of evidence:
+      #   1. this model's chat_template.jinja emits the XML tool shape
+      #      `<tool_call><function=NAME><parameter=KEY>value</parameter></function>`,
+      #      which is the qwen3_coder format, NOT hermes' JSON-in-tags;
+      #   2. `qwen3-coder-next-nvfp4` runs this exact parser name on this exact image and
+      #      passed its smoke gate, so the name is known-registered.
+      # The image ships a `nemotron_v3_engine` REASONING module, but its registered name
+      # is unverified, so no --reasoning-parser here: one unproven flag is how a profile
+      # stops starting.
+      - --enable-auto-tool-choice
+      - --tool-call-parser qwen3_coder
+    worker_extra_args:
+      - --enable-chunked-prefill
+

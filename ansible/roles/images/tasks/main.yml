@@ -48,3 +48,103 @@
     group: root
     mode: "0644"
   become: true
+
+# --- reclaim: converge the image store to the declaration ----------------------
+# Symmetric with the `model` role's weight eviction, and gated on the SAME switch
+# (`./sparky.sh deploy --evict`) so one gesture reclaims both. Without it this is a
+# plan and nothing is deleted.
+#
+# The README used to say images were left to Docker's GC because "shared base layers
+# make convergent image deletion unsafe". That reason was wrong: Docker refcounts
+# layers, so removing an image frees only what nothing else needs, and `docker rmi`
+# refuses outright while a container holds the image. What was genuinely missing was a
+# statement of which images SHOULD exist — and `container_images` is exactly that, the
+# same declaration the pulls above converge to. Retiring a container therefore left
+# tens of GiB per node parked forever: 26.04 and 26.06 sat on both nodes long after
+# nothing ran them.
+- name: Read the images actually present on this node
+  # `--digests` is essential, not decoration. Upstream images are pulled BY DIGEST and
+  # `docker pull repo@sha256:…` creates no tag, so they list as `repo:<none>` with the
+  # digest in its own column. Matching on repository:tag alone would never recognise
+  # them — and they are exactly the images worth reclaiming (26.04 and 26.06 sat on both
+  # nodes unused). Remove by ID, which is unambiguous however the image was named.
+  ansible.builtin.command:
+    cmd: docker images --digests --format '{{ "{{.Repository}}|{{.Tag}}|{{.Digest}}|{{.ID}}|{{.Size}}" }}'
+  register: present_images
+  changed_when: false
+
+- name: Work out which references this node still needs
+  ansible.builtin.set_fact:
+    # Derived from the same declaration the pulls above converge to, so the keep-set
+    # cannot drift from what was installed.
+    declared_images: >-
+      {{ (container_images
+          | rejectattr('hosts', 'defined')
+          | map(attribute='pull', default='') | list)
+         + (container_images
+            | selectattr('hosts', 'defined')
+            | selectattr('hosts', 'in', group_names)
+            | map(attribute='pull', default='') | list)
+         + (container_images | map(attribute='build', default='') | list)
+         | select | list }}
+
+- name: Plan the image reclaim on this node
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: docker holds {{ present_images.stdout_lines | length }}
+      image(s); {{ reclaimable | length }} are named by no `container_images` entry for
+      this node — {{ reclaimable | map('regex_replace', '\\|.*$', '') | list }}.
+      Dangling layers from earlier builds are reclaimed separately and are always safe.
+      {{ 'RECLAIMING now (evict_weights=true).' if evict_weights | bool
+         else 'NOT reclaiming — this is a plan; ./sparky.sh deploy --evict applies it.' }}
+  vars:
+    reclaimable: >-
+      {{ present_images.stdout_lines
+         | reject('search', '^<none>\\|<none>')
+         | reject('search', '\\|' ~ (declared_images | join('$|\\|')) ~ '$')
+         | list }}
+
+# Dangling first and separately: untagged layers orphaned by REBUILDS of the derived
+# image (its Dockerfile changes whenever the WAR does). Nothing can reference them by
+# name, so this is unconditionally safe and is usually where most of the space is.
+- name: Reclaim dangling image layers
+  ansible.builtin.command:
+    cmd: docker image prune --force
+  register: prune_dangling
+  when: evict_weights | bool
+  changed_when: "'Total reclaimed space: 0B' not in prune_dangling.stdout"
+
+# `docker rmi` refuses while a container holds the image — including the engine serving
+# right now. That is the desired outcome rather than an error: failing a deploy over a
+# reclaim would be worse than keeping a stale image, so failures are tolerated, counted
+# and reported.
+- name: Reclaim images this node's declaration no longer names
+  ansible.builtin.command:
+    cmd: "docker rmi {{ item.split('|')[3] }}"
+  loop: "{{ present_images.stdout_lines }}"
+  loop_control:
+    label: "{{ item.split('|')[0] }}:{{ item.split('|')[1] }} ({{ item.split('|')[4] }})"
+  when:
+    - evict_weights | bool
+    # keep truly-dangling for the prune above; it handles them wholesale
+    - not (item.split('|')[0] == '<none>' and item.split('|')[1] == '<none>')
+    # kept if the declaration names it by digest, by repo:tag, or by bare name (built)
+    - (item.split('|')[0] ~ '@' ~ item.split('|')[2]) not in declared_images
+    - (item.split('|')[0] ~ ':' ~ item.split('|')[1]) not in declared_images
+    - item.split('|')[0] not in declared_images
+  register: rmi_result
+  failed_when: false
+  changed_when: rmi_result.rc == 0
+
+- name: Report images that could not be reclaimed
+  ansible.builtin.debug:
+    msg: >-
+      Kept — in use by a running container, which is correct: an image cannot be removed
+      while an engine serves from it.
+      {{ rmi_result.results | default([]) | selectattr('rc', 'defined')
+         | selectattr('rc', 'ne', 0) | map(attribute='item')
+         | map('regex_replace', '\\|.*$', '') | list }}
+  when:
+    - evict_weights | bool
+    - rmi_result.results | default([]) | selectattr('rc', 'defined')
+      | selectattr('rc', 'ne', 0) | list | length > 0

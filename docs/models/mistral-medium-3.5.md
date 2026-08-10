@@ -3,7 +3,7 @@
 **Last updated:** 2026-08-08
 **Hardware:** sparky + snoopy — GB10 Blackwell (SM 12.1), 128 GiB unified memory each, ConnectX-7 200Gbit RoCE
 **Installed quant:** **NVIDIA ModelOpt `MIXED_PRECISION`** — staged as `Mistral-Medium-3.5-128B-NVFP4`, **89 GiB measured** (~44.5 GiB/node at TP=2)
-**Profile:** [`mistral-medium-3.5-nvfp4`](../profiles.md) — TP=2, gmu 0.75, `max_model_len` 131072, container 26.07
+**Profile:** [`mistral-medium-3.5-128b-nvfp4`](../profiles.md) — TP=2, gmu 0.75, `max_model_len` 131072, container 26.07
 
 > **The staged checkpoint is not what this sheet originally targeted.** It is NVIDIA's
 > ModelOpt quant of `mistralai/Mistral-Medium-3.5-128B` (nvidia-open-model-license,

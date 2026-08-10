@@ -11,6 +11,11 @@ from dataclasses import dataclass
 
 # (store column, display, format, higher_is_better)
 METRICS = [
+    # Accuracy and context first: they are what a paired comparison is usually ABOUT.
+    # The TP=1 vs TP=2 question is "what does decode cost me, and how much context do I
+    # gain" — and a report that showed only tokens/s could not answer either half.
+    ("accuracy", "Accuracy", "{:.1%}", True),
+    ("kv_tokens", "KV context (tokens)", "{:,.0f}", True),
     ("output_toks_s", "Output tok/s", "{:.1f}", True),
     ("total_toks_s", "Total tok/s", "{:.1f}", True),
     ("requests_s", "Requests/s", "{:.2f}", True),
@@ -21,7 +26,7 @@ METRICS = [
     ("itl_mean_ms", "ITL mean (ms)", "{:.2f}", False),
     ("itl_p99_ms", "ITL p99 (ms)", "{:.2f}", False),
 ]
-SCENARIOS = ("latency", "throughput", "prefix_cache")
+SCENARIOS = ("quality:mmlu-pro", "latency", "throughput", "prefix_cache")
 
 
 def improvement_pct(a: float | None, b: float | None, higher_better: bool) -> float | None:

@@ -96,7 +96,7 @@ committing the profile.
 
 ## Recommended next actions (in order)
 
-1. **Reopen ADR-0014 with MTP-3 on `qwen3.6-35b-nvfp4` first** — highest value, now de-risked;
+1. **Reopen ADR-0014 with MTP-3 on `qwen3.6-35b-a3b-nvfp4` first** — highest value, now de-risked;
    A/B single-stream TPS behind the fail-safe net, tool-shape check via the smoke gate.
 2. **Then FP8-KV / prefix-caching re-test on 26.06** (DEF-0007) — the "may already be fixed"
    free win, on models confirmed here to be staying.
