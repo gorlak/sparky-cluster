@@ -121,11 +121,9 @@ upgrading our models"**, after a notable release, or when a blocking dependency 
    (NVFP4 availability; official vs community; calibrated vs RTN). Record release date,
    HF repo, quant method.
 
-   **Check `docs/models/tombstones.md` first.** It is the register of models already
-   ruled out, and it owns those verdicts. A tombstoned model is not a candidate unless
-   its stated *Reconsider when* has actually been met — say which one, and why it now
-   holds. MiniMax-M3 is the trap this catches: it is the obvious M2.7 upgrade and it
-   does not fit under TP=2, so it looks worth sizing every single sweep.
+   **Check [`docs/models/tombstones.md`](../../docs/models/tombstones.md) first** — it
+   owns the verdicts on models already ruled out, and states how to revisit one. Do that
+   before sizing anything: a tombstoned model looks like a fresh candidate every time.
 
 3. **Assess each candidate's fit** with the checklist above — size it
    (`hf models ls <repo> --tree -h`, no download), do the per-node memory math at the
@@ -143,4 +141,4 @@ upgrading our models"**, after a notable release, or when a blocking dependency 
    recommendation` (upgrade now / interim / hold / blocked-until-X).
 
 Honor the **"Do not use"** list (README "Adding New Models / Profiles"). Committing the
-produced docs: see [[development]] (stage, don't commit).
+produced docs: see [[development]].

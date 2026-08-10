@@ -54,7 +54,7 @@ NVFP4 is the pick on Blackwell — native FP4 tensor cores, and it leaves the mo
   hybrid path. **Verify on our 26.06 container before committing** — but the existence of
   multiple **GB10-native NVFP4 quants** (`ucbye` ~28k downloads, `saricles`, `gdubicki`,
   all tagged `vllm`+`GB10`) is strong evidence dual-Spark users serve this exact model.
-- **NVFP4 needs 26.06** (now working per Geoff, 2026-07-02) — same container the
+- **NVFP4 needs 26.06** (confirmed working 2026-07-02) — same container the
   Step-3.7 work is on.
 - Ships its own vLLM tool-parser (`qwen3coder_tool_parser_vllm.py`) — wire the
   `--tool-call-parser` accordingly for agentic use.

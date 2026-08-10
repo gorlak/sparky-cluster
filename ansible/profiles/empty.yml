@@ -1,6 +1,6 @@
 ---
 # Bare cluster — nothing serving on either node. Both GPUs and the bulk of each
-# node's RAM are free for: (a) Geoff's day-job/dev work, or (b) using cloud AI
+# node's RAM are free for: (a) the user's day-job/dev work, or (b) using cloud AI
 # (Claude, etc.) where Open WebUI / direct API access is plenty.
 #
 #   ./sparky.sh activate empty

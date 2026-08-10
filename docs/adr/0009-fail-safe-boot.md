@@ -109,3 +109,29 @@ The lifecycle is what makes it work:
   (unit exits repeatedly without hanging the host) from restarting forever; it
   leaves the unit failed-but-reachable. This does not overlap with the marker —
   it covers the case the marker cannot (clean exits) and vice versa.
+
+---
+
+## Verification — 2026-08-08
+
+Added after acceptance. This is the *result* of the test this ADR's own plan called for,
+not a revision of the decision; it lived in the README only because that is where it got
+written down first.
+
+**Both gates, tested independently, without a hard reset.** A clean reboot of snoopy left
+five of six enabled instances skipped for want of a *desired* marker, and started the sixth
+on its own — no reconciler involved, which is the property that matters: the markers carry
+the decision, and the script need not even exist for recovery to work. A planted `.running`
+marker then made that same engine skip on the *negated* gate, leaving the node up,
+reachable and serving nothing. systemd names the failing condition in the journal either
+way, so the reason is visible without instrumentation.
+
+**Then the negated gate fired for real, the same day**, when a bad model exhausted host
+memory during weight load and froze the machine. The `.running` marker survived the power
+cycle, so on boot systemd refused to re-attempt the load that had just killed it, and the
+node came back empty and reachable in four minutes. The incident, its error signature and
+its pre-flight check are catalogued in [`docs/bring-up-failures.md`](../bring-up-failures.md)
+and tracked as DEF-0004 in [`docs/defects.md`](../defects.md).
+
+The synthetic test showed the gates work. The real firing showed the design was aimed at
+the right hazard — which is the part a test cannot demonstrate.

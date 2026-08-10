@@ -32,7 +32,7 @@ actually running**. A sweep that only reads the repo is checking its own homewor
 The version manifest. Every image is pinned by digest with the tag + version in a
 trailing comment, and referenced by digest everywhere it is pulled *and* run.
 
-Deployed reality, per node (needs Geoff — `docker` is password-gated by ADR-0018):
+Deployed reality, per node (needs the user — `docker` is password-gated by ADR-0018):
 
 ```bash
 sudo docker images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.Digest}}' | sort
@@ -119,7 +119,8 @@ with its own blast radius, and several defect rows are conditioned on the driver
 
 1. **Re-read [`docs/defects.md`](../../docs/defects.md)** filtered to whatever moved. A
    bump is the *only* thing that clears most rows — each carries a **clears-when**
-   naming the version it waits on. Re-test cleared rows **one at a time**; pulling
+   naming the version it waits on. Re-test cleared rows as [`defects.md`](../../docs/defects.md)
+   prescribes; pulling
    several workarounds at once hides which was still load-bearing.
 2. **Walk [`docs/updating.md`](../../docs/updating.md)** for the fan-out of whatever you
    staged — it lists every place a change must touch.
@@ -128,6 +129,6 @@ with its own blast radius, and several defect rows are conditioned on the driver
 
 ## Output
 
-A staged diff plus that table. Stop there — Geoff runs the commits
+A staged diff plus that table. Stop there — see [[development]] for who stages and commits
 ([`development`](../development/SKILL.md)), and applying the upgrade is a separate
 change so that a regression has one candidate cause instead of two.

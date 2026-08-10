@@ -127,7 +127,7 @@ the scoreboard's `⚠︎ legacy_perf` flag marks, and this is the first time it 
 **A second explanation is live and unresolved:** speculative decoding pays only when draft
 tokens are *accepted*, and this bench uses synthetic prompts. ADR-0014 recorded ~84%
 acceptance on its workload; real code completion is far more predictable than a benchmark
-prompt, so MTP-3 may still win on Geoff's actual work. **We did not measure that**, and the
+prompt, so MTP-3 may still win on the user's actual work. **We did not measure that**, and the
 retirement does not claim otherwise.
 
 **Why retire anyway.** The decision does not need that question resolved. Taking MTP-3's

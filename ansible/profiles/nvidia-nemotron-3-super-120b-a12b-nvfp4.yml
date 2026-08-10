@@ -9,7 +9,7 @@
 # fleet by 2x, because the architecture barely uses attention: of 88 layers only **8** are
 # attention, the rest Mamba (40) and MLP (40). With 2 KV heads at head_dim 128 and an
 # FP8 KV cache that is **4 KiB/token**, so context is nearly free. Estimated ~31M KV
-# tokens at TP=2 — long-context work is the binding workload here (Geoff), and this
+# tokens at TP=2 — long-context work is the binding workload here, and this
 # family is structurally built for it.
 #
 # MEMORY MATH (measured from the Hub, not from the model card — skills/model-evaluation).

@@ -68,9 +68,10 @@ name. `Mistral-Medium-3.5-128B-NVFP4` is `quant_algo: MIXED_PRECISION` — 367 F
 and 249 NVFP4 ones. `Qwen3-VL-32B-Instruct-NVFP4` is `NVFP4_AWQ`. Both change which
 kernels load and what the footprint is.
 
-**Never pass `--quantization` for a self-declaring checkpoint.** Double-quantization
-produces fluent garbage, and it looks like a model quality problem rather than a config
-one. The oldest footgun on this cluster.
+**Flags: start minimal, and never pass `--quantization` to a self-declaring checkpoint.**
+Both rules — and the reasoning — belong to [[model-evaluation]]'s fit checklist, which is
+where the flag decisions are made. They are named here only because this is the sequence
+in which you will be tempted to get them wrong.
 
 **A `tokenizer.json` in the directory does not mean vLLM will accept it.** Mistral
 checkpoints ship both HF and native artifacts, and vLLM still validates the tokenizer
@@ -102,11 +103,11 @@ Copy the profile whose **shape** matches — `minimax-m2.7-nvfp4.yml` for big-sh
 [[model-evaluation]]'s memory math set `gpu_memory_utilization` from your
 *outside-headroom* target, not from "as high as it goes".
 
-Start with the **minimal flag set**: `--enable-chunked-prefill`, plus only what the
+Per [[model-evaluation]], start with the minimal flag set: `--enable-chunked-prefill`, plus only what the
 checkpoint provably needs. Add parsers after probing. Every flag you cannot justify is a
 way for the bring-up to fail for a reason unrelated to the model.
 
-`./sparky.sh lint` validates the whole allowlist — fleet-wide-unique engine names, the
+`./sparky.sh lint` validates the whole allowlist — see its output for what it checks — fleet-wide-unique engine names, the
 single front port, and flags that survive the env-file round trip. Run it before the
 deploy, not after.
 

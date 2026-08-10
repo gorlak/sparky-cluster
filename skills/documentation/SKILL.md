@@ -51,7 +51,7 @@ Copy an existing one (e.g. `docs/models/step-3.7-flash.md`). Shape:
 - One **`## <QUANT> — <hf-repo>`** section per quant: memory-fit table, tooling status, draft serve flags, short assessment.
 - **What to Watch For** · **Key Links**.
 
-Do the analysis per [[model-evaluation]] (verify disk with `du` first; never pass `--quantization` for a self-declaring checkpoint; MoE loads *all* experts → size on total params). The fact sheet is where that analysis lands.
+Do the analysis per [[model-evaluation]], which owns the fit checks. The fact sheet is where that analysis lands.
 
 ## Upgrade tracker structure (`docs/upgrades/<kind>-<…>.md`)
 
@@ -66,7 +66,7 @@ Copy an existing one (`container-nvidia-vllm-26.06-py3.md` or `profile-step-3.7-
   (`WAR | fixes | upstream issue | cost | applied in | remove when | status`). Workarounds
   are **debt**: each is tied to an upstream bug and an explicit **removal condition**
   (issue closed / fixed in version N). On a later bump, review the register, drop any whose
-  condition holds, and **re-test one at a time** to confirm it's no longer load-bearing —
+  condition holds, and re-test as [`defects.md`](../../docs/defects.md) prescribes —
   removing several at once hides which still mattered.
 - **Completion criteria** — the concrete conditions under which we re-attempt or finish. This is what makes it *gated* rather than a wish.
 - **Retry / deploy plan** — how we'll attempt it safely (behind the fail-safe net, solo-before-multinode, soak, etc.).
@@ -77,7 +77,7 @@ Copy an existing one (`container-nvidia-vllm-26.06-py3.md` or `profile-step-3.7-
 
 - **Cross-link, don't duplicate:** trackers → fact sheets; dependent trackers → each other. Keep fact sheets free of transition analysis.
 - Update pointers if the doc is new (e.g. the README `docs/` tree, a `group_vars` comment that should reference it).
-- Committing: see [[development]] (Geoff runs the commits; stage and stop).
+- Committing: see [[development]].
 
 ## Decision records (ADRs)
 
@@ -110,11 +110,26 @@ in code / README / TODO, never in the status. **Proposed** = a design not yet bu
 **Accepted** = the decision *and* its implementation landed together (see "How to
 write one"), it's now in effect — and **immutable**.
 
-### Immutability
-Once **Accepted**, the only permitted edit is adding a `Superseded by ADR-NNNN`
-line — nothing else, even if the decision turned out wrong. To change a decision,
-write a **new** ADR referencing the old one and set the old one to Superseded. The
-historical record of what was believed at the time is the point.
+### Immutability — it protects the DECISION, not the file
+
+Once **Accepted**, you may **not** revise the decision, the options considered, or the
+rationale. Those are the record of what was believed at the time, which is the point. To
+change a decision, write a **new** ADR referencing the old one and set the old one to
+`Superseded by ADR-NNNN`.
+
+You **may** add information that was always within that ADR's scope:
+
+- a **verification result** — the outcome of a test the ADR's own plan called for
+- **evidence** that the decision held or failed in practice, as an errata
+- a correction to a **factual error about what was decided**
+
+That is consolidation, not revision: the information belonged to the ADR from the start
+and ended up elsewhere only because that is where it got written first. Refusing it does
+not preserve history — it strands the evidence in a README where nobody looks for it.
+
+The test: *does this change what a reader would conclude the authors decided, or does it
+tell them how the decision turned out?* The first needs a new ADR. The second is an
+addition, and should be dated and marked as one.
 
 ### When to write one
 Write for: a new service/tool/pattern; a significant accepted trade-off; reversing a
@@ -127,9 +142,9 @@ don't commit).
 1. Copy an existing `docs/adr/NNNN-*.md`.
 2. Number from the highest existing `docs/adr/NNNN-*.md` filename.
 3. Status `Proposed` while it's an unbuilt design; flip to `Accepted` in the commit
-   that lands the implementation (usually the same commit — step 5).
+   that lands the implementation (see step 5).
 4. Sections: **Context** · **Options considered** · **Decision** · **Consequences**.
-5. Commit in the **same commit** as the implementation it documents ([[development]]).
+5. Commit it with the implementation it documents — see [[development]].
 
 ### Documentation drift beats a missing ADR
 When cluster behaviour changes, update the living doc in the same commit (`README.md`

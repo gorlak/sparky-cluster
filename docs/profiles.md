@@ -64,7 +64,15 @@ argument for a single-node profile, and no current model makes it.
   reproduced to the decimal across two runs. 23.8 tok/s single-stream, 110.5 @16.
 - **Tools:** `hermes`, and that name was *read from the chat template*, not guessed —
   `qwen3_xml` returned HTTP 200 with `{}` and garbage arguments, which a status-code check
-  called a pass. Vision verified end to end.
+  called a pass.
+- **Vision works, and loses small detail SILENTLY.** Verified end to end through Caddy on
+  the stable alias: a 12 MB / 3 MP upload is accepted and answered correctly when the
+  subject is a reasonable fraction of the frame. Hold the subject at ~1% of the width and
+  it returns HTTP 200 and a confident **wrong** answer rather than refusing — the encoder
+  downscales, and detail below its effective resolution is gone before the model sees it.
+  In practice: a small error message inside a full-screen screenshot may be misread, not
+  flagged. **Crop to the region of interest.** There is no transport limit; the proxy
+  passed 12 MB without complaint.
 - **Workflow:** the default when you want the smartest answer and can wait for it.
 
 ### nvidia-nemotron-3-super-120b-a12b-nvfp4
@@ -152,30 +160,19 @@ now unreferenced and leaves them; `./sparky.sh deploy --evict` deletes them, per
 It will never delete the model that is currently serving — if the live profile is the
 one leaving the allowlist, the deploy drives the fleet to `empty` and waits for the
 engine to stop first. To keep the weights but stop it being activatable, set
-`blocked: true` instead. *Block to park it; delete the file to evict it.*
+`blocked: true` instead. *Block to park it; delete the file to evict it* — the gestures and their consequences
+are described in the README's allowlist section.
 
 ## Adding a new profile
 
-1. **Stage weights** in the inbox on sparky (from the repo root):
-   ```sh
-   ./sparky.sh download <hf-repo>
-   ```
-   Runs `scripts/download.py` via `uv` (provisions `huggingface_hub` itself — no local
-   `hf` install needed) and writes a flat copy into the inbox. The next deploy moves it
-   into the canonical store and mirrors to every node.
-2. **Copy** an existing profile that matches your shape:
-   - big-shared TP=2 (the default, and what every live profile is) → start from
-     `minimax-m2.7-nvfp4.yml`, or `nvidia-nemotron-3-super-120b-a12b-nvfp4.yml` if the checkpoint
-     is `MIXED_PRECISION`
-   - single-node TP=1 → only if you specifically need a node left free; copy one from
-     [`retired/`](../ansible/profiles/retired/) and re-verify its parsers first
-3. **Pick `gpu_memory_utilization` and `max_model_len`** per
-   [`profile-tuning.md`](profile-tuning.md) — decide your *outside-headroom*
-   target first, give vLLM the rest.
-4. **`./sparky.sh lint`** (validates the whole allowlist — fleet-wide-unique engine
-   names, the one front port, flags that survive the env-file round trip), then
-   **`./sparky.sh deploy --check`** to dry-run and **`./sparky.sh deploy`** to install it.
-5. **`./sparky.sh activate <name>`** to serve it.
+The **procedure** is owned elsewhere and is not repeated here: [[model-bringup]] for the
+sequence from staged weights to serving, [[model-evaluation]] for the fit checks and flag
+decisions, [`updating.md`](updating.md) for the fan-out (every place that must move
+together), and [`profile-tuning.md`](profile-tuning.md) for choosing
+`gpu_memory_utilization` and `max_model_len`.
+
+What this file adds is the **catalogue above** — what each profile is and why — and the
+constraints below, which are properties of the fleet rather than steps in a procedure.
 
 Two constraints the fleet enforces, worth knowing before you write the file:
 

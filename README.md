@@ -52,42 +52,16 @@ can the agent run it?*
 | **Develop** | repo only, no cluster, no privilege | `lint` `test` `download` |
 
 That split is ADR-0018's subject, so the *provision* group is deliberately tiny — two
-commands — and a test fails if it grows past three. `check` used to be a third; it is now
-`deploy --check`, because it was `deploy` in every way that mattered (same code path, same
-password gate) while reading like a development command.
+commands — and a test fails if it grows past three.
+
+`./sparky.sh --help` lists every command under its scope. The two that matter most:
 
 ```bash
-# deploy — set the boundary of what MAY run (privileged, human, password-gated)
-./sparky.sh deploy               # converge the fleet to ansible/profiles/*.yml
-./sparky.sh deploy --evict       # …and reclaim the disk of de-allowlisted weights
-./sparky.sh deploy --check       # dry-run (--check --diff); makes nothing
-./sparky.sh deploy --check --evict   # …and what an evicting deploy would delete
-./sparky.sh admin-password       # set the /admin basic_auth password (once)
+./sparky.sh deploy       # converge the fleet to the allowlist — password-gated
+```
 
-# activate — choose what IS running (no root; this is the agent-drivable half)
-./sparky.sh activate <profile>   # make it live: request → reconciler → wait → smoke gate
-./sparky.sh activate             # what's live, and what's activatable
-./sparky.sh activate empty       # stop serving; hardware free
-./sparky.sh teardown             # alias for `activate empty` (--webui also stops the front-end)
-
-# look at it
-./sparky.sh fleet                # the allowlist: deployed / live / parked, and where the weights are
-./sparky.sh status [--json]      # live health, both nodes (exit code = the verdict)
-./sparky.sh logs [head|worker]   # follow a node's vLLM journal
-
-# measure it
-./sparky.sh sweep <spec.yml>     # run a job list end to end (ADR-0016) — resumable
-#   long ones: detach with setsid (skills/operations) — it needs no TTY, unlike deploy
-./sparky.sh smoke                # gate: readiness + tool-shape + multiturn quality
-./sparky.sh bench <label>        # run vllm bench serve scenarios → record to the trend store
-./sparky.sh report <a> <b>       # compare two benchmark labels (direction-aware A/B)
-./sparky.sh topology <profile>   # show a profile's engines / nodes / ports / served names
-./sparky.sh probe <what> [args]  # ask a DEPLOYED image a read-only question (no root)
-
-# develop it
-./sparky.sh test [-k …]          # harness unit tests (pytest)
-./sparky.sh lint                 # ansible syntax-check + validate the whole allowlist
-./sparky.sh download <hf-repo>   # stage a model into the inbox
+```bash
+./sparky.sh activate <profile>   # choose what serves — no password
 ```
 
 **`deploy`** first **publishes** the repo to the deploy-owned runtime tree
@@ -97,21 +71,6 @@ that's the gate into the automation context). It takes **no profile argument**: 
 installs every allowlisted profile's weights, images, engine env files and the
 activation grants. It preserves whatever is currently serving (falling to `empty`
 only if that profile left the allowlist) and **never auto-promotes** a model.
-
-> **Run a long deploy under `tmux`.** `deploy` runs in the foreground and needs a TTY
-> for the sudo password, so it cannot simply be backgrounded — and a dropped SSH session
-> (a phone client quitting, a laptop sleeping) sends SIGHUP and kills it mid-run. A
-> deploy that moves weights can run for tens of minutes, which is plenty of time for
-> that to happen.
->
-> ```bash
-> tmux new -s deploy       # then run ./sparky.sh deploy inside it
-> ```
->
-> Being killed this way is *safe* — Ansible is idempotent, rsync re-sends a partial
-> file rather than trusting it, and a run that never reaches the `fleet-state` role has
-> not touched the allowlist or the engine files, so the fleet keeps serving what it was.
-> Re-running picks up where it left off. `tmux attach -t deploy` to get back to it.
 
 **`activate`** writes a desired profile to a group-writable file — *no sudo at all* —
 then triggers a small, fixed, root-owned reconciler (`/usr/local/sbin/vllm-activate`)
@@ -139,10 +98,8 @@ Profiles live at `ansible/profiles/<name>.yml`; each captures the full
 `serving_topology` (engines, models, nodes, ports, `gmu`, `max_model_len`). Names are
 the `<model>-<version>-<quant>` triple; a `-single` suffix marks the single-node
 (snoopy) TP=1 shape, while bare big-shared profiles are TP=2 across both nodes.
-Single-node serving runs on **snoopy by design** — sparky is the head (frontends) +
-dev node, so single-node models serve on the resource-richer worker. (The per-node
-`-dual` duplicate shape was retired: two independent endpoints of one model buy
-nothing without a round-robin fronting them.)
+Single-node serving runs on **snoopy by design** — sparky is the head (frontends) + dev
+node, so single-node models serve on the resource-richer worker.
 
 **The profiles directory *is* the allowlist** (ADR-0018) — there is no separate
 manifest to drift. A profile file means "keep these weights and install these
@@ -155,10 +112,9 @@ engines"; `activate` then picks one to serve. Two gestures follow:
 
 *Block to park it; delete the file to evict it.*
 
-**Big-shared (TP=2 across both nodes)** — the shape, not *a* shape. Measured 2026-08-10
-across three paired profiles: TP=2 beats TP=1 on decode (1.34–1.59×), throughput (+41–50%)
-and KV capacity, on every model tried. The `-single` twins were deleted once that landed —
-see [`docs/profile-tuning.md`](docs/profile-tuning.md), which used to claim the opposite.
+**Big-shared (TP=2 across both nodes)** — the shape, not *a* shape. TP=2 beats TP=1 on
+decode, throughput and KV capacity for every model measured; the paired numbers are in
+[`docs/profile-tuning.md`](docs/profile-tuning.md).
 
 | Profile | Shape | decode | usable ctx / KV |
 |---|---|---|---|
@@ -179,12 +135,9 @@ serves 131k out of 35.2M. Raising these is config, not hardware.
 shape is gone; the only remaining argument is fleet occupancy, since TP=2 takes both nodes
 and leaves ~24 GiB of dev headroom on sparky rather than the whole box.
 
-None are live. The last one, `qwen3-vl-32b-instruct-nvfp4-single`, was retired on 2026-08-10 —
-not because [DEF-0013](docs/defects.md) still blocks it (it does), but because its niche
-closed: it existed as the cheapest route to vision, and `qwen3-vl-235b-a22b-instruct-nvfp4` serves vision
-*and* tools at 75.0%. Retired configs are kept in
-[`ansible/profiles/retired/`](ansible/profiles/retired/) — the memory math and the verified
-parser names, so reviving one costs no re-derivation.
+None are live — no current model makes the case for leaving a node free. Retired configs
+are kept in [`ansible/profiles/retired/`](ansible/profiles/retired/), and the verdicts in
+[`docs/models/tombstones.md`](docs/models/tombstones.md).
 
 | Profile | Shape |
 |---|---|
@@ -201,9 +154,8 @@ See [`docs/profiles.md`](docs/profiles.md) for what each serves and how to switc
 plus the GB10 unified-memory accounting quirk.
 
 **Rejected models** live in [`docs/models/tombstones.md`](docs/models/tombstones.md) —
-the register that *owns* those verdicts, so a discovery sweep never re-litigates one.
-Two entries today: `Qwen3.5-122B-A10B-FP8` (froze sparky during load — never deploy) and
-`MiniMax-M3` (does not fit under TP=2). Read it before proposing a model.
+the register that *owns* those verdicts, so a discovery sweep never re-litigates one. Read
+it before proposing a model.
 
 ### Services
 
@@ -291,13 +243,10 @@ Four identities, and **no web-API path to root** (ADR-0001, tightened by ADR-001
   and can do nothing else. Deliberately **not** in the `docker` group — docker group
   membership is root-equivalent and would re-open the hole this closes.
 
-  The probe exists because *evaluating* a model means asking questions of the container
-  ("does this vLLM know `Mistral3ForConditionalGeneration`?", "what NCCL does it
-  ship?"), and every one of those otherwise needs `sudo docker` — i.e. root. It is
-  bounded the same way the reconciler is: the image must be in a root-owned,
-  deploy-written allowlist, the probe is a key into a fixed set of programs, arguments
-  must be bare identifiers, and the docker flags are constants with no bind mounts, no
-  `--gpus`, no network and no capabilities. **Probing something new is a deploy.**
+  The probe exists because evaluating a model means asking questions of the container, and
+  every one of those would otherwise need `sudo docker`. ADR-0019 describes how it is
+  bounded — and why **probing something new is a deploy**.
+
 - **`vllm`** — service account owning the model weights (uid 996, no home/shell).
 
 Groups: **`cluster`** (geoff + deploy) owns `/opt/cluster` (mode 2775 + default ACLs)
@@ -305,16 +254,11 @@ so both can edit the project in place; **`activate`** (activator + geoff) carrie
 activation grants, which is why `./sparky.sh activate` needs no password; **`adm`**
 (geoff) makes the journal readable with no privilege at all.
 
-**geoff has no passwordless sudo either.** He used to carry
-`NOPASSWD: /usr/bin/systemctl, /usr/bin/docker, /usr/bin/journalctl, /usr/bin/install`
-— a convenience, and four separate passwordless routes to a root shell (`docker run -v
-/:/host`; `systemctl edit` runs `$EDITOR` as root; `journalctl` pages through `less`,
-and `!sh` is a shell; `install` writes any file anywhere). ADR-0018 removed it. Not
-because geoff shouldn't have root — he keeps `(ALL : ALL) ALL` behind his password —
-but because **anything running as geoff inherits it, an agent most of all**, and "the
-agent gets `activate` and nothing privileged" is not true of a machine where the agent
-can `sudo docker`. A boundary a `docker run` walks around is theatre. The deploy
-asserts, on every node, that the reconciler is geoff's only passwordless grant.
+**geoff has no passwordless sudo either** — he keeps `(ALL : ALL) ALL` behind his
+password, but nothing passwordless, because anything running as geoff inherits it, an agent
+most of all. The deploy asserts on every node that the activation reconciler is his only
+passwordless grant. ADR-0018 argues the case, including why a `docker` grant *is* a root
+grant.
 
 The point of the split: `deploy` legitimately needs root to *provision* (apt, systemd
 units, weights, docker), so it has blanket NOPASSWD — but nothing that faces the
@@ -338,22 +282,19 @@ All CUDA-linked code runs inside an `nvcr.io/nvidia/vllm` image — the pypi aar
 torch wheel is CPU-only, so a pip/venv install can't serve on this hardware; NVIDIA's
 image ships matching torch + vLLM compiled for sm_121.
 
-**The container is per-profile — and as of 2026-08-10 the fleet is back to one.**
-`vllm_image` in a profile overrides the `group_vars` default, so a container bump is
-adopted model by model rather than fleet-wide — which is what made the 26.07 campaign
-survivable when one model turned out to be a node-killer on it. The mechanism stays; it
-simply has nothing to straddle right now.
+**The container is per-profile, and the fleet currently runs one.** `vllm_image` in a
+profile overrides the `group_vars` default, so a container bump is adopted model by model
+rather than fleet-wide — which is what keeps a bad image from taking the whole fleet with
+it. Nothing straddles two containers today; the mechanism is there for when something
+must.
 
 | Container | Runs | Why |
 |---|---|---|
 | **26.07-py3** (vLLM 0.24.0, NCCL 2.30.7) — via the derived `dgx-spark/vllm:26.07-xgrammar-fix` | **every profile** | current. The derived image patches xgrammar (DEF-0010) — NVIDIA shipped it *below* vLLM's own declared minimum, breaking all tool-calling |
 
-Nothing runs on 26.06 any more: 26.07 fixed its fastapi defect (DEF-0005) and the
-derived image built for it has been deleted. **26.04 left with `step-3.5-flash-fp8`**, the last
-profile pinned to it — retired on measurement, see
-[`docs/models/tombstones.md`](docs/models/tombstones.md). A single-container fleet is a
-simplification, not a policy: the next model that needs a different image gets one. Progress is tracked in
-[`docs/upgrades/container-nvidia-vllm-26.07-py3.md`](docs/upgrades/container-nvidia-vllm-26.07-py3.md).
+Progress and history are tracked in
+[`docs/upgrades/`](docs/upgrades/container-nvidia-vllm-26.07-py3.md).
+
 - **Multi-node:** vLLM 0.19 dropped Ray; native multinode uses
   `--nnodes / --node-rank / --master-addr / --headless` over torch.distributed. Both
   nodes rendezvous at `10.0.200.12:29500` over ConnectX-7.
@@ -383,14 +324,10 @@ projects it into the engine's env file — image, model, rank, ports, flags — 
 engine's whole per-variant surface is one flat, diffable file generated from one
 declaration. Schema: [`docs/serving-topology.md`](docs/serving-topology.md).
 
-What changed with ADR-0018 is *how far* the projection reaches. It used to run all
-the way out to the dependents: a profile switch re-templated Open WebUI, Prometheus
-and Caddy in the same run, keeping them in sync by construction. That coupling is
-what forced a model switch to be a privileged, whole-config operation. Now the
-dependents don't vary by model at all — they point at a **fixed, model-agnostic
-endpoint** (above) configured once at deploy time. Same guarantee, reached by removing
-the dependency instead of re-deriving it, and *that* is what makes `activate`
-unprivileged: choosing a model touches nothing but systemd units and marker files.
+The projection stops at the engine. Dependents — Open WebUI, Prometheus, Caddy — do not
+vary by model at all; they point at a **fixed, model-agnostic endpoint** configured once at
+deploy time. That is what makes `activate` unprivileged: choosing a model touches nothing
+but systemd units and marker files.
 
 ---
 
@@ -429,37 +366,13 @@ operator entrypoint, 0018 the deploy/activate split.
 
 ## Operations & recovery
 
-### From scratch / disaster recovery
+### From scratch
 
-```bash
-# 0. Clone the repo on a fresh control node (or it's already here).
-git clone <remote> <repo>
+The cluster can be rebuilt from the repo alone — weights are re-downloaded, everything else
+is converged by a deploy. One step is not Ansible and cannot be:
+`ansible/bootstrap-deploy.sh` creates the `deploy` user that Ansible then runs as.
 
-# 1. (Once per cluster) create the deploy identity + /opt/cluster. Run as geoff on
-#    sparky; prompts for sudo on both nodes. Then log out/in (or `newgrp cluster`).
-bash <repo>/ansible/bootstrap-deploy.sh
-
-# 2. Set the /admin password. The panel holds the activation grant, so a deploy
-#    refuses to serve it without one.
-./sparky.sh admin-password
-
-# 3. Stage model weights into the inbox on the control node. The deploy moves them
-#    into the canonical store (/opt/vllm/models) on the head and mirrors to each node
-#    that runs them — no manual copy to snoopy.
-./sparky.sh download stepfun-ai/Step-3.5-Flash-FP8
-
-# 4. Deploy the fleet — publishes the repo, then handles both nodes end to end.
-#    Installs every allowlisted profile; brings nothing up.
-./sparky.sh deploy
-
-# 5. Log out/in (or `newgrp activate`) to pick up the activation group, then choose
-#    what serves. This one needs no password.
-./sparky.sh activate qwen3-vl-235b-a22b-instruct-nvfp4
-```
-
-The `model` role is idempotent (skips install if weights are already at
-`/opt/vllm/models/<MODEL>`). NCCL config and the `vllm` user are handled by the
-`common` role every run.
+The sequence is in [`skills/operations`](skills/operations/SKILL.md).
 
 ### Fail-safe boot (ADR-0009, extended by ADR-0018)
 
@@ -479,24 +392,10 @@ carry the decision; the script needn't even exist). On a **hang / hard-reset / p
 cut** the surviving `.running` marker skips the unit, so the node comes up **empty and
 reachable** instead of re-attempting a risky load unattended.
 
-**Verified on 2026-08-08**, both gates independently, without a hard reset: a clean
-reboot of snoopy left five of six enabled instances skipped for want of a desired marker
-and started the sixth on its own (no reconciler involved); a planted `.running` marker
-then made that same engine skip on the *negated* gate, leaving the node up, reachable
-and serving nothing. systemd names the failing condition in the journal either way.
-
-**Then it fired for real, the same day.** Activating `minimax-m2.7-awq-2607` (the
-DEF-0004 experiment) exhausted host memory during weight load and **froze sparky** —
-unresponsive, recovered only by a physical power cycle. The `.running` marker survived
-the reset, which is precisely the signal it exists to carry: the stop was not clean, so
-on boot systemd refused to re-attempt the load that had just killed the machine.
-
-> `vllm@minimax-awq-2607.service was skipped because of an unmet condition check`
-> `(ConditionPathExists=!/opt/vllm/state/vllm-minimax-awq-2607.running)`
-
-sparky came back **empty and reachable in four minutes** rather than freezing again
-unattended, and recovery was an ordinary unprivileged `activate`. The synthetic test
-showed the gates work; this showed the design was aimed at the right hazard.
+Both gates were verified independently on 2026-08-08, and the negated gate then fired for
+real the same day when a bad model froze a node — see
+[ADR-0009](docs/adr/0009-fail-safe-boot.md) for the results and
+[`docs/bring-up-failures.md`](docs/bring-up-failures.md) for the failure itself.
 
 Recovery from the fail-safe state is an **activation**: `./sparky.sh activate
 <profile>` (or the panel's "Re-activate") clears the marker and starts the engines.
@@ -511,75 +410,24 @@ converges the moment the restored engine passes health.
 > Re-kick the sweep, or re-activate the promoted model. A rough edge, not a hazard —
 > the node is up and reachable throughout.
 
-### Bringing up a new model — the whole lifecycle
+### Adding a model
 
-Seven steps, and **only step 5 needs root or a human.** Everything else is
-agent-drivable, which is the point of the ADR-0018 split and ADR-0019's probe.
+Seven steps, and **exactly one needs a password**: the deploy that installs the weights and
+engine files fleet-wide. Discovery, staging, checkpoint analysis, container probing,
+activation and verification are all unprivileged — which is the capability ADR-0018's split
+and ADR-0019's bounded probe were built to produce.
 
-| # | Step | Command | Needs geoff? |
-|---|---|---|---|
-| 1 | **Discover** a candidate | [`skills/model-discovery`](skills/model-discovery/SKILL.md) — and check [`docs/models/tombstones.md`](docs/models/tombstones.md) first, so a rejected model is never re-litigated | no |
-| 2 | **Stage** the weights | `./sparky.sh download <hf-repo>` → the inbox | no |
-| 3 | **Analyse** the checkpoint | `du -sh`, then `config.json`: architecture, real quant, KV scheme. Do the per-node memory math at your TP ([`skills/model-evaluation`](skills/model-evaluation/SKILL.md)) → a fact sheet in `docs/models/` | no |
-| 4 | **Probe** the container | `./sparky.sh probe archs <Arch>` · `probe quant` · `probe versions` — does the vLLM we run actually support it? | no |
-| 5 | **Profile + deploy** | write `ansible/profiles/<name>.yml`, `./sparky.sh lint`, then **`./sparky.sh deploy`** — adopts the weights, installs the engine fleet-wide | **yes** — password-gated |
-| 6 | **Activate** | `./sparky.sh activate <name>` — reconciler, then the smoke gate | no |
-| 7 | **Verify** | tool-choice shapes, a concurrency soak, `./sparky.sh bench` | no |
+The procedure lives in [`skills/model-bringup`](skills/model-bringup/SKILL.md) (the
+sequence and its traps) and [`skills/model-evaluation`](skills/model-evaluation/SKILL.md)
+(fit checks and flags); [`docs/updating.md`](docs/updating.md) lists everything that must
+move together. Removal is the same mechanism run backwards.
 
-**Steps 3 and 4 are the cheap ones, and skipping them is expensive.** The checkpoint
-rarely matches its own repo name — `Mistral-Medium-3.5-128B-NVFP4` is actually
-`MIXED_PRECISION` (FP8 *and* NVFP4 layers) and declares an FP8 KV cache, both of which
-change the flags and the memory math. And an architecture the container does not know
-fails minutes into a load rather than in the twenty seconds a probe costs.
+### When something goes wrong
 
-For step 5, copy the profile whose *shape* matches — every live profile is big-shared
-TP=2, so start from `minimax-m2.7-nvfp4.yml`, or `nvidia-nemotron-3-super-120b-a12b-nvfp4.yml` when the
-checkpoint is `MIXED_PRECISION` (which the repo name will not tell you). If you genuinely
-need TP=1 to leave a node free, take a config from
-[`ansible/profiles/retired/`](ansible/profiles/retired/) and re-verify its parsers first.
-
-**Removing** is the same mechanism, run backwards: delete the `.yml` and
-`./sparky.sh deploy`. The deploy reports which weights are now unreferenced and
-leaves them alone; `./sparky.sh deploy --evict` deletes them. It will never delete the
-model that is currently serving — if the live profile is the one leaving the
-allowlist, the deploy drives the fleet to `empty` first and waits for the engine to
-stop. **`--evict` reclaims images too** (since 2026-08-10), converging the image store
-to `container_images` exactly as it converges weights to the allowlist — plus the dangling
-layers that every rebuild of the derived image leaves behind. It was previously claimed
-that shared base layers made this unsafe; that was wrong. Docker refcounts layers, so
-removing an image frees only what nothing else needs, and `docker rmi` refuses outright
-while a container holds it — including the engine serving right now, which is exactly the
-behaviour we want. Those failures are reported, not fatal. The cost of the old belief was
-26.04 and 26.06 sitting on both nodes long after nothing ran them.
-
-One authoring constraint (ADR-0018): a serve flag travels to systemd as one
-single-quoted env value that is re-split on whitespace, with no quote processing.
-Spaces and double quotes are fine — `--tool-call-parser step3p5` and
-`--speculative-config {"method":"mtp"}` both work — but a **single quote** would
-terminate the value early. `deploy` and `lint` reject one rather than mis-splitting it.
-
-Memory budgeting is **per-profile**: `gpu_memory_utilization` is a deliberate split
-between vLLM and what's left for OS + dev work, not a safety margin. See
-[`docs/profile-tuning.md`](docs/profile-tuning.md).
-
-### Troubleshooting
-
-- **Garbage / multilingual output:** `--quantization fp8` present on an
-  already-quantized checkpoint (double-quantization). Never pass `--quantization`
-  for a checkpoint that declares its quantization in `config.json`.
-- **Nonstop thinking after the Nth turn:** FP8 KV cache (`--kv-cache-dtype fp8`)
-  and/or `--enable-prefix-caching` — disable one or both (see Known Shortcomings).
-- **NVML init fails inside container** ("Failed to initialize NVML: Unknown Error"):
-  missing `--cgroupns=host`, or a `systemctl daemon-reload` ran while the container
-  was up. Restart the container.
-- **`VLLM_HOST_IP` must match the ConnectX-7 IP per node** (sparky `10.0.200.12`,
-  snoopy `10.0.200.13`) — the default route goes out the 10GbE NIC, so without it
-  torch.distributed rendezvous advertises the wrong IP and fails.
-- **API never comes up / NCCL errors:** `./sparky.sh logs head` and
-  `./sparky.sh logs worker`; uncomment `NCCL_DEBUG=INFO` in
-  `roles/common/files/nccl-env.conf` and redeploy.
-- **Model not selected in Open WebUI:** click the model dropdown and select the
-  engine — it doesn't auto-select on first load.
+Bring-up failures are catalogued in [`docs/bring-up-failures.md`](docs/bring-up-failures.md),
+keyed on the literal error text — paste the error there. Operational symptoms (NVML inside
+a container, `VLLM_HOST_IP`, NCCL, the Open WebUI model picker) are in
+[`skills/operations`](skills/operations/SKILL.md).
 
 ---
 
@@ -671,35 +519,16 @@ changes on deploy.
   identity, so it can activate but not provision. Adding a model, changing a flag, or
   bumping a container is a password-gated CLI deploy. This is the automation given up
   in exchange for having no web-API path to root (ADR-0018).
-- **Vision loses small detail in large images — silently.** Verified end-to-end
-  2026-08-08 (through Caddy, on the stable `sparky` alias): a 12 MB / 3 MP upload is
-  accepted and answered correctly when the subject is a reasonable fraction of the
-  frame. Hold the subject at ~1% of the width and the model returns HTTP 200 and a
-  confident **wrong** answer rather than refusing. The vision encoder downscales, and
-  detail below its effective resolution is gone before the model ever sees it. In
-  practice: a small error message inside a full-screen screenshot may be misread, not
-  flagged. Crop to the region of interest. There is no transport limit — the proxy
-  passed 12 MB without complaint.
-- ~~**`--kv-cache-dtype fp8` + `--enable-prefix-caching` disabled**~~ — **resolved
-  2026-08-10.** This was a vLLM 0.19 multi-turn corruption (DEF-0007) carried by
-  `step-3.5-flash-fp8`, the only profile where it was ever observed. Both options ran clean for
-  30 growing-context turns on 0.24.0, and that profile has since been retired along with
-  the 26.04 container, so no configuration can exhibit it. The defect is **closed** —
-  deliberately, rather than watched forever on a shape that no longer exists.
+- **Vision loses small detail in large images — silently.** A subject held at ~1% of the
+  frame gets a confident wrong answer rather than a refusal: the encoder downscales, and
+  detail below its effective resolution is gone before the model sees it. **Crop to the
+  region of interest.** Detail in [`docs/profiles.md`](docs/profiles.md).
 
 ---
 
 ## Future work
 
-The **fleet orchestrator is built** (ADR-0016, accepted 2026-08-10). `./sparky.sh sweep
-<spec.yml>` runs a flat `profile × regiment` job list end to end: exclusive lock so nothing
-else touches the cluster, breadcrumbs after every regiment so an interrupted run resumes
-rather than restarts, and per-profile quarantine so a node-killer costs one activation
-instead of the night. Regiments today: `bench`, `quality`, `tools` (all four `tool_choice`
-shapes — the smoke gate only sends one, which is how DEF-0011 hid), and `soak` (sustained
-concurrency, watching for a stall rather than a crash).
-
-What that leaves is a **measurement gap, not a mechanism gap**: there is still no coding
+The largest gap is a **measurement** one, not a mechanism: there is still no coding
 benchmark, and for software-development work that is the axis that matters most. Every
 off-the-shelf option is contaminated for models this recent — LiveCodeBench, the
 contamination-free one, stopped updating in June 2025 — and a real one needs an execution
@@ -718,5 +547,6 @@ Skills are **not** auto-registered as slash commands (that needs the vendor-spec
 `.claude/skills/` location); instead `CLAUDE.md` tells Claude to read the relevant
 `skills/<name>/SKILL.md` on demand. `.claude/` (local settings) is gitignored.
 
-**Geoff runs all git commits** — prepare and stage, but never `git commit` unless
-asked.
+Development and git conventions — who stages, who commits, what belongs in one — live in
+[`skills/development/SKILL.md`](skills/development/SKILL.md), which owns them. They are
+not restated here: a rule in three places is a rule that drifts in two.

@@ -7,7 +7,8 @@ container bumps, new models, new roles, front-end settings. Those are `deploy` t
 checklist of **every place to touch**, ending with the same two steps:
 
 - **Defects.** Consult [`defects.md`](defects.md) filtered to what you changed, and
-  **re-test one at a time** any row whose *Clears when* your change satisfies. This is
+  re-test any row whose *Clears when* your change satisfies, as [`defects.md`](defects.md)
+  prescribes. This is
   how an update efficiently closes out debt instead of silently carrying it.
 - **Validate.** `./sparky.sh lint` → `check` → `deploy` → `activate <profile>` behind
   the fail-safe net (ADR-0009) → the activation's `smoke` gate → (for serving/perf
@@ -42,8 +43,8 @@ Two rules the pinning exists to enforce, both learned the hard way:
 
 E.g. NVIDIA ships `26.07-py3`, or Open WebUI releases a new version.
 
-1. **Get the digest.** `sudo docker images --no-trunc --format '{{.Repository}}:{{.Tag}} {{.Digest}}'`
-   on a node → the new `sha256:`. (For an image you don't have yet, pull it first.)
+1. **Get the digest** — [[version-discovery]] owns how (it needs `docker`, which is
+   password-gated). What matters here is that a digest, not a tag, is what moves.
 2. **`ansible/group_vars/all.yml`:** update the `*_image` var to
    `<repo>@sha256:<digest>`, with the human tag **and version** in a trailing comment —
    the digest is authoritative, the comment is what makes the diff readable. The
@@ -71,12 +72,14 @@ E.g. NVIDIA ships `26.07-py3`, or Open WebUI releases a new version.
    pick it up. For a *front-end* image there is no activation step — the compose file
    re-renders and the container is recreated by the deploy itself.
 
-**Old images are not deleted.** Convergent `deploy` converges weights only (ADR-0018):
-shared base layers make automated image deletion unsafe, so a superseded image lingers
-until you remove it by hand. `docker system df` will call it "reclaimable" — that only
-means *no running container references it*, not that it is unneeded, so remove images
-**by name** and never `docker image prune -a`, which would delete the pinned images of
-every profile that happens not to be live.
+**Old images are reclaimed by `deploy --evict`** (since 2026-08-10). The image store
+converges to `container_images` exactly as weights converge to the allowlist, plus the
+dangling layers each rebuild of a derived image leaves behind. So a superseded image goes
+when the declaration stops naming it — there is no delete-list to maintain.
+
+Never run `docker image prune -a` by hand — see [[version-discovery]] for why. `--evict`
+is safe where that is not, because it converges to the declaration rather than to whatever
+happens to be running.
 
 ## Add or change a model / profile
 
@@ -111,8 +114,7 @@ The mechanical steps are in the README ("Adding models / profiles"); the fan-out
 5. **Defect register** → check [`defects.md`](defects.md) for anything gating this
    model/quant/arch (e.g. DEF-0004 for AWQ/Marlin MoE, DEF-0006 for Step-3.7 VL).
 6. **Validate**: `lint` picks up the new profile automatically and now validates the
-   whole allowlist (fleet-wide-unique engine names, the one front port, flags that
-   survive the env-file round trip); then `check` → `deploy` → `activate <name>` →
+   whole allowlist — run it and read what it reports; then `check` → `deploy` → `activate <name>` →
    `bench <label>`. The activation runs the smoke gate itself.
 
 ### Removing a model / profile
@@ -146,8 +148,7 @@ Deletion is the same mechanism run backwards — there is no separate `prune` co
 5. **Docs:** drop its rows from [`profiles.md`](profiles.md) and the README table.
 
 To keep the weights but stop it being activatable — a candidate parked on an upstream
-fix — set **`blocked: true`** instead of deleting. *Block to park it; delete the file
-to evict it.*
+fix — set **`blocked: true`** instead of deleting. See the README's allowlist section for the two gestures and what each costs.
 
 ## Add a role / always-on service
 

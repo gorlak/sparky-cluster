@@ -93,7 +93,7 @@ covers the new hosts — no new DNS.
 The panel is the cluster's **no-sudo live-status surface**, and this is deliberate:
 it runs as `User=deploy` with the deploy SSH key, so its `gather()` already queries
 systemd on *both* nodes without a password. Everything else should read *it* rather
-than shell `sudo -u deploy ansible … systemctl` (which prompts for Geoff's password
+than shell `sudo -u deploy ansible … systemctl` (which prompts for the user's password
 and hangs a non-interactive agent).
 
 - **`/admin/health.json`** — thin: `{failsafe, profile, has_topology}` (the landing

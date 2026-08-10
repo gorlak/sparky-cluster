@@ -20,7 +20,12 @@ Read with [[model-bringup]], which sequences the bring-up itself.
 ## The pre-flight, in cost order
 
 Run these before writing a profile. Together they cost under a minute and would have
-caught **five of the eight** failures below.
+caught **five of the eight** failures below — which is the one thing this file can say
+that the skills cannot, because the evidence is the catalogue underneath it.
+
+It is an **assembly, not an owner**: the size and `config.json` checks belong to
+[[model-evaluation]], the probes and the chat-template read to [[model-bringup]]. Go there
+for what the answers mean; this list is only the order that costs least.
 
 ```bash
 du -sh /opt/cluster/model-cache/<model>/          # 1. real size, for the memory math
