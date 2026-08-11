@@ -12,9 +12,11 @@
 # The question here is not "which is best" but **which one should be live**, since only
 # one can be: a TP=2 profile takes both nodes. Choosing one is declining the other four.
 #
-# Mistral-Medium-3.5 has never been measured at all. Half the value of this runbook is
-# that gap; `tools` running first will say within minutes whether `--tokenizer-mode
-# mistral` and MIXED_PRECISION serve at all.
+# Mistral-Medium-3.5 is NOT here, and that is the point of DEF-0012 rather than an
+# oversight: its engine does not serve at all, so it is parked (`blocked: true`) and
+# cannot be activated. It rejoins this tier the day it comes up attended and serves —
+# it is still the fleet's only non-Chinese option, which is why it is parked and not
+# retired.
 #
 # THE DECISION RULE, agreed before the numbers exist:
 #
@@ -35,22 +37,21 @@
 # a tier that omits its members to avoid overlap is not a tier. The breadcrumbs are keyed
 # on (profile, regiment), so running one after the other measures nothing twice.
 #
-# ~5 hours. Slowest last, so a harness fault surfaces in the first hour, not the fifth.
+# ~4 hours. Slowest last, so a harness fault surfaces in the first hour, not the fifth.
 name: smart-tier
 # Shown beside the button in the panel and by `sparky run` — so what a
 # multi-hour campaign is about is legible where it is STARTED, not only
 # to whoever reads this file.
 description: >-
-  The five big models that compete for the one serving slot — which should be
-  live? Mistral has never been measured at all.
+  The four big models that compete for the one serving slot — which should be
+  live? (Mistral is parked on DEF-0012 until it serves.)
 # Where it sits in the menu the panel and `sparky run` show.
 # Then the two tiers, cheapest first — a tier is what you reach for.
 order: 30
-estimate: "~5 h"
+estimate: "~4 h"
 defaults:
   regiments: [tools, bench, quality]
 jobs:
-  - profile: mistral-medium-3.5-128b-nvfp4
   - profile: minimax-m2.7-nvfp4
   - profile: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
   - profile: nvidia-nemotron-3-super-120b-a12b-nvfp4

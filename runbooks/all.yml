@@ -41,9 +41,9 @@ jobs:
   - profile: qwen3.6-35b-a3b-nvfp4
   - profile: qwen3-coder-next-nvfp4
   - profile: minimax-m2.7-nvfp4
-  # Never measured. `--tokenizer-mode mistral` and MIXED_PRECISION — the two things most
-  # likely to fail at `tools`, which is why that regiment runs before the long ones.
-  - profile: mistral-medium-3.5-128b-nvfp4
+  # `mistral-medium-3.5-128b-nvfp4` is absent because it is PARKED (DEF-0012 — the engine
+  # never serves). `covers: allowlist` counts activatable profiles, so lint agrees; when
+  # the defect clears and the profile unblocks, lint will require it back here.
   - profile: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
   - profile: nvidia-nemotron-3-super-120b-a12b-nvfp4
   - profile: qwen3-vl-235b-a22b-instruct-nvfp4

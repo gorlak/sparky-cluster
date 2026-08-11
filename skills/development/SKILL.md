@@ -38,6 +38,31 @@ retirement docs we discussed are not among them" — rather than writing a
 message for work that is not there. A commit message that overstates its own
 diff is worse than a terse one, because it is the record everyone trusts later.
 
+## A bug found mid-feature: stash the feature, fix the bug, pop it back
+
+**When a bug surfaces while a feature is in progress in the worktree: stash the feature,
+fix the bug, commit the fix, then pop the feature back.**
+
+```bash
+git stash push -m "WIP <feature>"     # the feature, out of the way
+# …fix the bug, run the tests, hand off for commit…
+git stash pop                          # the feature returns to a clean base
+```
+
+The bug fix then lands as **its own commit against a clean tree**, which is the whole
+point. Otherwise it arrives tangled with an unrelated half-finished feature, and the two
+things that matter most about a fix are both lost: it cannot be read on its own, and it
+cannot be reverted on its own. A fix buried in a feature commit is also a fix nobody finds
+when they go looking for when the behaviour changed.
+
+It has a second effect worth naming: the fix gets tested against the code that is actually
+deployed, not against the feature's half-applied state. A fix that only works because an
+in-progress refactor happens to be in the tree is not a fix.
+
+This does not conflict with "big commits are fine" — that is about not prying *one*
+shipped item into artificial pieces. A bug fix and an unrelated feature were never one
+item.
+
 ## Suggested Commit Message Format
 
 Follow the existing commit history style (concise imperative subject line, no

@@ -261,3 +261,37 @@ fetch, and the mirror is not a resumable fetch. vLLM never reads any of it.
 **Recovery.** Re-run the deploy. rsync `--size-only --partial` resumes, so the 75 GiB
 already on the worker is not re-sent.
 *2026-08-10 · NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4*
+
+### `DistNetworkError: The server socket has failed to listen on any local network address. port: 29501`
+**Cause.** A **previous** engine's unit was still in its `RestartSec` gap when the next one
+was activated, and the reconciler did not stop it. The stop plan was
+`[e for e in others if active.get(e)]`, fed by `systemctl is-active --quiet`, which is
+true only for `active`. A failing unit between restarts reads `activating` (sub
+`auto-restart`) — **not serving, and not free either**. The plan recorded `"stop": []`,
+systemd restarted the old engine twenty seconds later, it took port 29501 back, and the
+incoming head failed to bind five times in ~100 s (`StartLimitBurst=5`, `RestartSec=20`)
+and was quarantined.
+
+The engine that would not die was `mistral-medium-3.5-128b-nvfp4`, failing on **DEF-0012**
+exactly as its register row predicted. The engine that paid for it was
+`qwen3-vl-235b-a22b-instruct-nvfp4`, which had served fine that morning — so **the visible
+casualty was not the broken model**, and the head's `init_process_group` traceback points
+at the network, not at the neighbour holding the port.
+**Check.** Two, and the first is the one that would have cost nothing:
+
+1. **Before putting a profile in a runbook or campaign, grep the defect register for it.**
+   `grep -i <profile> docs/defects.md` — DEF-0012 said "the engine never serves, text
+   included" and named the WAR in the profile as one that does not work. `updating.md`
+   ends every pathway by consulting that register; this run did not, and a 🔴 row is
+   exactly the signal that a profile belongs behind `blocked: true` rather than in an
+   unattended job list.
+2. The reconciler now stops any unit that is **not `inactive`**, rather than only those
+   that are `active` (`plan()` / `unit_state()`, `tests/test_activate.py`). Enumerating
+   which states hold resources is what invited the omission — the only state that owns
+   nothing is `inactive`.
+
+**Second-order.** A campaign quarantines per profile, which contained the blast radius but
+also disguised it: two profiles were quarantined and only one was broken. When two
+consecutive activations fail, suspect the *first* one's corpse before believing the second
+model is at fault.
+*2026-08-11 · Mistral-Medium-3.5 → Qwen3-VL-235B · DEF-0012*

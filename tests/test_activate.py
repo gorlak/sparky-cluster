@@ -303,6 +303,11 @@ def node(rec, tmp_path, monkeypatch):
 
     monkeypatch.setattr(rec, "_systemctl", fake_systemctl)
     monkeypatch.setattr(rec, "is_active", lambda e: rec.unit_of(e) in live)
+    # The plan reads the unit's ActiveState, not a bool — a fake that answers "active" for
+    # everything (which the generic `fake_systemctl` above would) makes every engine look
+    # like it needs stopping.
+    monkeypatch.setattr(rec, "unit_state",
+                        lambda e: "active" if rec.unit_of(e) in live else "inactive")
     return rec, calls, live, state
 
 
@@ -472,3 +477,53 @@ def test_an_undesired_engine_is_never_failsafe(node, monkeypatch):
     monkeypatch.setattr(rec, "_systemctl", lambda *a, **k: type(
         "P", (), {"returncode": 3, "stdout": "inactive", "stderr": ""})())
     assert _status_of(rec, "solo")["failsafe"] is False
+
+
+# --- a unit between restarts still owns its port (2026-08-11) -----------------
+#
+# The stop plan used to be `[e for e in others if active.get(e)]`, fed by
+# `systemctl is-active --quiet`, which is true only for `active`. A failing engine sampled
+# inside its 20-second RestartSec gap reads `activating`/`auto-restart`: not serving, and
+# not free either. The plan recorded `"stop": []`, systemd restarted it, it took port
+# 29501 back, and the next profile's head failed to bind five times and was quarantined.
+
+def test_an_engine_between_restarts_is_stopped(rec):
+    """THE regression. `activating` is a failing unit inside its RestartSec gap — it owns
+    the port and is seconds from taking it again."""
+    p = rec.plan("qwen", engines(BIG, SOLO), "snoopy", markers={"big": "h-big"},
+                 active={"big": "activating"})
+    assert p.stop == ["big"], "a unit between restarts was left holding its resources"
+    assert p.drop_markers == ["big"]
+
+
+def test_every_non_idle_state_is_stopped(rec):
+    """`deactivating` and `failed` too. The only state that owns nothing is `inactive` —
+    enumerating what to stop invites exactly the omission that caused this."""
+    for state in ("active", "activating", "deactivating", "reloading", "failed"):
+        p = rec.plan("qwen", engines(BIG, SOLO), "snoopy", markers={}, active={"big": state})
+        assert p.stop == ["big"], f"{state} was not stopped"
+
+
+def test_an_idle_engine_is_not_stopped(rec):
+    """The other half: a plan that stops everything every time is noise, and noise in a
+    plan is how a real stop stops being read."""
+    for state in ("inactive", "unknown", "", None):
+        p = rec.plan("qwen", engines(BIG, SOLO), "snoopy", markers={}, active={"big": state})
+        assert p.stop == [], f"{state!r} should need no stop"
+
+
+def test_a_wedged_target_is_restarted_not_started(rec):
+    """If the TARGET is mid-restart-loop, `start` races systemd's own pending restart and
+    can leave the old definition running. Stop-then-start is the only ordering that lands."""
+    p = rec.plan("qwen", engines(SOLO), "snoopy", markers={"solo": "h-solo"},
+                 active={"solo": "activating"})
+    assert p.restart == ["solo"] and p.start == []
+
+
+def test_bools_still_mean_what_they_used_to(rec):
+    """`live_state()` returns strings now, but plan() takes bools too — the tests that
+    only care whether a unit is up should not have to know systemd's vocabulary."""
+    assert rec._serving(True) and not rec._serving(False)
+    assert rec._needs_stop(True) and not rec._needs_stop(False)
+    p = rec.plan("qwen", engines(BIG, SOLO), "snoopy", markers={}, active={"big": True})
+    assert p.stop == ["big"]

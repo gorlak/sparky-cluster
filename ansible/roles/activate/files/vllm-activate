@@ -193,14 +193,40 @@ class Plan:
                 "pending": self.pending, "leave": self.leave}
 
 
+# The only systemd ActiveState that owns nothing. Everything else — `active`,
+# `activating` (which includes `auto-restart`), `deactivating`, `reloading`, `failed` —
+# is a unit that may still hold a port, a GPU or a container, or is about to.
+IDLE_STATES = ("inactive", "", "unknown")
+
+
+def _serving(state) -> bool:
+    """Is it actually up? Accepts a bool for callers that only know yes/no."""
+    return state is True or state == "active"
+
+
+def _needs_stop(state) -> bool:
+    """Must this unit be stopped before something else can take its resources?
+
+    Broader than `_serving` on purpose, and that gap IS the 2026-08-11 defect: a unit in
+    `activating`/`auto-restart` is not serving and is not free either.
+    """
+    if state is True:
+        return True
+    if state is False or state is None:
+        return False
+    return state not in IDLE_STATES
+
+
 def plan(profile, engines, node, markers, active, *, force=False, preserve=False) -> Plan:
     """Decide this node's reconcile.
 
-    `engines` is read_engines() output, `markers` read_markers() output, and
-    `active` maps engine -> bool (is its unit running?). `profile` must already be
-    validated against the allowlist by the caller — planning an unknown profile
-    would yield an empty target set, which reads as "activate nothing" and would
-    quietly look like success.
+    `engines` is read_engines() output, `markers` read_markers() output, and `active` maps
+    engine -> its systemd ActiveState (`live_state()`). Bools are accepted too, for the
+    tests that only care whether a unit is up.
+
+    `profile` must already be validated against the allowlist by the caller — planning an
+    unknown profile would yield an empty target set, which reads as "activate nothing" and
+    would quietly look like success.
     """
     target = sorted(
         name for name, env in engines.items()
@@ -212,14 +238,29 @@ def plan(profile, engines, node, markers, active, *, force=False, preserve=False
     others = sorted((set(engines) | set(markers)) - set(target))
 
     drop_markers = [e for e in others if e in markers]
-    stop = [e for e in others if active.get(e)]
+    # Stop anything NOT CLEANLY DEAD, not merely anything `active`.
+    #
+    # This distinction cost a campaign on 2026-08-11. The stop list was
+    # `[e for e in others if active.get(e)]`, fed by `systemctl is-active --quiet`, which
+    # is true only for `active`. Mistral's head had been failing and was sampled during
+    # its 20-second `RestartSec` gap — state `activating` (sub `auto-restart`) — so it was
+    # invisible here and the plan recorded `"stop": []`. Twenty seconds later systemd
+    # restarted it, it took port 29501, and the NEXT profile's head failed to bind five
+    # times and was quarantined. A unit between restarts owns everything a running one
+    # owns; the only state that owns nothing is `inactive`.
+    stop = [e for e in others if _needs_stop(active.get(e))]
 
     new_markers, start, restart, pending, leave = {}, [], [], [], []
     for e in target:
         current = engines[e]["_hash"]
         moved = markers.get(e) != current
         new_markers[e] = current
-        if not active.get(e):
+        if _needs_stop(active.get(e)) and not _serving(active.get(e)):
+            # The TARGET itself is wedged — mid-restart-loop, or failed. `start` on a unit
+            # systemd is already about to restart races that restart and would leave the
+            # OLD definition running; stop-then-start is the only ordering that lands.
+            restart.append(e)
+        elif not _serving(active.get(e)):
             start.append(e)
         elif force or (moved and not preserve):
             restart.append(e)
@@ -253,8 +294,19 @@ def is_active(engine: str) -> bool:
     return _systemctl("is-active", "--quiet", unit_of(engine), check=False).returncode == 0
 
 
-def live_state(engines) -> dict[str, bool]:
-    return {name: is_active(name) for name in engines}
+def unit_state(engine: str) -> str:
+    """The unit's ActiveState, not a bool.
+
+    `is-active --quiet` answers "is it serving", and the state that cost a campaign on
+    2026-08-11 was `activating` — a failing unit inside its `RestartSec` gap. It answers
+    false there, while the unit still owns its port and is seconds from taking it again.
+    """
+    out = _systemctl("show", unit_of(engine), "-p", "ActiveState", "--value", check=False)
+    return (out.stdout or "").strip() or "unknown"
+
+
+def live_state(engines) -> dict[str, str]:
+    return {name: unit_state(name) for name in engines}
 
 
 def active_for(engine: str) -> float | None:
