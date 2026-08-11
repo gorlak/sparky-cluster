@@ -48,7 +48,7 @@ can the agent run it?*
 | scope | what it means | commands |
 |---|---|---|
 | **Provision** | password-gated (`sudo -u deploy`), control node only | `deploy` `admin-password` |
-| **Operate** | no privilege, agent-drivable, needs a live cluster | `activate` `status` `fleet` `logs` `smoke` `bench` `eval` `sweep` `scoreboard` `report` `topology` `teardown` `probe` |
+| **Operate** | no privilege, agent-drivable, needs a live cluster | `activate` `status` `fleet` `logs` `smoke` `bench` `eval` `run` `sweep` `scoreboard` `report` `topology` `teardown` `probe` |
 | **Develop** | repo only, no cluster, no privilege | `lint` `test` `download` |
 
 That split is ADR-0018's subject, so the *provision* group is deliberately tiny — two
@@ -235,17 +235,20 @@ Four identities, and **no web-API path to root** (ADR-0001, tightened by ADR-001
   deploy**; geoff enters this context via `sudo -u deploy …` — his password is the
   gate, and it is now the **only** way in. No service runs as `deploy`.
 - **`activator`** — the low-privilege **activation identity**. Runs the control panel
-  and is what an agent acts as. Holds exactly four things: write access to
-  `/opt/cluster/desired-profile`, a single-command sudoers entry for
-  `/usr/local/sbin/vllm-activate`, an SSH key whose forced command on each worker
-  is that same reconciler, and — since ADR-0019 — a second single-command entry for
-  `/usr/local/sbin/vllm-probe`, which introspects an already-deployed container image
-  and can do nothing else. Deliberately **not** in the `docker` group — docker group
-  membership is root-equivalent and would re-open the hole this closes.
+  and is what an agent acts as. Holds write access to `/opt/cluster/desired-profile`, an
+  SSH key whose forced command on each worker is the reconciler, and **three
+  single-command sudoers entries** — one fixed, input-validating program each, and nothing
+  else:
 
-  The probe exists because evaluating a model means asking questions of the container, and
-  every one of those would otherwise need `sudo docker`. ADR-0019 describes how it is
-  bounded — and why **probing something new is a deploy**.
+  | program | ADR | what it is for |
+  |---|---|---|
+  | `vllm-activate` | 0018 | make an allowlisted profile live |
+  | `vllm-probe` | 0019 | ask a **deployed** image a read-only question, so evaluating a model does not need `sudo docker` |
+  | `vllm-runbook` | 0021 | start a runbook as a unit of its **own** — not privilege, *lifetime*: a measurement must not die with the panel that started it |
+
+  Deliberately **not** in the `docker` group — docker group membership is root-equivalent
+  and would re-open the hole this closes. Each program's allowlist is deploy-written, so
+  **probing a new image, or running a new runbook, is a deploy.**
 
 - **`vllm`** — service account owning the model weights (uid 996, no home/shell).
 
@@ -254,11 +257,17 @@ so both can edit the project in place; **`activate`** (activator + geoff) carrie
 activation grants, which is why `./sparky.sh activate` needs no password; **`adm`**
 (geoff) makes the journal readable with no privilege at all.
 
+Within `/opt/cluster` the two identities own different *kinds* of thing: **`deploy`
+provisions and `activate` records.** The measurement artifacts a run produces — the trend
+store, the sweep breadcrumbs, the smoke verdict, the scoreboard — are `activate`-writable;
+the trees a deploy later executes are not, and the directory carries the sticky bit so
+that stays true.
+
 **geoff has no passwordless sudo either** — he keeps `(ALL : ALL) ALL` behind his
 password, but nothing passwordless, because anything running as geoff inherits it, an agent
-most of all. The deploy asserts on every node that the activation reconciler is his only
-passwordless grant. ADR-0018 argues the case, including why a `docker` grant *is* a root
-grant.
+most of all. The deploy asserts on every node that the three bounded programs are his only
+passwordless grants — exhaustively, so a fourth appearing fails the deploy. ADR-0018 argues
+the case, including why a `docker` grant *is* a root grant.
 
 The point of the split: `deploy` legitimately needs root to *provision* (apt, systemd
 units, weights, docker), so it has blanket NOPASSWD — but nothing that faces the
@@ -342,7 +351,11 @@ that talk to the cluster; `sparky` itself = the operator entrypoint over both.**
   trigger), `api` (the vLLM client: readiness, chat, tool-shape probe), `store`
   (SQLite trend db), `quality` (multiturn corruption heuristics), `multiturn` (the
   quality conversation), `bench` / `report` (the `vllm bench serve` runner + A/B
-  compare), `ansible` (the deploy invoker).
+  compare), `sweep` (the outer loop), `runbook` / `runbookctl` (named procedures and the
+  trigger that detaches one), `ansible` (the deploy invoker).
+- **Installed, not only published.** `deploy` puts the harness in a venv at
+  `/opt/cluster/harness` (ADR-0021), because a detached runbook run is a systemd unit and
+  needs an interpreter that exists on a path root can name.
 - **Tests** (`./sparky.sh test`, no hardware, seconds): ADR-0011's layered regiment —
   Layer 1 `lint` (ansible syntax-check **plus** validating the whole allowlist:
   fleet-wide-unique engine names, the one front port, flags that survive the env-file
@@ -358,9 +371,16 @@ that talk to the cluster; `sparky` itself = the operator entrypoint over both.**
   `/opt/cluster/last-smoke.json`, pass or fail; the reconciler deletes that file at
   the start of every activation so a stale verdict can't be read as a fresh one.
 
+**Runbooks** are named, reviewed procedures — `runbooks/<name>.yml`, a flat
+`(profile × regiment)` job list, started by `./sparky.sh run <name>` or from the panel
+(ADR-0020, ADR-0021). A run is a systemd unit of its own, so it outlives the shell or the
+web request that started it; it appends to a per-runbook log, holds the cluster
+exclusively, and resumes rather than restarts if it is stopped. The repo is where they are
+authored; a deploy is what makes one startable.
+
 Design records live in [`docs/adr/`](docs/adr/) — one file per decision:
 ADR-0010 the harness, 0011 the test regiment, 0012 benchmarks, 0019 the bounded image probe, 0015 sparky as the
-operator entrypoint, 0018 the deploy/activate split.
+operator entrypoint, 0018 the deploy/activate split, 0020/0021 runbooks.
 
 ---
 
@@ -405,10 +425,14 @@ to `empty` rather than hanging. Open WebUI has `restart: always`, so Docker brin
 back on boot with no intervention; Caddy comes up with its static upstreams and
 converges the moment the restored engine passes health.
 
-> **Restored ≠ promoted.** A reboot *mid-sweep* restores the *last-activated* profile,
-> which during a sweep is a transient candidate rather than the promoted serving model.
-> Re-kick the sweep, or re-activate the promoted model. A rough edge, not a hazard —
-> the node is up and reachable throughout.
+> **Restored ≠ promoted.** A reboot *mid-campaign* restores the *last-activated* profile,
+> which during a run is a transient candidate rather than the promoted serving model.
+> Re-kick the runbook, or re-activate the one you meant. A rough edge, not a hazard —
+> the node is up and reachable throughout. A run that **finishes** puts back whatever was
+> serving when it started: a measurement should not decide what serves, and left alone it
+> would promote its last job by accident. Being *stopped* skips that, deliberately —
+> systemd kills a stopped run before an activation could finish, so it leaves the
+> candidate live and says so.
 
 ### Adding a model
 
@@ -462,7 +486,8 @@ changes on deploy.
         ├── fleet/             #   read every profile → the allowlist + per-node facts
         ├── selection/         #   preserve the live model, or fall to `empty`
         ├── vllm/              #   vllm@.service (one template unit) + per-engine env files
-        ├── activate/          #   the reconciler + its two bounded triggers + the identity
+        ├── activate/          #   the reconciler + the three bounded triggers + the identity
+        ├── harness/           #   the harness venv a detached runbook run executes (ADR-0021)
         ├── model/ · images/   #   convergent weights (per node) · images (ADR-0013)
         ├── fleet-state/       #   record the fleet, then converge the selection
         └── caddy/ · open-webui/ · control-panel/ · prometheus/ · grafana/ · exporters/
@@ -476,12 +501,17 @@ changes on deploy.
 
 /opt/cluster/                  # PUBLISHED runtime tree (deploy-owned)
 ├── ansible/                   #   what ansible runs from (published each deploy)
-├── sparky/                    #   the published harness (agents + the sweep runner)
+├── sparky/                    #   the published harness SOURCE
+├── harness/                   #   …installed into a venv — what a detached run executes
+├── runbooks/                  #   installed runbooks: what MAY be started (ADR-0021)
+├── runbook-logs/<name>.log    #   one appended log per runbook
 ├── desired-profile            #   THE REQUEST — group-writable, written with no sudo
 ├── current-topology.json      #   what IS running (reconciler-written)
 ├── fleet.json                 #   what MAY run (deploy-written)
 ├── last-smoke.json            #   the activation gate's last verdict
-└── benchmark/benchmark.db     #   the SQLite trend store
+└── benchmark/                #   the trend store, plus a campaign's breadcrumbs
+    ├── benchmark.db          #     the SQLite trend store
+    └── sweep-state.json      #     resume state — activate-owned, so it can be replaced
 ```
 
 ---

@@ -1,0 +1,57 @@
+# The smart tier — the models you pick when the answer matters more than the wait.
+#
+# The fleet splits on one axis, and the two tier runbooks are that split made runnable:
+#
+#   fast-tier    Qwen3.6-35B-A3B, Qwen3-Coder-Next — 54-100 tok/s decode
+#   smart-tier   everything else — 24-32 tok/s, and the accuracy that buys
+#
+# Together they are the whole allowlist, which is what makes them tiers rather than two
+# selections of convenience. `all` is both of them and is the one whose coverage `lint`
+# enforces (`covers: allowlist`), so nothing goes unmeasured even if a tier is forgotten.
+#
+# The question here is not "which is best" but **which one should be live**, since only
+# one can be: a TP=2 profile takes both nodes. Choosing one is declining the other four.
+#
+# Mistral-Medium-3.5 has never been measured at all. Half the value of this runbook is
+# that gap; `tools` running first will say within minutes whether `--tokenizer-mode
+# mistral` and MIXED_PRECISION serve at all.
+#
+# THE DECISION RULE, agreed before the numbers exist:
+#
+#   * Accuracy leads. Anything **5+ points of MMLU-Pro behind the leader is out**,
+#     whatever it does on speed. A model in this tier is chosen for being right; one that
+#     is wrong faster is not a better answer to the question the tier exists to answer.
+#   * Within 5 points, **take the faster one** — at that distance the difference is not
+#     distinguishable in use, and decode speed is.
+#   * **Dominated on every axis -> retire it** (`profiles/retired/` + a tombstone). The
+#     only automatic verdict, because it is the only one needing no judgement.
+#   * **Mistral is exempt from retirement**, and only from retirement. It is the fleet's
+#     one non-Chinese supplier, and diversity is a standing requirement rather than
+#     something the numbers decide. If it loses it is parked, not evicted — losing on
+#     accuracy is not the same as being the wrong thing to keep.
+#
+# Puzzle and Super are also the subject of `nemotron-family`, which asks a narrower
+# question (does NAS compression cost quality?) with one variable. Both belong here too:
+# a tier that omits its members to avoid overlap is not a tier. The breadcrumbs are keyed
+# on (profile, regiment), so running one after the other measures nothing twice.
+#
+# ~5 hours. Slowest last, so a harness fault surfaces in the first hour, not the fifth.
+name: smart-tier
+# Shown beside the button in the panel and by `sparky run` — so what a
+# multi-hour campaign is about is legible where it is STARTED, not only
+# to whoever reads this file.
+description: >-
+  The five big models that compete for the one serving slot — which should be
+  live? Mistral has never been measured at all.
+# Where it sits in the menu the panel and `sparky run` show.
+# Then the two tiers, cheapest first — a tier is what you reach for.
+order: 30
+estimate: "~5 h"
+defaults:
+  regiments: [tools, bench, quality]
+jobs:
+  - profile: mistral-medium-3.5-128b-nvfp4
+  - profile: minimax-m2.7-nvfp4
+  - profile: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
+  - profile: nvidia-nemotron-3-super-120b-a12b-nvfp4
+  - profile: qwen3-vl-235b-a22b-instruct-nvfp4

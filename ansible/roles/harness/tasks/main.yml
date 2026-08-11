@@ -1,0 +1,187 @@
+---
+# The harness as a DEPLOYED component (ADR-0021).
+#
+# `/opt/cluster/sparky` has been published for a while, and was never runnable: it is
+# source, and nothing on the box can resolve its dependencies. That was fine while every
+# harness invocation came from the repo through `uv`, as geoff. It stopped being fine the
+# moment a runbook run had to be **detached** — a systemd unit running as `activator`
+# needs an interpreter that exists, on a path root can name.
+#
+# So this role does three things, and each is a precondition for a detached run:
+#
+#   1. install the published harness into a venv          — something to execute
+#   2. make the measurement artifacts activate-writable   — somewhere to write
+#   3. create the log directory                           — somewhere to say what happened
+#
+# Head-only: a runbook drives the fleet from the control node, and the trigger that starts
+# one is only invocable there.
+
+- name: Ensure python venv tooling is present
+  ansible.builtin.apt:
+    name:
+      - python3-venv
+      - python3-pip
+    state: present
+  become: true
+
+# A venv resolves the dependency set at deploy time, so a broken one is a DEPLOY failure
+# rather than something discovered three hours into a campaign. `deploy` owns it (no
+# become) — the identity that runs the harness must not be able to rewrite it, the same
+# reason the control panel's app tree is not writable by the identity that serves it.
+#
+# EDITABLE against the published source, so there is exactly one copy of the harness on
+# this node. A regular install would leave two — the published tree and a snapshot in
+# site-packages — and since the version string never changes, `pip install` would decline
+# to replace the snapshot and a deploy would silently ship stale code. This way the rsync
+# that publishes IS the update.
+- name: Install the published harness into its venv (editable — one copy, not two)
+  ansible.builtin.pip:
+    name: "{{ harness_src }}"
+    editable: true
+    virtualenv: "{{ harness_dir }}"
+    virtualenv_command: python3 -m venv
+  become: false
+
+- name: Assert the harness entrypoint exists
+  ansible.builtin.stat:
+    path: "{{ harness_bin }}"
+  register: harness_entrypoint
+  changed_when: false
+
+- name: Fail if the harness did not install an entrypoint
+  ansible.builtin.assert:
+    that: harness_entrypoint.stat.exists
+    fail_msg: >-
+      {{ harness_bin }} is missing after installing {{ harness_src }}. A detached runbook
+      run has nothing to execute (ADR-0021). Check that pyproject.toml still declares
+      [project.scripts] sparky.
+  when: not ansible_check_mode
+
+# --- somewhere to write ------------------------------------------------------
+# /opt/cluster is deploy:cluster, and `activator` is deliberately NOT in `cluster` —
+# that group owns the tree ansible later runs as root, and handing a network-facing
+# identity write access to it is an escalation path dressed as a convenience.
+#
+# But a measurement has to record something. So the split is by KIND rather than by
+# directory: **/opt/cluster is deploy's to provision and activate's to record.** The
+# artifacts a run produces become writable by the `activate` group, which already holds
+# both the operator and the panel identity, and nothing else moves.
+- name: Let the activation identity create measurement artifacts in /opt/cluster
+  ansible.posix.acl:
+    path: /opt/cluster
+    entity: "{{ activate_group }}"
+    etype: group
+    permissions: rwx
+    default: "{{ item }}"
+    state: present
+  loop: [false, true]        # this directory, and anything created in it
+  become: true
+
+# The sticky bit is what makes the grant above safe. Without it, write access to the
+# directory means being able to RENAME or DELETE its entries — including `ansible/`,
+# which a later deploy executes as root. With it, an entry can only be removed by whoever
+# owns it. This is the same reason /tmp has it.
+- name: Set the sticky bit on /opt/cluster
+  ansible.builtin.file:
+    path: /opt/cluster
+    state: directory
+    mode: "3775"
+  become: true
+
+- name: Ensure the trend store directory exists and is activate-writable
+  ansible.builtin.file:
+    path: "{{ benchmark_dir }}"
+    state: directory
+    mode: "2775"
+  become: true
+
+- name: Let the activation identity write the trend store
+  ansible.posix.acl:
+    path: "{{ benchmark_dir }}"
+    entity: "{{ activate_group }}"
+    etype: group
+    permissions: rwx
+    default: "{{ item }}"
+    state: present
+  loop: [false, true]
+  become: true
+
+# The breadcrumbs and the campaign lock belong INSIDE benchmark/, not beside it.
+# `save_state` is atomic — write `.tmp`, rename over the target — and the sticky bit this
+# role sets on /opt/cluster forbids renaming over a file you do not own. The target was
+# geoff's, the run is `activator`, so the very first breadcrumb write of the first real
+# detached campaign died with EPERM and the run recorded nothing. benchmark/ is owned by
+# the activation identity and is not sticky, which is what makes the rename legal.
+- name: Move campaign state into the trend-store directory
+  ansible.builtin.command:
+    cmd: "mv {{ item.src }} {{ item.dest }}"
+    removes: "{{ item.src }}"
+    creates: "{{ item.dest }}"
+  loop:
+    - {src: /opt/cluster/sweep-state.json, dest: "{{ benchmark_dir }}/sweep-state.json"}
+    - {src: /opt/cluster/sweep.lock, dest: "{{ benchmark_dir }}/sweep.lock"}
+  become: true
+
+# Files that already exist were created before the ACL was, so they carry the old group
+# only. New ones inherit; these do not, and a run that cannot write its breadcrumbs is
+# a run that cannot resume.
+- name: Fix up measurement artifacts that predate the grant
+  ansible.posix.acl:
+    path: "{{ item }}"
+    entity: "{{ activate_group }}"
+    etype: group
+    permissions: rw
+    state: present
+  loop:
+    - "{{ benchmark_dir }}/benchmark.db"
+    - "{{ benchmark_dir }}/sweep-state.json"
+    - /opt/cluster/scoreboard.json
+    - /opt/cluster/last-smoke.json
+  failed_when: false          # absent is the normal case on a fresh cluster
+  become: true
+
+# The two files the activation identity must REPLACE, not merely write: `last-smoke.json`
+# and `scoreboard.json` are written in place (no rename), so group-write is enough — but
+# only if the writer is not also expected to chmod them, which it is not.
+- name: Prove a run can replace its own breadcrumbs
+  ansible.builtin.shell:
+    cmd: >-
+      set -e; d={{ benchmark_dir }};
+      runuser -u {{ activate_user }} -- sh -c
+      "printf x > $d/.perm-probe.tmp && mv -f $d/.perm-probe.tmp $d/.perm-probe && rm -f $d/.perm-probe"
+  changed_when: false
+  become: true
+  when: not ansible_check_mode
+
+# --- somewhere to say what happened ------------------------------------------
+# Per-runbook, appended across runs. A runbook RESUMES, so its runs are episodes of one
+# campaign; reading them together is the point, and rotating per-run would break it.
+- name: Create the runbook log directory
+  ansible.builtin.file:
+    path: "{{ runbook_log_dir }}"
+    state: directory
+    owner: "{{ activate_user }}"
+    group: "{{ activate_group }}"
+    mode: "2775"
+  become: true
+
+# `deploy` publishes {{ runbook_dir }} (sparky/ansible.py publish()). This asserts the
+# property that makes it an allowlist rather than a directory: the identity that runs
+# runbooks cannot add to it.
+- name: Read the installed runbook directory
+  ansible.builtin.stat:
+    path: "{{ runbook_dir }}"
+  register: runbook_dir_stat
+  changed_when: false
+
+- name: Assert the activation identity cannot write the runbook allowlist
+  ansible.builtin.assert:
+    that:
+      - runbook_dir_stat.stat.exists
+      - runbook_dir_stat.stat.gr_name != activate_group
+      - not runbook_dir_stat.stat.woth
+    fail_msg: >-
+      {{ runbook_dir }} is writable by the activation identity, or missing. That list is
+      what a network-facing caller may instance (ADR-0021); an identity that can add to
+      its own allowlist does not have one.
+  when: not ansible_check_mode

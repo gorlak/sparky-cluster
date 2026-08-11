@@ -4,6 +4,10 @@ Since ADR-0018 ansible is the `deploy` engine ONLY: whole-fleet, no profile argu
 password-gated. These assert that shape, plus the deploy/sweep mutex.
 """
 
+import os
+
+import pytest
+
 from sparky import ansible
 
 
@@ -99,3 +103,67 @@ def test_reading_logs_needs_no_privilege(monkeypatch):
     ansible.logs("head")
     ansible.logs("worker")
     assert all("sudo" not in c for cmd in cmds for c in cmd)
+
+
+@pytest.mark.real_lock_paths
+def test_the_campaign_and_the_deploy_take_THE_SAME_lock():
+    """They were different files until 2026-08-11, while a comment in ansible.py asserted
+    they were the same. `deploy` took `fleet.lock`; the sweep took `sweep.lock`, which
+    only ever excluded other sweeps. So nothing stopped a deploy from re-rendering engine
+    files, pulling an image or evicting weights in the middle of a measurement — and the
+    resulting numbers would belong to no configuration, invisibly.
+
+    Pinned as constants rather than as behaviour because the mechanisms differ by
+    necessity: `flock(1)` in a shell on one side, `fcntl.flock` on the other. The file is
+    the only thing they share, so the file is what has to match.
+    """
+    from sparky import ansible, sweep
+
+    assert sweep.FLEET_LOCK == ansible.FLEET_LOCK
+    assert sweep.DEFAULT_LOCK != ansible.FLEET_LOCK  # still distinct roles
+
+
+def test_a_campaign_holding_the_fleet_refuses_the_deploy(tmp_path, monkeypatch, capsys):
+    """And says which campaign, and how to end it. `flock` alone would be correct and
+    awful — the deploy would sit silent for however long the campaign has left."""
+    import fcntl
+
+    from sparky import ansible, sweep
+
+    lock = tmp_path / "fleet.lock"
+    monkeypatch.setattr(ansible, "FLEET_LOCK", lock)
+    monkeypatch.setattr(sweep, "FLEET_LOCK", lock)
+    monkeypatch.setattr(sweep, "_fleet_fd", None)
+
+    assert ansible.campaign_holding_the_fleet() is False
+    sweep._hold_fleet_lock(lock)
+    try:
+        # Held in-process, so an flock from another fd in the SAME process still sees it.
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            with pytest.raises(OSError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+    finally:
+        sweep.release(tmp_path / "sweep.lock")
+
+
+def test_a_sweep_refuses_to_start_under_a_deploy(tmp_path, monkeypatch):
+    """The other direction. Starting a seven-hour campaign into a deploy that is halfway
+    through re-rendering the fleet measures a moving target."""
+    import fcntl
+
+    from sparky import sweep
+
+    lock = tmp_path / "fleet.lock"
+    monkeypatch.setattr(sweep, "FLEET_LOCK", lock)
+    monkeypatch.setattr(sweep, "_fleet_fd", None)
+    holder = os.open(lock, os.O_RDWR | os.O_CREAT, 0o664)
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(sweep.SweepBusy) as exc:
+            sweep.acquire(tmp_path / "sweep.lock")
+        assert "deploy is in progress" in str(exc.value)
+    finally:
+        os.close(holder)

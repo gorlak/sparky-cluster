@@ -36,6 +36,13 @@ Environment=MODEL_ENDPOINT={{ model_endpoint_url }}
 # Past this, "unit up, API down" stops being a weight load and becomes a fault.
 Environment=LOAD_TIMEOUT={{ vllm_start_timeout_sec }}
 Environment=RUNS_DIR={{ control_panel_dir }}/runs
+# The runbook trigger (ADR-0021). The panel starts a runbook as a unit of its OWN rather
+# than as a child, because every deploy restarts this service and a three-hour campaign
+# must not die with it.
+Environment=RUNBOOK_BIN={{ runbook_bin }}
+Environment=RUNBOOK_UNIT={{ runbook_unit }}
+Environment=RUNBOOK_DIR={{ runbook_dir }}
+Environment=RUNBOOK_LOG_DIR={{ runbook_log_dir }}
 ExecStart={{ control_panel_dir }}/venv/bin/uvicorn app.main:app \
     --host 127.0.0.1 --port {{ control_panel_port }} --root-path /admin
 Restart=on-failure

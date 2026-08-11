@@ -31,6 +31,22 @@ scrape_configs:
       - source_labels: [node]
         target_label: instance
 
+  # What is ACTIVATED, and whether a runbook is driving the cluster. Neither is
+  # discoverable from an exporter: vLLM's `model_name` label is the stable alias every
+  # engine advertises (`{{ stable_model_name }}`), deliberately
+  # model-agnostic so chat survives an activation — and a runbook is not an engine at all.
+  # The control panel already knows both, so it exports them rather than a sidecar
+  # existing to read two files. Loopback: this container is `network_mode: host`, and the
+  # panel binds 127.0.0.1, so the scrape never crosses Caddy or its basic_auth.
+  - job_name: cluster
+    static_configs:
+      - targets: ['127.0.0.1:{{ control_panel_port }}']
+        labels:
+          node: '{{ inventory_hostname }}'
+    relabel_configs:
+      - source_labels: [node]
+        target_label: instance
+
   - job_name: gpu
     static_configs:
 {% for h in groups['all'] %}

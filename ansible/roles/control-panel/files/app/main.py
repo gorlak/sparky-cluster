@@ -36,8 +36,9 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
+import yaml
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -47,6 +48,14 @@ ALLOWLIST_FILE = Path(os.environ.get("ALLOWLIST_FILE", "/opt/vllm/engines/allowl
 ACTIVATE_SSH_KEY = os.environ.get("ACTIVATE_SSH_KEY", "/home/activator/.ssh/id_ed25519")
 ACTIVATE_SSH_USER = os.environ.get("ACTIVATE_SSH_USER", "activator")
 RUNS_DIR = Path(os.environ.get("RUNS_DIR", "runs")).resolve()
+# The runbook trigger (ADR-0021). The panel is one of two thin callers of this fixed
+# program — `sparky run` is the other — and neither validates the name itself: the trigger
+# checks it against the deploy-written allowlist, and a second copy of that check here
+# would be a second answer to "which runbooks exist".
+RUNBOOK_BIN = os.environ.get("RUNBOOK_BIN", "/usr/local/sbin/vllm-runbook")
+RUNBOOK_UNIT = os.environ.get("RUNBOOK_UNIT", "sparky-runbook.service")
+RUNBOOK_DIR = Path(os.environ.get("RUNBOOK_DIR", "/opt/cluster/runbooks"))
+RUNBOOK_LOG_DIR = Path(os.environ.get("RUNBOOK_LOG_DIR", "/opt/cluster/runbook-logs"))
 TOPOLOGY_FILE = os.environ.get("CLUSTER_TOPOLOGY", "/opt/cluster/current-topology.json")
 FLEET_FILE = os.environ.get("CLUSTER_FLEET", "/opt/cluster/fleet.json")
 SCOREBOARD_FILE = os.environ.get("SCOREBOARD_FILE", "/opt/cluster/scoreboard.json")
@@ -445,6 +454,104 @@ def start_run(name, label, cmd):
     return current_run()
 
 
+# --- runbooks (ADR-0021) ----------------------------------------------------
+#
+# A runbook run is NOT one of the actions above. Those are children of this process, which
+# is fine for something that finishes in minutes and fatal for something that runs for
+# hours: every deploy restarts this service, and a child dies with the cgroup. So the
+# panel does not run a runbook — it asks the trigger to start one as a unit of its own,
+# then reads the same two things anyone else would, a unit state and a log file.
+
+
+def installed_runbooks():
+    """What may be started, with what each one is FOR.
+
+    Read straight from the deploy-written directory the trigger validates against, so the
+    buttons cannot offer something the trigger would refuse.
+
+    A bare name is a poor label for a button that commandeers the cluster for an evening,
+    and the person pressing it is not reading the YAML — which is why `description` and
+    `estimate` are required fields (`sparky lint`) rather than comments. A file missing
+    them still lists: the panel's job is to show what is installed, not to audit it.
+    """
+    out = []
+    try:
+        paths = sorted(RUNBOOK_DIR.glob("*.yml"))
+    except OSError:
+        return out
+    for path in paths:
+        spec = {}
+        try:
+            spec = yaml.safe_load(path.read_text()) or {}
+        except Exception:  # noqa: BLE001 - an unreadable runbook is still a runbook
+            pass
+        try:
+            order = int(spec.get("order", 50))
+        except (TypeError, ValueError):
+            order = 50
+        out.append({
+            "name": path.stem,
+            "description": str(spec.get("description") or "").strip(),
+            "estimate": str(spec.get("estimate") or "").strip(),
+            "jobs": len(spec.get("jobs") or []),
+            "order": order,
+        })
+    # Presentation order, matching `sparky run` — the two show the same menu, so they had
+    # better show it in the same sequence. Alphabetical put whatever starts with 'a' in
+    # front of whatever you actually reach for; `order:` is declared per runbook so there
+    # is no central list to forget when one is added.
+    return sorted(out, key=lambda r: (r["order"], r["name"]))
+
+
+def _unit_fields(*properties):
+    try:
+        out = subprocess.run(["systemctl", "show", RUNBOOK_UNIT,
+                              *[f"-p{p}" for p in properties]],
+                             capture_output=True, text=True, timeout=6).stdout
+    except Exception:  # noqa: BLE001 - systemd missing/slow is a status, not a crash
+        return {}
+    return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+def runbook_state():
+    """Everything the view needs: what is running, how the last run ended, and its log.
+
+    No pid file and no run record — systemd already knows both, and a second copy is just
+    a second thing that can be stale. The trigger deliberately does not `--collect` the
+    unit, which is what leaves the exit status readable after it finishes.
+    """
+    fields = _unit_fields("ActiveState", "Description", "ExecMainStatus")
+    active = fields.get("ActiveState", "")
+    name = fields.get("Description", "").removeprefix("sparky runbook: ").strip()
+    running = active in ("active", "activating", "deactivating")
+    try:
+        code = int(fields.get("ExecMainStatus", ""))
+    except ValueError:
+        code = None
+    if running:
+        status = "running"
+    elif not name:
+        status = "none"
+    else:
+        status = "success" if code == 0 else "failed"
+    return {"available": installed_runbooks(), "name": name, "status": status,
+            "code": code, "log": _tail(RUNBOOK_LOG_DIR / f"{name}.log") if name else ""}
+
+
+def _trigger(*args, timeout=20):
+    """Invoke the trigger. Its refusals are the useful part, so they are surfaced whole
+    rather than collapsed into a generic 500."""
+    try:
+        p = subprocess.run(["sudo", "-n", RUNBOOK_BIN, *args],
+                           capture_output=True, text=True, timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"could not reach {RUNBOOK_BIN}: {e}")
+    if p.returncode != 0:
+        raise HTTPException(400, (p.stderr.strip() or p.stdout.strip()
+                                  or f"{RUNBOOK_BIN} exited {p.returncode}"))
+    return p
+
+
 # --- views -----------------------------------------------------------------
 
 def _ctx(request, **extra):
@@ -462,7 +569,7 @@ def index(request: Request):
     return templates.TemplateResponse(request, "index.html", _ctx(
         request, s=gather(), actions=ACTION_LIST, engines=topology_engines(),
         profile=current_profile(), profiles=available_profiles(),
-        fleet=load_fleet(), run=current_run()))
+        fleet=load_fleet(), run=current_run(), rb=runbook_state()))
 
 
 @app.get("/status", response_class=HTMLResponse)
@@ -553,6 +660,93 @@ def run_view(request: Request):
     if not run:
         return templates.TemplateResponse(request, "_actions.html", _actions_ctx(request))
     return templates.TemplateResponse(request, "_run.html", _ctx(request, run=run))
+
+
+@app.get("/runbooks", response_class=HTMLResponse)
+def runbooks_view(request: Request):
+    return templates.TemplateResponse(request, "_runbooks.html",
+                                      _ctx(request, rb=runbook_state()))
+
+
+@app.post("/runbook/{name}", response_class=HTMLResponse)
+def runbook_start(request: Request, name: str):
+    """Start a runbook — detached, so it outlives this process (ADR-0021).
+
+    The name goes to the trigger unexamined on purpose. It validates against the installed
+    allowlist and rejects anything that is not a bare identifier, and it is the same check
+    `sparky run` gets. Pre-filtering here would only mean two places to keep right.
+    """
+    _trigger("start", name)
+    return templates.TemplateResponse(request, "_runbooks.html",
+                                      _ctx(request, rb=runbook_state()))
+
+
+@app.post("/runbook-stop", response_class=HTMLResponse)
+def runbook_stop(request: Request):
+    """Stop the running runbook. Safe: breadcrumbs are written after every regiment
+    (ADR-0016), so a stopped run resumes rather than starting over."""
+    _trigger("stop", timeout=200)
+    return templates.TemplateResponse(request, "_runbooks.html",
+                                      _ctx(request, rb=runbook_state()))
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics():
+    """What is serving, and what is measuring it — as Prometheus text.
+
+    Grafana's top row asks two questions no exporter could answer: *which model is this?*
+    and *is a runbook driving the cluster right now?* vLLM's own metrics cannot say. Its
+    `model_name` label is the STABLE alias (`sparky`) that every engine advertises so chat
+    survives an activation — deliberately model-agnostic, and therefore useless for
+    identifying the model. And a runbook is not an engine at all.
+
+    The panel already knows both, so it exports them rather than a new sidecar existing to
+    read two files. Prometheus runs with `network_mode: host`, so it scrapes this over
+    loopback — the same reason this route sits inside the app rather than behind Caddy's
+    basic_auth.
+
+    **Deliberately cheap.** No `gather()`: that probes every node over SSH, which is fine
+    for a page you open and wrong for something scraped every 15 seconds. Everything here
+    is a local file read and one `systemctl show`. The cost of that is real — this says
+    what was *activated*, not what is *answering* — and it is the right trade, because
+    "is it healthy" is what every other panel on the dashboard is already for.
+    """
+    topo = load_topology() or {}
+    # The PROFILE, not the model: it is the basename of `ansible/profiles/<name>.yml` and
+    # the identity everything else keys on — what `activate` takes, what the trend store
+    # labels a measurement with, what a scoreboard row is called. It is also always
+    # defined, including as `empty`, which the model name is not.
+    profile = topo.get("profile") or requested_profile()
+    lines = [
+        "# HELP sparky_active_profile The activated profile. Always exactly one series.",
+        "# TYPE sparky_active_profile gauge",
+        # Exactly one series, always. A stat panel showing a label needs a single series
+        # to show, and a dashboard that reads "No data" when the answer is "nothing is
+        # serving, on purpose" has failed at the one moment it was ambiguous.
+        f'sparky_active_profile{{profile="{profile}"}} 1',
+        "# HELP sparky_engine_model The model each live engine is serving.",
+        "# TYPE sparky_engine_model gauge",
+    ]
+    # Kept separate rather than as more labels on the metric above: a profile may span
+    # several engines, and folding them together would turn the one-series guarantee into
+    # a promise that holds until the day it matters.
+    for e in topo.get("engines") or []:
+        lines.append(f'sparky_engine_model{{profile="{profile}",'
+                     f'engine="{e.get("name", "?")}",model="{e.get("model", "?")}"}} 1')
+
+    rb = runbook_state()
+    # `none` unless one is actually running. The unit keeps its description after it
+    # exits — which is what makes the last run's exit status readable — so carrying that
+    # name into the metric would leave a dashboard reading "nemotron-family" for the
+    # twelve hours after nemotron-family finished.
+    running = rb["status"] == "running"
+    lines += [
+        "# HELP sparky_runbook_running 1 while a runbook holds the cluster (ADR-0021).",
+        "# TYPE sparky_runbook_running gauge",
+        f'sparky_runbook_running{{runbook="{rb["name"] if running else "none"}"}} '
+        f'{1 if running else 0}',
+    ]
+    return "\n".join(lines) + "\n"
 
 
 @app.get("/scoreboard", response_class=HTMLResponse)

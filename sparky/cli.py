@@ -30,7 +30,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from sparky import soak, sweep, tools, activate as act
+from sparky import runbook, runbookctl, soak, sweep, tools, activate as act
 from sparky import ansible as ops
 from sparky import bench as httpbench
 from sparky import evals, report, scoreboard, store, topology
@@ -477,6 +477,83 @@ def bench(
 PANEL_SNAPSHOT = Path("/opt/cluster/scoreboard.json")
 
 
+def _restore_serving(was_serving: str | None) -> None:
+    """Put back whatever was serving before the campaign took the cluster.
+
+    A measurement must not decide what serves. Left alone, a sweep promotes its LAST job
+    by accident — a candidate, chosen by job ordering, at whatever hour the run finished.
+    That is the "restored ≠ promoted" rough edge, closed at the point it is created.
+
+    Best-effort and loud about failing: the run's real work is already recorded and its
+    exit code belongs to the measurements, not to this.
+    """
+    if not was_serving:
+        return
+    live = act.live_profile()
+    if live == was_serving:
+        return
+    console.print(f"\n[dim]restoring {was_serving} (was serving before the run; "
+                  f"{live or 'nothing'} is what the last job left)[/]")
+    try:
+        act.bring_up(was_serving, on_event=lambda m: console.print(f"  [dim]{m}[/]"))
+    except Exception as exc:  # noqa: BLE001 - a failed restore must not fail the campaign
+        console.print(f"[yellow]could not restore {was_serving}: {exc}[/]")
+        console.print(f"[yellow]{live or 'nothing'} is serving — "
+                      f"`./sparky.sh activate {was_serving}` when you want it back.[/]")
+
+
+def _scoreboard_table(*, include_retired: bool = False):
+    """The scoreboard, built and attributed. Returns `(table, dropped labels)`.
+
+    **One producer, deliberately.** The panel renders a file and does no analysis, which
+    is what keeps dominance and best-marking from drifting — but that only holds while
+    there is one thing WRITING the file. There were two, and they disagreed: this path
+    skipped the profile attribution entirely, so every snapshot the sweep wrote had no
+    `hf_repo` (no Hub links on the web scoreboard, silently) and `retired: False` on
+    everything (so Step-3.5-Flash and the four single-node profiles never left the page).
+    Each sweep overwrote whatever a correct `scoreboard --json` had produced.
+    """
+    with store.Store() as db:
+        rows = db.rows()
+    table = scoreboard.build(rows)
+    # Attach the upstream repo id from the profile. The store records a label; only the
+    # profile knows which org published the checkpoint, and that is the one string that
+    # makes a scoreboard row searchable on the Hub.
+    live = {p.name: p.hf_repo for p in topology.all_profiles()}
+    # Retired profiles keep their repo id (profiles/retired/), so a retired row still
+    # links to the Hub — the measurement is real and its provenance is exactly as useful
+    # as a live one's. `retired` is decided by absence from the LIVE set, not by whether
+    # a repo was found.
+    archived = {}
+    retired_dir = topology.PROFILES_DIR / "retired"
+    if retired_dir.is_dir():
+        for f in sorted(retired_dir.glob("*.yml")):
+            try:
+                prof = topology.load_profile(f)
+            except Exception:
+                continue
+            archived[prof.name] = prof.hf_repo
+    for row in table:
+        row.hf_repo = (live.get(row.label) or live.get(row.profile)
+                       or archived.get(row.label) or archived.get(row.profile))
+        # Retired means an ARCHIVED profile exists — a retirement someone recorded, with a
+        # banner and a tombstone. Not merely "absent from the live set": a label matching
+        # nothing at all is orphaned, not retired, and hiding it would quietly discard a
+        # measurement on the strength of a filename. The retirement gesture is a `git mv`
+        # into profiles/retired/ (docs/updating.md), so absence from BOTH sets means
+        # nobody decided anything, and the row stays.
+        row.retired = row.label in archived or row.profile in archived
+
+    # Dropped BEFORE pareto, so dominance is a claim about models you could actually
+    # activate. "Beaten on every axis" is only useful as advice, and advice about a
+    # profile that no longer exists is noise — worse, a retired row can dominate a live
+    # one on numbers taken under a different container.
+    dropped = [r.label for r in table if r.retired]
+    if not include_retired:
+        table = [r for r in table if not r.retired]
+    return table, dropped
+
+
 def _refresh_panel_snapshot() -> None:
     """Best-effort rewrite of the panel's snapshot. Never raises.
 
@@ -487,9 +564,7 @@ def _refresh_panel_snapshot() -> None:
         if not PANEL_SNAPSHOT.parent.is_dir():
             return
         import json as _json
-        with store.Store() as db:
-            rows = db.rows()
-        table = scoreboard.build(rows)
+        table, _ = _scoreboard_table()
         if not table:
             return
         points, dominated = scoreboard.pareto(table)
@@ -499,6 +574,88 @@ def _refresh_panel_snapshot() -> None:
         PANEL_SNAPSHOT.chmod(0o644)   # the panel runs as `activator`, not in `cluster`
     except Exception:
         pass
+
+
+@app.command("run", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+def run_cmd(
+    name: str = typer.Argument(None, help="Runbook name (not a path). Omit to list."),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Tail the log after starting."),
+    stop: bool = typer.Option(False, "--stop", help="Stop the running runbook."),
+    log: bool = typer.Option(False, "--log", help="Show the log and exit; nothing starts."),
+    restart: bool = typer.Option(False, "--restart",
+                                 help="Discard breadcrumbs first — re-measure everything."),
+) -> None:
+    """Start a named runbook — detached and logged (ADR-0020, ADR-0021).
+
+    A runbook is to a procedure what a profile is to a model: declarative, installed by
+    `deploy`, started by NAME. Taking a name rather than a path is what makes the
+    allowlist mean anything — a path argument would let any YAML on the box run.
+
+    **This does not run the campaign; it starts it.** The run is a systemd unit of its
+    own, so it survives this shell, a dropped connection, and the deploy that restarts the
+    panel — a measurement that takes three hours must not depend on a terminal staying
+    open. Its output appends to a per-runbook log. `--follow` tails it; Ctrl-C leaves the
+    run going.
+
+    **Breadcrumbs are shared across runbooks**, because they are keyed on
+    `(profile, regiment)` rather than on which file asked for it — so a campaign that
+    overlaps one you just ran skips the overlap instead of re-measuring it. That is
+    usually what you want and occasionally not: after a container bump every number is
+    stale, and `--restart` is how you say so.
+
+    Iterating on a job list that is not an installed runbook yet? That is
+    `sparky sweep <path>`, in the foreground.
+    """
+    if stop:
+        raise typer.Exit(runbookctl.stop())
+    if not name:
+        _runbook_list()
+        raise typer.Exit(0 if runbook.available() else 1)
+    if log:
+        raise typer.Exit(runbookctl.follow(name, once=True))
+
+    if restart:
+        # Done HERE rather than as a second argument to the trigger. That program takes
+        # one bare identifier and composes every path itself, which is most of why it is
+        # safe to expose to a web request; adding a flag it must interpret would trade
+        # that away for a gesture the caller can just perform first. Clearing the file is
+        # unprivileged — the measurement artifacts are activate-writable (ADR-0021).
+        sweep.DEFAULT_BREADCRUMBS.unlink(missing_ok=True)
+        console.print("[dim]breadcrumbs cleared — every regiment will be re-measured, "
+                      "for every profile, not just this runbook's[/]")
+
+    code = runbookctl.start(name)
+    if code != 0:
+        raise typer.Exit(code)
+    console.print(f"[green]started[/] {name} — detached, logging to {runbookctl.log_path(name)}")
+    console.print(f"[dim]follow: ./sparky.sh run {name} --follow   ·   "
+                  f"stop: ./sparky.sh run --stop[/]")
+    if follow:
+        raise typer.Exit(runbookctl.follow(name))
+
+
+def _runbook_list() -> None:
+    """What may be started, and whether anything is running."""
+    installed = runbook.describe()
+    if not installed:
+        console.print("[bold]runbooks:[/] (none installed — ./sparky.sh deploy)")
+    for rb in installed:
+        # `estimate` can be absent — an older installed copy, or a file `lint` would have
+        # rejected. Show what is there rather than a stray separator around nothing.
+        meta = " · ".join(x for x in (rb["estimate"], f"{rb['jobs']} profile(s)") if x)
+        console.print(f"  [bold]{rb['name']}[/]  [dim]{meta}[/]")
+        if rb["description"]:
+            console.print(f"    [dim]{rb['description']}[/]")
+    # Named separately rather than merged: an authored-but-not-deployed runbook is not a
+    # thing you can start, and showing it in one list is how you learn that at the moment
+    # you try. See ADR-0021 — the installed set is the allowlist.
+    startable = {rb["name"] for rb in installed}
+    pending = [n for n in runbook.authored() if n not in startable]
+    if pending:
+        console.print(f"[yellow]not deployed:[/] {'  '.join(pending)} "
+                      f"[dim](./sparky.sh deploy)[/]")
+    running = runbookctl.running()
+    console.print(f"[bold]running:[/] {running}" if running else "[dim]nothing running[/]")
 
 
 @app.command("sweep", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
@@ -612,10 +769,24 @@ def sweep_cmd(
     except sweep.SweepBusy as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(1)
+    # What was serving before we took the cluster. A campaign is a MEASUREMENT: it should
+    # leave the fleet as it found it, the same way `deploy` is selection-neutral. Without
+    # this, which model is live afterwards is an artifact of job ordering — the last thing
+    # measured, promoted by accident, at whatever hour the run happened to finish.
+    was_serving = act.live_profile()
     try:
         state = sweep.run(jobs, activate=activate_profile, regiments=regiments,
                           state=state, on_event=lambda m: console.print(m))
     finally:
+        # In the `finally`, so a campaign that CRASHES still puts the fleet back. It was
+        # outside it until 2026-08-11, and the first crash proved that wrong: the run died
+        # on a breadcrumb write and left its candidate serving overnight.
+        #
+        # A `--stop` still does not restore, and gets that for free rather than by a flag:
+        # systemd sends SIGTERM, whose default disposition terminates the interpreter
+        # without unwinding, so this never runs. Which is the behaviour we want — an
+        # activation cannot finish inside the 180s a stopped unit has left.
+        _restore_serving(was_serving)
         sweep.release(lock)
         _refresh_panel_snapshot()
 
@@ -631,6 +802,8 @@ def scoreboard_cmd(
                                   help="Emit a markdown table for docs/."),
     no_plot: bool = typer.Option(False, "--no-plot"),
     json_out: str = typer.Option(None, "--json", help="Write a snapshot for the panel."),
+    retired: bool = typer.Option(False, "--retired",
+                                 help="Include profiles that have left the allowlist."),
 ) -> None:
     """The whole fleet on one screen — quality against speed (ADR-0016).
 
@@ -642,34 +815,23 @@ def scoreboard_cmd(
     biggest model every time — wrong for a two-node cluster, where serving one model
     means not serving another. The one objective claim it does make is **dominance**: a
     model beaten on every axis is never the right choice.
+
+    **Retired profiles are excluded.** Not because their measurements were wrong, but
+    because they stop being comparable: a container bump, a driver, a change to how a
+    regiment measures — each moves the numbers under everything, and only the live set
+    gets re-measured. A row nobody will ever re-run drifts from the ones beside it, and
+    the drift is invisible. `--retired` shows them anyway; the verdicts live in
+    `docs/models/tombstones.md`, and the store keeps every row regardless.
     """
-    with store.Store() as db:
-        rows = db.rows()
-    table = scoreboard.build(rows)
-    # Attach the upstream repo id from the profile. The store records a label; only the
-    # profile knows which org published the checkpoint, and that is the one string that
-    # makes a scoreboard row searchable on the Hub.
-    live = {p.name: p.hf_repo for p in topology.all_profiles()}
-    # Retired profiles keep their repo id (profiles/retired/), so a retired row still
-    # links to the Hub — the measurement is real and its provenance is exactly as useful
-    # as a live one's. `retired` is decided by absence from the LIVE set, not by whether
-    # a repo was found.
-    archived = {}
-    retired_dir = topology.PROFILES_DIR / "retired"
-    if retired_dir.is_dir():
-        for f in sorted(retired_dir.glob("*.yml")):
-            try:
-                prof = topology.load_profile(f)
-            except Exception:
-                continue
-            archived[prof.name] = prof.hf_repo
-    for row in table:
-        row.hf_repo = (live.get(row.label) or live.get(row.profile)
-                       or archived.get(row.label) or archived.get(row.profile))
-        row.retired = row.label not in live and row.profile not in live
+    table, dropped = _scoreboard_table(include_retired=retired)
     if not table:
         console.print("[yellow]No measurements yet — run `sparky eval` and `sparky bench`.[/]")
         raise typer.Exit(1)
+    # Said out loud, not silently: a scoreboard that quietly omits rows reads as "this is
+    # everything measured", which is exactly the wrong thing to believe about it.
+    if dropped and not retired and not json_out:
+        console.print(f"[dim]{len(dropped)} retired profile(s) hidden "
+                      f"({', '.join(sorted(dropped))}) — `--retired` to include.[/]")
 
     if json_out:
         import json as _json
@@ -973,6 +1135,18 @@ def lint() -> None:
     # against synthetic fleets in unit tests. "Every profile says what it is an example
     # of" is a property of THIS repo's allowlist, and its whole purpose is that tests can
     # bind to a shape instead of a model name (topology.ARCHETYPES).
+    #
+    # Runbooks are an allowlist too (ADR-0020), so `lint` validates them alongside
+    # profiles — the REPO copies, since this is the gate a deploy passes through. A
+    # runbook that names a privileged command should fail here, at Layer 1, and not two
+    # hours into a campaign.
+    for name in runbook.authored():
+        problems = runbook.validate(name)
+        if problems:
+            for problem in problems:
+                console.print(f"[red]lint FAILED[/] — {problem}")
+            raise typer.Exit(1)
+
     untagged = [p.name for p in topology.all_profiles() if not p.archetypes]
     if untagged:
         console.print(f"[red]lint FAILED[/] — no `archetypes:` on: {', '.join(untagged)}. "

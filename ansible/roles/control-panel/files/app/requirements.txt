@@ -21,6 +21,11 @@ fastapi==0.141.1
 httpx==0.28.1
 jinja2==3.1.6
 python-multipart==0.0.32
+# Direct since 2026-08-11: the panel reads a runbook's `description`/`estimate`
+# to label its button (ADR-0021). It arrived as a uvicorn[standard] transitive,
+# and a feature resting on someone else's dependency is a feature that breaks on
+# their next release for no reason you would find here.
+pyyaml==6.0.3
 uvicorn[standard]==0.52.1
 
 # --- resolved (transitive — regenerate, don't hand-edit) -------------------
@@ -37,7 +42,6 @@ markupsafe==3.0.3
 pydantic-core==2.46.4
 pydantic==2.13.4
 python-dotenv==1.2.2
-pyyaml==6.0.3
 starlette==1.6.0
 typing-extensions==4.16.0
 typing-inspection==0.4.2

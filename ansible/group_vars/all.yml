@@ -108,6 +108,12 @@ activate_bin: /usr/local/sbin/vllm-activate
 # Same shape as the reconciler — one fixed program, validated input, no docker grant.
 probe_bin: /usr/local/sbin/vllm-probe
 probe_image_allowlist: /opt/vllm/images/allowlist
+# The third bounded grant (ADR-0021), and the only one that exists for LIFETIME rather
+# than privilege: a runbook run needs no root, but it must not be a child of the control
+# panel's cgroup, or the next deploy kills a three-hour campaign. Same shape again — one
+# fixed program, one allowlisted name, everything else composed from constants.
+runbook_bin: /usr/local/sbin/vllm-runbook
+runbook_unit: sparky-runbook.service
 activate_conf: /opt/vllm/activate.conf
 # The dedicated LOW-PRIVILEGE activation identity (the control panel service and
 # the agent). It holds the two trigger grants and nothing else — no sudo beyond
@@ -245,6 +251,23 @@ admin_basic_auth_user: admin
 # runs through the fixed reconciler, never ansible.
 control_panel_dir: /opt/cluster/control-panel
 control_panel_port: 8088
+
+# The harness, INSTALLED rather than merely published (ADR-0021). `/opt/cluster/sparky`
+# is source; nothing on the box can resolve its dependencies, so a detached runbook run
+# had nothing to execute. This venv is that interpreter — the same treatment the control
+# panel already gets, and for the same reason.
+harness_dir: /opt/cluster/harness
+harness_src: /opt/cluster/sparky
+harness_bin: /opt/cluster/harness/bin/sparky
+# What may be INSTANCED, as opposed to what the repo declares. Published by `deploy`,
+# writable only by the `cluster` group — the activation identity must never be able to
+# add to the list of things it is allowed to run.
+runbook_dir: /opt/cluster/runbooks
+runbook_log_dir: /opt/cluster/runbook-logs
+# The trend store (ADR-0012). Everything a regiment records lands here, and both the
+# operator and a detached run write it — hence the `activate`-group grant in the
+# `harness` role rather than the `cluster` ownership the rest of /opt/cluster carries.
+benchmark_dir: /opt/cluster/benchmark
 # The fallback selection when nothing has been activated yet. (`cluster_ansible_dir`
 # went with ADR-0018: the panel no longer runs ansible, so nothing but `sparky deploy`
 # needs to know where the published tree lives.)
@@ -266,9 +289,6 @@ landing_services:
   - name: Open WebUI
     url: "http://chat.{{ web_domain }}"
     blurb: "Chat with the cluster's served model"
-  - name: Admin
-    url: "/admin"
-    blurb: "Cluster control panel (status)"
   - name: Metrics
     url: "http://metrics.{{ web_domain }}"
     blurb: "Grafana dashboards — throughput, GPU, latency"
@@ -278,3 +298,9 @@ landing_services:
   - name: Scoreboard
     url: "/scoreboard"
     blurb: "Every model side by side — accuracy, speed, context, nodes used"
+  # LAST, deliberately. Everything above is something you read; this is the one thing that
+  # changes the cluster, and it is the only entry behind basic_auth. Ordering the list by
+  # what a visitor is most likely to want puts the destructive door at the bottom.
+  - name: Admin
+    url: "/admin"
+    blurb: "Cluster control panel — status, activate, runbooks"

@@ -13,7 +13,17 @@
 # Super has NEVER been activated. `NemotronHForCausalLM` probes true, but that only proves
 # vLLM knows the name — the first activation is the real test, which is why `tools` runs
 # before the long regiments rather than after.
-name: nemotron-family-r1
+name: nemotron-family
+# Shown beside the button in the panel and by `sparky run` — so what a
+# multi-hour campaign is about is legible where it is STARTED, not only
+# to whoever reads this file.
+description: >-
+  Does NVIDIA's NAS compression cost quality? Puzzle against its uncompressed
+  upstream Super — one variable, two of three outcomes retire something.
+# Where it sits in the menu the panel and `sparky run` show.
+# Last: a one-off pair comparison, not a standing part of the rotation.
+order: 90
+estimate: "~2 h"
 defaults:
   regiments: [tools, bench, quality]
 jobs:

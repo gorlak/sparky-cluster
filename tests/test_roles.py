@@ -248,3 +248,71 @@ def test_the_model_mirror_excludes_huggingface_download_metadata():
     mirror = tasks[tasks.index("Mirror the models this node runs from the head"):]
     cmd = mirror[:mirror.index("delegate_to")]
     assert "--exclude=.cache/" in cmd, "mirror would abort on 0600 hf metadata"
+
+
+# --- the runbook trigger's deployment (ADR-0021) ----------------------------
+
+def test_the_runbook_grant_is_a_single_command_entry_like_its_siblings():
+    """A third bounded grant, and it has to stay the same SHAPE as the other two: one
+    fixed program, no wildcards, no directory. `NOPASSWD: /usr/local/sbin/` or a command
+    with arguments would turn the boundary back into a family of commands."""
+    sudoers = (ROLES / "activate" / "templates" / "sudoers-activate.j2").read_text()
+    grants = [line for line in sudoers.splitlines()
+              if line.startswith("%") and "NOPASSWD" in line]
+    assert len(grants) == 3
+    for grant in grants:
+        program = grant.split("NOPASSWD:", 1)[1].strip()
+        assert program.startswith("{{") and program.endswith("}}"), program
+        assert " " not in program.strip("{} "), f"{program} takes arguments"
+    assert any("runbook_bin" in g for g in grants)
+
+
+def test_the_deploy_asserts_geoffs_grants_include_the_new_one():
+    """The assertion is EXHAUSTIVE by design — every passwordless grant geoff holds must
+    be one of the bounded programs. Adding a program without adding it there would make
+    the next deploy fail, which is the check working; forgetting to add the program to the
+    list instead would silently widen what the assertion tolerates."""
+    tasks = (ROLES / "activate" / "tasks" / "main.yml").read_text()
+    bounded = tasks[tasks.index("_bounded:"):tasks.index("_bounded:") + 200]
+    for var in ("activate_bin", "probe_bin", "runbook_bin"):
+        assert var in bounded, f"{var} missing from the exhaustive grant allowlist"
+
+
+def test_the_panel_is_told_where_the_trigger_and_its_log_live():
+    """The panel hardcodes nothing; every path is env. A missing one would silently fall
+    back to a default that happens to be right today and wrong after any rename."""
+    unit = (ROLES / "control-panel" / "templates" / "control-panel.service.j2").read_text()
+    for var in ("RUNBOOK_BIN", "RUNBOOK_UNIT", "RUNBOOK_DIR", "RUNBOOK_LOG_DIR"):
+        assert f"Environment={var}=" in unit
+
+
+def test_the_harness_is_installed_where_the_trigger_looks_for_it():
+    """A detached run needs an interpreter that exists. If these two disagree the trigger
+    refuses to start anything, which is safe and completely opaque."""
+    import importlib.machinery
+    import importlib.util
+
+    group_vars = (Path(__file__).resolve().parent.parent / "ansible" / "group_vars" /
+                  "all.yml").read_text()
+    harness_bin = [line.split(":", 1)[1].strip() for line in group_vars.splitlines()
+                   if line.startswith("harness_bin:")][0]
+    trigger_path = ROLES / "activate" / "files" / "vllm-runbook"
+    spec = importlib.util.spec_from_loader(
+        "vllm_runbook_role",
+        importlib.machinery.SourceFileLoader("vllm_runbook_role", str(trigger_path)))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert str(module.HARNESS) == harness_bin
+
+
+def test_prometheus_scrapes_the_panel_for_what_no_exporter_knows():
+    """Which profile is activated, and whether a runbook is driving the cluster. Neither
+    is discoverable from an exporter — vLLM's `model_name` label is the model-agnostic
+    stable alias, and a runbook is not an engine — so the panel exports them. Over
+    loopback: the prometheus container is `network_mode: host` and the panel binds
+    127.0.0.1, so the scrape never meets Caddy's basic_auth."""
+    conf = (ROLES / "prometheus" / "templates" / "prometheus.yml.j2").read_text()
+    assert "job_name: cluster" in conf
+    assert "127.0.0.1:{{ control_panel_port }}" in conf
+    compose = (ROLES / "prometheus" / "templates" / "docker-compose.yml.j2").read_text()
+    assert "network_mode: host" in compose, "the loopback scrape would not resolve"

@@ -33,6 +33,13 @@ def panel(tmp_path, monkeypatch):
     monkeypatch.setenv("CLUSTER_PROFILE", "empty")
     monkeypatch.setenv("NODE_ADDRS", "snoopy=10.0.200.13")
     monkeypatch.setenv("PANEL_NODE", "sparky")
+    monkeypatch.setenv("RUNBOOK_BIN", "/usr/local/sbin/vllm-runbook")
+    monkeypatch.setenv("RUNBOOK_DIR", str(tmp_path / "runbooks"))
+    monkeypatch.setenv("RUNBOOK_LOG_DIR", str(tmp_path / "runbook-logs"))
+    (tmp_path / "runbooks").mkdir()
+    (tmp_path / "runbooks" / "nightly.yml").write_text(
+        'description: Nightly sweep of the fleet.\nestimate: "~7 h"\n'
+        "jobs: [{profile: a}, {profile: b}]\n")
     (tmp_path / "desired-profile").write_text("p\n")
     monkeypatch.chdir(APP_FILES)  # so app/static + app/templates resolve
 
@@ -495,3 +502,234 @@ def test_scoreboard_links_model_names_to_the_hub():
     assert "huggingface.co/no-repo-recorded" not in html
     assert "no-repo-recorded" in html
     assert ">retired<" in html          # and it is marked as no longer activatable
+
+
+# --- runbooks (ADR-0021) ----------------------------------------------------
+#
+# The panel starts a runbook as a unit of its OWN rather than as a child. That is the
+# whole point of the feature — every deploy restarts this service, and a child dies with
+# the cgroup — so the tests are about the panel staying thin: it names a runbook, and the
+# trigger decides everything else.
+
+def test_the_runbook_list_comes_from_the_installed_directory(panel):
+    """The buttons must offer exactly what the trigger would accept. Scanning a repo, or
+    keeping a hand-written list, is how a button appears for something that then refuses
+    to start."""
+    main, _ = panel
+    assert [r["name"] for r in main.installed_runbooks()] == ["nightly"]
+
+
+def test_starting_a_runbook_goes_through_the_trigger_unexamined(panel, monkeypatch):
+    """The panel does NOT pre-validate the name. The trigger checks it against the
+    installed allowlist and rejects anything that is not a bare identifier, and it is the
+    same check `sparky run` gets — a second copy here would be a second thing to keep
+    right."""
+    main, client = panel
+    calls = []
+
+    class _Ok:
+        returncode, stdout, stderr = 0, "", ""
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _Ok()
+
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+    response = client.post("/runbook/nightly")
+    assert response.status_code == 200
+    assert calls[0] == ["sudo", "-n", "/usr/local/sbin/vllm-runbook", "start", "nightly"]
+
+
+def test_the_triggers_refusal_is_surfaced_not_swallowed(panel, monkeypatch):
+    """Its refusals say which of two things went wrong — a typo, or a missing deploy —
+    and that is the useful part. Collapsing them into a generic 500 would throw away the
+    only thing that tells you what to do next."""
+    main, client = panel
+
+    class _No:
+        returncode, stdout, stderr = 2, "", "'x' is not an installed runbook."
+
+    monkeypatch.setattr(main.subprocess, "run", lambda cmd, **kw: _No())
+    response = client.post("/runbook/x")
+    assert response.status_code == 400
+    assert "not an installed runbook" in response.text
+
+
+def test_stop_takes_no_name(panel, monkeypatch):
+    """One run at a time, fleet-wide — the unit is fixed, so there is nothing to name."""
+    main, client = panel
+    calls = []
+
+    class _Ok:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(main.subprocess, "run",
+                        lambda cmd, **kw: (calls.append(cmd), _Ok())[1])
+    assert client.post("/runbook-stop").status_code == 200
+    assert calls[0] == ["sudo", "-n", "/usr/local/sbin/vllm-runbook", "stop"]
+
+
+def test_run_state_is_read_from_systemd_not_from_a_pid_file(panel, monkeypatch):
+    """systemd already knows whether the unit is alive and how it exited; a pid file would
+    be a second record that can be stale. The trigger deliberately does not `--collect`
+    the unit, which is what leaves the exit status readable after the run finishes."""
+    main, _ = panel
+
+    class _Show:
+        returncode = 0
+        stdout = ("ActiveState=inactive\nDescription=sparky runbook: nightly\n"
+                  "ExecMainStatus=1\n")
+        stderr = ""
+
+    monkeypatch.setattr(main.subprocess, "run", lambda cmd, **kw: _Show())
+    state = main.runbook_state()
+    assert state["name"] == "nightly"
+    assert state["status"] == "failed" and state["code"] == 1
+
+
+def test_a_missing_systemd_is_a_status_not_a_crash(panel, monkeypatch):
+    """The panel is what you look at when things are broken. It must render then."""
+    main, _ = panel
+
+    def boom(*a, **kw):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(main.subprocess, "run", boom)
+    assert main.runbook_state()["status"] == "none"
+
+
+# --- /metrics: what is serving, and what is measuring it ---------------------
+
+def test_metrics_names_the_profile_not_the_model(panel, monkeypatch):
+    """The profile is the identity everything keys on — the basename of its
+    `ansible/profiles/<name>.yml`, what `activate` takes, what the trend store labels a
+    measurement with. vLLM's own metrics cannot supply it: their `model_name` label is the
+    stable alias every engine advertises so chat survives an activation, so it reads
+    `sparky` no matter what is loaded."""
+    main, client = panel
+    monkeypatch.setattr(main, "load_topology", lambda: {
+        "profile": "qwen3.6-35b-a3b-nvfp4",
+        "engines": [{"name": "qwen3.6-35b-a3b-nvfp4", "model": "Qwen3.6-35B-A3B-NVFP4"}]})
+    monkeypatch.setattr(main, "runbook_state", lambda: {"name": "", "status": "none"})
+    body = client.get("/metrics").text
+    assert 'sparky_active_profile{profile="qwen3.6-35b-a3b-nvfp4"} 1' in body
+    assert 'model="Qwen3.6-35B-A3B-NVFP4"' in body
+
+
+def test_metrics_always_emits_exactly_one_profile_series(panel, monkeypatch):
+    """A stat panel showing a label needs a single series, and "No data" is the wrong
+    answer to "nothing is serving, on purpose" — that is the moment it is ambiguous."""
+    main, client = panel
+    monkeypatch.setattr(main, "runbook_state", lambda: {"name": "", "status": "none"})
+    for topo in (None,
+                 {"profile": "empty", "engines": []},
+                 {"profile": "p", "engines": [{"name": "a", "model": "A"},
+                                              {"name": "b", "model": "B"}]}):
+        monkeypatch.setattr(main, "load_topology", lambda t=topo: t)
+        body = client.get("/metrics").text
+        series = [ln for ln in body.splitlines()
+                  if ln.startswith("sparky_active_profile{")]
+        assert len(series) == 1, topo
+
+
+def test_metrics_reports_no_runbook_once_one_has_finished(panel, monkeypatch):
+    """The unit keeps its description after it exits — which is what leaves the last run's
+    exit status readable — so carrying that name into the metric would leave the dashboard
+    reading `nemotron-family` for the twelve hours after nemotron-family finished."""
+    main, client = panel
+    monkeypatch.setattr(main, "load_topology", lambda: None)
+    monkeypatch.setattr(main, "runbook_state",
+                        lambda: {"name": "nemotron-family", "status": "success"})
+    assert 'sparky_runbook_running{runbook="none"} 0' in client.get("/metrics").text
+
+    monkeypatch.setattr(main, "runbook_state",
+                        lambda: {"name": "nemotron-family", "status": "running"})
+    assert ('sparky_runbook_running{runbook="nemotron-family"} 1'
+            in client.get("/metrics").text)
+
+
+def test_metrics_does_not_probe_the_nodes(panel, monkeypatch):
+    """Scraped every 15s. `gather()` reaches every node over SSH — right for a page you
+    open, wrong for something Prometheus polls, and it would make the metric endpoint the
+    slowest thing on the box precisely when a node is wedged."""
+    main, client = panel
+
+    def boom():
+        raise AssertionError("/metrics must not call gather()")
+
+    monkeypatch.setattr(main, "gather", boom)
+    monkeypatch.setattr(main, "runbook_state", lambda: {"name": "", "status": "none"})
+    assert client.get("/metrics").status_code == 200
+
+
+def test_the_dashboard_queries_metrics_the_panel_actually_exports(panel, monkeypatch):
+    """Two files, one contract. A renamed metric would leave the dashboard's top row
+    reading "No data" — and a dashboard that is blank in the corner nobody committed to
+    looking at is how you learn about it three weeks later."""
+    main, client = panel
+    monkeypatch.setattr(main, "load_topology", lambda: None)
+    monkeypatch.setattr(main, "runbook_state", lambda: {"name": "", "status": "none"})
+    exported = {ln.split("{")[0].split(" ")[0]
+                for ln in client.get("/metrics").text.splitlines()
+                if ln and not ln.startswith("#")}
+
+    dashboard = json.loads((Path(__file__).resolve().parent.parent / "ansible" / "roles" /
+                            "grafana" / "files" / "cluster.json").read_text())
+    top = [p for p in dashboard["panels"] if p["gridPos"]["y"] == 0]
+    assert {p["title"] for p in top} == {"Serving", "Runbook"}
+    for p in top:
+        expr = p["targets"][0]["expr"]
+        assert any(metric in expr for metric in exported), expr
+        # The value carries nothing here; the LABEL is the answer, which is what
+        # textMode=name renders.
+        assert p["options"]["textMode"] == "name"
+        assert "{{" in p["targets"][0]["legendFormat"]
+
+
+def test_a_runbook_button_carries_what_it_does_and_what_it_costs(panel, monkeypatch):
+    """A bare name is a poor label for a button that commandeers the cluster for an
+    evening, and whoever presses it is not reading the YAML — which is why `description`
+    and `estimate` are required fields (`sparky lint`) rather than comments.
+
+    Unit state is mocked: without it this reads the HOST's systemd, so the test passed or
+    failed depending on whether a real campaign happened to be running on the machine —
+    which is exactly how it failed the first time a runbook was started for real.
+    """
+    main, client = panel
+    monkeypatch.setattr(main, "_unit_fields", lambda *p: {"ActiveState": "inactive"})
+    rb = main.installed_runbooks()[0]
+    assert rb["description"] == "Nightly sweep of the fleet."
+    assert rb["estimate"] == "~7 h"
+    assert rb["jobs"] == 2
+
+    page = client.get("/runbooks").text
+    assert "Nightly sweep of the fleet." in page
+    assert "~7 h" in page and "2 profiles" in page
+
+
+def test_a_runbook_missing_its_metadata_still_lists(panel, tmp_path):
+    """The panel's job is to show what is installed, not to audit it. A file that lint
+    would reject must not blank the whole section — that would hide every OTHER runbook
+    because of one bad one."""
+    main, _ = panel
+    (tmp_path / "runbooks" / "bare.yml").write_text("jobs: [{profile: a}]\n")
+    (tmp_path / "runbooks" / "broken.yml").write_text("{[not yaml\n")
+    names = [r["name"] for r in main.installed_runbooks()]
+    assert names == ["bare", "broken", "nightly"]
+    assert all(r["description"] == "" for r in main.installed_runbooks()
+               if r["name"] in ("bare", "broken"))
+
+
+def test_the_panel_and_the_cli_show_the_same_menu_in_the_same_order(panel, tmp_path):
+    """Two renderings of one list. If they sorted differently, "the third one down" would
+    mean different runbooks depending on where you were standing."""
+    from sparky import runbook
+
+    main, _ = panel
+    (tmp_path / "runbooks" / "later.yml").write_text(
+        'description: d\nestimate: "~1 h"\norder: 90\njobs: [{profile: a}]\n')
+    (tmp_path / "runbooks" / "earlier.yml").write_text(
+        'description: d\nestimate: "~1 h"\norder: 10\njobs: [{profile: a}]\n')
+    panel_order = [r["name"] for r in main.installed_runbooks()]
+    cli_order = [r["name"] for r in runbook.describe(tmp_path / "runbooks")]
+    assert panel_order == cli_order == ["earlier", "nightly", "later"]

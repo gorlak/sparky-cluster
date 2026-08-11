@@ -37,16 +37,37 @@ keeping the seam explicit is what lets the whole thing be tested with no hardwar
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Breadcrumbs live beside the trend store: same lifetime, same "survives a reboot"
-# requirement. NOT /tmp — that is precisely where the last runner's state went.
-DEFAULT_BREADCRUMBS = Path("/opt/cluster/sweep-state.json")
-DEFAULT_LOCK = Path("/opt/cluster/sweep.lock")
+# Breadcrumbs live beside the trend store — literally, since 2026-08-11. Same lifetime,
+# same "survives a reboot" requirement, and NOT /tmp, which is precisely where the last
+# runner's state went.
+#
+# They were directly in /opt/cluster until the first real detached run died on the first
+# breadcrumb write: `save_state` is atomic (write `.tmp`, rename over the target), and
+# ADR-0021 put the **sticky bit** on /opt/cluster so the activation identity's new write
+# access could not be used to replace `ansible/`. Sticky also forbids renaming over a file
+# you do not own — and the target was geoff's while the run is `activator`. A directory
+# the activation identity owns has neither problem, and `benchmark/` already is one.
+BENCHMARK_DIR = Path("/opt/cluster/benchmark")
+DEFAULT_BREADCRUMBS = BENCHMARK_DIR / "sweep-state.json"
+DEFAULT_LOCK = BENCHMARK_DIR / "sweep.lock"
+# The lock `deploy` takes (sparky/ansible.py, via `flock`). A campaign must hold it too:
+# one is reshaping the boundary while the other walks it — a deploy can re-render engine
+# files, pull an image, or evict weights underneath a measurement, and the result is a
+# number belonging to no configuration.
+#
+# It was NOT taken here until 2026-08-11, and ansible.py asserted in a comment that it
+# was. The two locks were different files: `sweep.lock` excludes other sweeps and
+# `fleet.lock` excluded nothing, because only one side ever held it. A test now pins the
+# two constants together.
+FLEET_LOCK = Path("/opt/cluster/fleet.lock")
+_fleet_fd: int | None = None
 
 
 class SweepBusy(RuntimeError):
@@ -147,12 +168,56 @@ def acquire(lock_path: Path = DEFAULT_LOCK, *, stale_after: float = 6 * 3600) ->
             raise SweepBusy(
                 f"a sweep is already running ({holder}, {age / 60:.0f} min ago). "
                 f"Wait, or remove {lock_path} if you know it is dead.")
+    _hold_fleet_lock()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(f"pid={os.getpid()} started={int(now)}\n")
     return lock_path
 
 
+def _hold_fleet_lock(path: Path | None = None) -> None:
+    """Take `deploy`'s lock for the duration, or refuse.
+
+    An advisory flock rather than a marker file, because the other holder is `flock(1)` in
+    a shell — the only mechanism both sides can speak. Non-blocking: waiting would mean a
+    campaign that silently stalls for however long a deploy takes, and refusing says which
+    of the two is in progress.
+
+    Held on a module global. There is at most one sweep per process by construction, and
+    the alternative — threading a file descriptor through `run()` — buys nothing.
+    """
+    global _fleet_fd
+    # Resolved at CALL time, not bound as a default argument: a default would capture the
+    # path at import and quietly ignore any later reassignment — which is how a test can
+    # point both sides at a tmp file and still watch the real one.
+    path = path or FLEET_LOCK
+    if _fleet_fd is not None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o664)
+    except OSError:
+        return          # no /opt/cluster (a dev checkout) — nothing to serialize against
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise SweepBusy(
+            f"a deploy is in progress — it holds {path}. A deploy re-renders engine "
+            f"files and can evict weights, so measuring across one produces numbers that "
+            f"belong to no configuration. Wait for it to finish, then start again "
+            f"(breadcrumbs mean nothing is repeated).") from None
+    _fleet_fd = fd
+
+
 def release(lock_path: Path = DEFAULT_LOCK) -> None:
+    global _fleet_fd
+    if _fleet_fd is not None:
+        try:
+            fcntl.flock(_fleet_fd, fcntl.LOCK_UN)
+            os.close(_fleet_fd)
+        except OSError:
+            pass
+        _fleet_fd = None
     try:
         lock_path.unlink()
     except FileNotFoundError:
@@ -167,12 +232,30 @@ def load_state(path: Path = DEFAULT_BREADCRUMBS) -> SweepState:
 
 
 def save_state(state: SweepState, path: Path = DEFAULT_BREADCRUMBS) -> None:
-    """Atomic: a sweep interrupted *during* the write must not leave state unreadable, or
-    the resume it exists for degrades into starting over."""
+    """Atomic where the filesystem allows it, in place where it does not.
+
+    Atomic first: a campaign interrupted *during* the write must not leave state
+    unreadable, or the resume this exists for degrades into starting over.
+
+    But the rename can be forbidden while the write is fine — a sticky directory only
+    lets you rename over a file you own, and this file is shared by everyone in the
+    activation group. `activate.py` hit the same wall with `desired-profile` and resolved
+    it the same way, for the same reason. Falling back matters because of what the
+    alternative costs: on 2026-08-11 an EPERM here killed a campaign at its first
+    regiment, and losing the ability to *resume* is not worth losing the run.
+
+    A write that fails outright still raises. Silence would leave a campaign running for
+    hours with no resumable state, which is worse than either.
+    """
+    payload = json.dumps(state.to_json(), indent=2) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state.to_json(), indent=2) + "\n")
-    tmp.replace(path)
+    try:
+        tmp.write_text(payload)
+        tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        path.write_text(payload)
 
 
 def run(jobs: list[Job], *, activate, regiments: dict, state: SweepState | None = None,

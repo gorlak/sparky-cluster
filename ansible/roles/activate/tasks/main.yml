@@ -81,10 +81,10 @@
   register: geoff_sudo
 
 # The allowlist is EXHAUSTIVE on purpose: every passwordless grant geoff holds must be
-# one of the two bounded programs, named here. A third one appearing — however
-# reasonable it looked at the time — is the failure this catches, because anything
-# running as geoff (an agent most of all) inherits it.
-- name: Assert the two bounded programs are geoff's ONLY passwordless grants
+# one of the bounded programs, named here. A further one appearing — however reasonable
+# it looked at the time — is the failure this catches, because anything running as geoff
+# (an agent most of all) inherits it.
+- name: Assert the bounded programs are geoff's ONLY passwordless grants
   ansible.builtin.assert:
     that: _unexpected | length == 0
     fail_msg: >-
@@ -94,10 +94,10 @@
       ADR-0018 boundary. Find and remove it:
       sudo grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/
     success_msg: >-
-      geoff's only passwordless grants are {{ activate_bin }} (ADR-0018) and
-      {{ probe_bin }} (ADR-0019) — the boundary holds.
+      geoff's only passwordless grants are {{ activate_bin }} (ADR-0018),
+      {{ probe_bin }} (ADR-0019) and {{ runbook_bin }} (ADR-0021) — the boundary holds.
   vars:
-    _bounded: "{{ [activate_bin, probe_bin] | map('regex_escape') | join('|') }}"
+    _bounded: "{{ [activate_bin, probe_bin, runbook_bin] | map('regex_escape') | join('|') }}"
     _unexpected: >-
       {{ geoff_sudo.stdout_lines | default([]) | select('search', 'NOPASSWD')
          | reject('search', _bounded) | list }}
@@ -117,6 +117,19 @@
     owner: root
     group: root
     mode: "0755"
+
+# The third trigger (ADR-0021), and the only one that is not about privilege: a runbook
+# run needs nothing root, but it must not be a child of the control panel's cgroup, or a
+# routine deploy kills a three-hour campaign at the ninety-minute mark. Head-only — a
+# runbook drives the fleet from the control node.
+- name: Install the runbook trigger (ADR-0021 — detached, logged runs)
+  ansible.builtin.copy:
+    src: vllm-runbook
+    dest: "{{ runbook_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname in groups['head']
 
 - name: Install this node's reconciler wiring
   ansible.builtin.template:

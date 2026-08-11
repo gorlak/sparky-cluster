@@ -278,5 +278,5 @@ Neither was caught by a passing test suite, because neither had a test. Both do 
 ### Still outstanding, deliberately
 
 `tools` and `soak` ship as regiments but have never run against hardware — the fleet was
-mid-rename when they were written. The first real sweep (`sweeps/nemotron-family.yml`) is
+mid-rename when they were written. The first real sweep (`runbooks/nemotron-family.yml`, ADR-0020) is
 their first exercise, and it should be read as testing the runner as much as the models.

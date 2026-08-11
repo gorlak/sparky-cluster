@@ -17,7 +17,15 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PROFILES_DIR = REPO_ROOT / "ansible" / "profiles"
+# The repo when there is one, the published tree when there is not (ADR-0021). Since the
+# harness is now *installed* on the head — a venv, so a detached runbook run has an
+# interpreter — `__file__` can sit in site-packages, where `../ansible/profiles` is
+# nothing. `/opt/cluster/ansible` is the same content, published by the same deploy.
+PROFILES_DIR = next(
+    (d for d in (REPO_ROOT / "ansible" / "profiles",
+                 Path("/opt/cluster/ansible/profiles")) if d.is_dir()),
+    REPO_ROOT / "ansible" / "profiles")
+ANSIBLE_DIR = PROFILES_DIR.parent
 # Written at the end of every deploy (runtime, not in the repo tree).
 CURRENT_TOPOLOGY = Path("/opt/cluster/current-topology.json")
 
@@ -142,7 +150,7 @@ class Profile:
 # fleet imports topology, not the other way round.
 API_PORT = 8000
 
-INVENTORY = Path(__file__).resolve().parent.parent / "ansible" / "inventory.yml"
+INVENTORY = ANSIBLE_DIR / "inventory.yml"
 
 
 def fleet_nodes(inventory: Path = INVENTORY) -> tuple[str, ...]:

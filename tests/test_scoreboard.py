@@ -171,3 +171,35 @@ def test_the_snapshot_carries_column_direction():
     assert meta["TTFT p99"] is False        # lower latency wins
     assert meta["TPOT"] is False
     assert [m["name"] for m in payload["column_meta"]] == payload["columns"]
+
+
+# --- one producer, not two --------------------------------------------------
+
+def test_the_panel_snapshot_is_attributed_like_the_cli(monkeypatch, tmp_path):
+    """The panel renders a FILE and does no analysis — which only holds while one thing
+    WRITES that file. Two did, and they disagreed: the sweep's refresh skipped the profile
+    attribution entirely, so every snapshot it wrote had no `hf_repo` (no Hub links on the
+    web scoreboard, silently) and `retired: False` on everything (so Step-3.5-Flash and the
+    four single-node profiles never left the page). Each sweep then overwrote whatever a
+    correct `scoreboard --json` had produced.
+    """
+    import json
+
+    from sparky import cli
+
+    seen = {}
+    real_table = cli._scoreboard_table       # captured BEFORE the patch, or it recurses
+
+    def fake_table(*, include_retired=False):
+        seen["called"] = True
+        return real_table(include_retired=include_retired)
+
+    monkeypatch.setattr(cli, "PANEL_SNAPSHOT", tmp_path / "scoreboard.json")
+    monkeypatch.setattr(cli, "_scoreboard_table", fake_table)
+    cli._refresh_panel_snapshot()
+    assert seen.get("called"), "the snapshot must come from the one attributed producer"
+
+    payload = json.loads((tmp_path / "scoreboard.json").read_text())
+    assert payload["rows"], "expected the real trend store to have rows"
+    assert not any(r["retired"] for r in payload["rows"]), "a retired row reached the panel"
+    assert any(r["hf_repo"] for r in payload["rows"]), "no Hub links in the snapshot"

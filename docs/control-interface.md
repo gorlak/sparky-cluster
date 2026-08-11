@@ -87,6 +87,23 @@ covers the new hosts — no new DNS.
 - Worker state comes back over the **read-only verb of the forced-command channel**
   (`ssh activator@worker status`). The panel holds no general-purpose remote command.
 - Confirmation modal on each action (current → target).
+- **Runbooks** (ADR-0021) are the one thing here that is *not* a child of this process.
+  `POST /runbook/{name}` asks `vllm-runbook` to start it as a transient systemd unit;
+  `POST /runbook-stop` ends it. The reason is lifetime rather than privilege — every
+  deploy restarts this service, and a child dies with the cgroup, so a three-hour
+  campaign started from a web page would be killed by routine maintenance. The panel
+  names a runbook and nothing more: the trigger validates it against the deploy-written
+  installed set, and status is read back from `systemctl show` plus the run's log file.
+  Same list, same program and same refusals as `./sparky.sh run <name>`.
+- **`/metrics`** — the panel is also a Prometheus source, for the two facts no exporter
+  can supply: `sparky_active_profile` (which profile is activated) and
+  `sparky_runbook_running` (whether a runbook is driving the cluster). vLLM's own
+  `model_name` label is the *stable alias* every engine advertises so chat survives an
+  activation, so it says `sparky` whatever is loaded; a runbook is not an engine at all.
+  Scraped over loopback — Prometheus is `network_mode: host` — so it never meets Caddy's
+  basic_auth. Deliberately cheap: file reads and one `systemctl show`, never `gather()`,
+  which probes every node over SSH. That means it reports what was **activated**, not what
+  is **answering**; the rest of the dashboard is what says whether it is healthy.
 
 ### Status surfaces — the no-sudo contract (`/status.json` + the gate breadcrumb)
 

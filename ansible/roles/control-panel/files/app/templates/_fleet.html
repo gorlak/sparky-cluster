@@ -1,0 +1,25 @@
+{# The deployed fleet — LAST on the page, deliberately. It is the least volatile thing
+   here (it changes only on a deploy) and the least urgent: what is serving, what you can
+   change, and what is measuring come first. It also sits OUTSIDE #actionarea, so an
+   activation's htmx swaps leave it alone — a deploy is the only thing that can move it. #}
+{% if fleet %}
+<h3>Deployed fleet</h3>
+<p class="hint">
+  What <code>deploy</code> installed — the boundary of what may run. Adding or
+  removing a model, or changing a profile's flags, is a deploy (human,
+  password-gated), not something this panel can do.
+  {% if fleet.deployed_at %}<span class="ts">Last deploy: {{ fleet.deployed_at }}</span>{% endif %}
+</p>
+<table>
+  <thead><tr><th>Node</th><th>Engines</th><th>Weights held</th></tr></thead>
+  <tbody>
+  {% for n in fleet.nodes %}
+    <tr>
+      <td><code>{{ n.node }}</code></td>
+      <td>{{ n.engines | join(', ') or '—' }}</td>
+      <td class="ts">{{ n.models | join(', ') or '—' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

@@ -18,6 +18,18 @@
 # which would be handing out root.
 %{{ activate_group }} ALL=(root) NOPASSWD: {{ probe_bin }}
 
+{% if inventory_hostname in groups['head'] %}
+# The DETACHED-RUN grant (ADR-0021), and the only one here that is not about privilege.
+# A runbook run needs nothing root — it activates (already granted above) and then talks
+# HTTP. What it needs is to outlive its caller: a process the control panel spawns dies
+# with the panel's cgroup, and every deploy restarts the panel, so a three-hour campaign
+# would be killed by routine maintenance. `vllm-runbook` starts it as a transient unit
+# instead, and can do nothing else: the runbook must be in the deploy-written allowlist,
+# the argument is a bare identifier, and every path — log, unit, harness — is composed
+# by the program from constants.
+%{{ activate_group }} ALL=(root) NOPASSWD: {{ runbook_bin }}
+{% endif %}
+
 # The cross-node trigger arrives as forced-command SSH; sshd puts the request in
 # SSH_ORIGINAL_COMMAND, and sudo's env_reset would otherwise drop it. The value
 # never reaches a shell (the forced command is a fixed string) and the reconciler

@@ -251,3 +251,21 @@ def test_the_default_node_list_comes_from_the_inventory_not_a_constant():
     expected = tuple(list(children["head"]["hosts"]) +
                      [h for g, s in children.items() if g != "head" for h in s["hosts"]])
     assert topology.fleet_nodes() == expected
+
+
+def test_the_harness_finds_the_profiles_when_it_is_not_in_the_repo():
+    """The harness is now INSTALLED as well as published (ADR-0021), so `__file__` can sit
+    in a venv where `../ansible/profiles` is nothing. Everything read from the ansible tree
+    has to move together — a fallback that fixed only PROFILES_DIR would leave the
+    inventory and group_vars resolving into a directory that does not exist, and the first
+    symptom would be a sweep that cannot tell which node an engine runs on.
+    """
+    import inspect
+
+    from sparky import fleet, topology
+
+    source = inspect.getsource(topology)
+    assert "/opt/cluster/ansible/profiles" in source, "no published-tree fallback"
+    assert topology.ANSIBLE_DIR == topology.PROFILES_DIR.parent
+    assert topology.INVENTORY.parent == topology.ANSIBLE_DIR
+    assert fleet.GROUP_VARS.parent.parent == topology.ANSIBLE_DIR
