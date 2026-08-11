@@ -27,10 +27,49 @@ The boundary matters and is enforced:
 - "Should profile P serve model M?" / "what changes if `step` runs 3.7?" → **profile upgrade tracker** `docs/upgrades/profile-P-M.md`.
 - "Bump / upgrade the container to T" → **container upgrade tracker** `docs/upgrades/container-<coord>-T.md`, and walk the pathway in `docs/updating.md`.
 - "We're carrying a bug / working around an upstream issue" → a **DEF-NNNN row** in `docs/defects.md` (+ detail in its home).
-- "We evaluated model X and won't run it" → a row in `docs/models/tombstones.md`, and **move** the verdict there from wherever it sits. A model kept but not currently servable is `blocked: true` on its profile, not a tombstone; a model that works on one container but not another is a defect, not a tombstone.
+- "We evaluated model X and won't run it" → a row in `docs/models/tombstones.md`, and **move** the verdict there from wherever it sits. But first apply the retirement test below — most candidates fail it.
 - "How do I update X / what else needs touching?" → `docs/updating.md` (the change-pathway checklists).
 - "What needs updating / is there a newer version?" → the [[version-discovery]] skill (check + stage), which then walks `docs/updating.md`.
 - A settled, one-way decision → an **ADR** (see "Decision records" below), not a tracker.
+
+## Retiring a model — the test, and it is deliberately hard to pass
+
+**Retirement is one-way.** It means *stop investigating*, and a tombstone is the record of
+that verdict. There are exactly two grounds:
+
+1. **Superseded** — something we serve beats it, so it will never be chosen again.
+2. **Hardware-bounded** — this machine cannot run it, ever.
+
+Everything else is `blocked: true`. Before writing a tombstone, ask one question:
+
+> **Could a different container, version or image plausibly make this work?**
+>
+> **Yes → `blocked: true`.** Not a tombstone, whatever it costs to keep.
+> **No → retire**, and say which of the two grounds applies.
+
+**The distinction that matters is stack-bounded vs hardware-bounded**, and it is the one
+that gets fumbled, because both present identically: the model does not run. A missing
+kernel, an unsupported quant path, a processor method that does not exist yet — those are
+all *the stack*, and the stack is a version away. The hardware is what cannot change.
+
+DeepSeek-V4-Flash was retired on the reading that the **model** needed kernels GB10 lacks.
+It was the **serving stack** that lacked them, a fork already ran the model on this exact
+hardware, and the premise was refuted the same day the register recorded it — but the
+verdict was never reopened. That is the failure this test exists to prevent: not a wrong
+call, but a correctly-applied rule on a fact nobody re-checked.
+
+Two corollaries:
+
+- **A refuted premise reverses the verdict — it does not earn a footnote.** A tombstone
+  records *why*; when the why is gone, the row has no standing. Delete it and un-retire.
+- **Disk pressure is not a ground for retirement.** Evicting weights and rejecting a model
+  are separate decisions that happen to share a mechanism (leaving the allowlist). If the
+  only reason to remove it is disk, say so in the defect row and keep the profile parked —
+  a storage decision must not travel through a verdict.
+
+`blocked` is a release valve, not a resting place: it carries an obligation to resolve or
+reject, tracked by a `DEF-NNNN` with a concrete *clears-when*. A park with no defect row
+behind it is just a model quietly rotting.
 
 ## Naming (upgrade trackers)
 
