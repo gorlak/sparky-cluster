@@ -295,3 +295,22 @@ also disguised it: two profiles were quarantined and only one was broken. When t
 consecutive activations fail, suspect the *first* one's corpse before believing the second
 model is at fault.
 *2026-08-11 · Mistral-Medium-3.5 → Qwen3-VL-235B · DEF-0012*
+
+### `AttributeError: 'Step3VLProcessor' object has no attribute '_get_num_multimodal_tokens'`
+**Cause.** vLLM's multimodal machinery calls a method the **transformers**-side
+`Step3VLProcessor` does not define, during startup profiling — so the engine never serves,
+text included. Orthogonal to NVFP4 and to our container's vLLM: the missing method is on
+the processor transformers ships, not on anything NVIDIA packages, which is why three
+container bumps have not touched it.
+**Check.** `./sparky.sh probe attr vllm.model_executor.models.step3_vl Step3VLProcessor._get_num_multimodal_tokens`
+against the image **before** pointing a profile at it — twenty seconds, no activation,
+no weights read (ADR-0019). Re-probed on 26.07 on 2026-08-10: still `false`.
+
+Note the class name when checking upstream: vLLM main defines `Step3VLMultiModalProcessor`
+and `Step3VLProcessingInfo`, *not* `Step3VLProcessor`, and defines no
+`_get_num_multimodal_tokens` at all. Chasing this in vLLM is chasing the wrong repo.
+**Unblock path.** StepFun publishes `vllm/vllm-openai:stepfun37` with an official Step-3.7
+recipe, pinning its own transformers. Adopt it as a **per-profile `vllm_image`** (ADR-0013)
+so one model changes container without the fleet following — and probe it first, because a
+different container is a different vLLM and 0.x minors break flags.
+*2026-08-11 · Step-3.7-Flash-NVFP4 → DEF-0006*

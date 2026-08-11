@@ -66,20 +66,16 @@ hf_repo: nvidia/Mistral-Medium-3.5-128B-NVFP4
 # What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
 # to this model's name (sparky/topology.py: ARCHETYPES).
 archetypes: [big-shared, mixed-precision, vision]
-# PARKED — DEF-0012 is open and its symptom is "the engine never serves, text included".
-# Weights and engine files are kept (re-testing costs no download); it simply cannot be
-# activated, which is exactly what `blocked` means.
+# ⛔ PARKED — DEF-0012. The engine crash-loops at startup and never serves, text included:
+#    the checkpoint ships BOTH HF and Mistral-native artifacts and the two disagree. Not a
+#    rejection — a packaging problem with a candidate fix.
 #
-# This should have been set on 2026-08-08 when DEF-0012 was root-caused. It was not, so
-# the profile stayed activatable and on 2026-08-11 an unattended campaign selected it.
-# The engine failed as the register said it would — and its head unit then sat in a
-# 20-second restart loop holding port 29501, which made the NEXT profile
-# (`qwen3-vl-235b-a22b-instruct-nvfp4`, healthy that morning) fail to start five times
-# and be quarantined too. See docs/bring-up-failures.md.
-#
-# Unblock when DEF-0012's next candidate is tried ATTENDED and the engine serves:
-# `--config-format mistral` in BOTH head and worker args, replacing the
-# `--limit-mm-per-prompt` WAR below, which the register already records as not working.
+# UNBLOCK: try DEF-0012's next candidate ATTENDED — `--config-format mistral` in BOTH head
+# and worker args, replacing the `--limit-mm-per-prompt` WAR below, which the register
+# records as not working. Risk: config-format mistral reads `params.json` and may lose the
+# modelopt quant config; check that in the log. If it fails, reject this checkpoint and
+# source a coherent build — the European option is a sourcing requirement, not a
+# requirement to run THIS build.
 blocked: true
 vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
