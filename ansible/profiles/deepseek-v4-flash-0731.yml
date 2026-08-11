@@ -1,13 +1,19 @@
 ---
-# ⚰️ RETIRED 2026-08-10 — NOT IN THE ALLOWLIST. Loaders glob profiles/*.yml
-#    non-recursively, so nothing here installs, serves, or keeps weights.
-#    Why: no sm_121 FP8 GEMM on this hardware (DEF-0014); weights evicted to reclaim 156 GiB rather than hold them idle.
-#    Verdict is owned by docs/models/tombstones.md; this file keeps only the
-#    CONFIG and what was learned building it. Re-verify parsers, architecture
-#    and quant algo before reviving — all three have cost a deploy when assumed.
-#    See ansible/profiles/retired/README.md.
+# ⛔ PARKED (`blocked: true`) — DEF-0014. Not a rejection: the gap is in the serving
+#    stack, not the checkpoint, and this hardware is not the limit.
 #
-# DeepSeek-V4-Flash (FP8, "DSpark" build) — TP=2 across both nodes.
+# DeepSeek-V4-Flash-0731 (FP8) — TP=2 across both nodes.
+#
+# The OFFICIAL release. `-DSpark` was the preview and is superseded: "the official release
+# of DeepSeek-V4-Flash, superseding the preview version, with substantially enhanced
+# agentic capabilities … the same model structure as DeepSeek-V4-Flash-DSpark". Verified
+# rather than taken on trust — 74 files, 166.9 GB, 48 shards, and every config key
+# (architecture, fp8/ue8m0 quant, 43 layers, 256 routed experts, 6 per token, 1M positions)
+# is byte-identical between the two. A drop-in, so nothing below needed changing.
+#
+# Caught only because the operator spotted it: the preview was downloaded in full first.
+# A repo superseded by a DIFFERENTLY-NAMED repo is invisible to a version check that looks
+# for a bumped version — worth remembering when the next model is staged.
 #
 # WHY: the largest thing staged (156 GiB) and the only one whose upstream build is named
 # for this hardware. `DeepseekV4ForCausalLM` was the ONE architecture already confirmed
@@ -46,21 +52,24 @@
 # quantization is accepted, and `--kv-cache-dtype fp8` satisfies the MLA layout. Only the
 # kernels are missing.
 #
-# Parked rather than deleted: 156 GiB per node stays put, so a re-test costs no download.
-# UNBLOCK WHEN: a container ships CUTLASS/DeepGEMM with sm_121 support for block-scaled
-# FP8 — then drop `blocked:` and activate. See DEF-0014.
+# ⚠️ THE WEIGHTS ARE EVICTED (156 GiB). Being allowlisted again means the next `deploy`
+# re-downloads them — validate a container first; the download is the expensive half.
+#
+# UNBLOCK WHEN: a container carrying **sm_121 NVFP4 kernels** (the expert-scale path)
+# probes clean. NOT "block-scaled FP8" — FP8 already works on SM 12.x; it is the FP4
+# experts that have no kernels. Route is a per-profile `vllm_image` (ADR-0013). See DEF-0014.
 blocked: true
-profile_name: deepseek-v4-flash-dspark
-hf_repo: deepseek-ai/DeepSeek-V4-Flash-DSpark
+profile_name: deepseek-v4-flash-0731
+hf_repo: deepseek-ai/DeepSeek-V4-Flash-0731
 # What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
 # to this model's name (sparky/topology.py: ARCHETYPES).
 archetypes: [big-shared]
 vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
 serving_topology:
-  - name: deepseek-v4-flash-dspark
+  - name: deepseek-v4-flash-0731
     kind: vllm
-    model: DeepSeek-V4-Flash-DSpark
-    served_as: deepseek-v4-flash-dspark
+    model: DeepSeek-V4-Flash-0731
+    served_as: deepseek-v4-flash-0731
     gpu_memory_utilization: "0.80"
     max_model_len: 131072
     # WAR candidate for DEF-0014. The model loads completely (48/48 shards, memory flat)
