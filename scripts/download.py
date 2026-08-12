@@ -17,6 +17,7 @@ Why a script: `hf download` WITHOUT --local-dir dumps a symlink cache tree; WITH
 equivalent — flat real files into the deploy-writable inbox (no sudo). The next
 `./sparky.sh deploy` moves them into /opt/vllm/models and mirrors to every node.
 """
+import fnmatch
 import os
 import signal
 import sys
@@ -53,6 +54,62 @@ INBOX = Path(os.environ.get("INBOX", "/opt/cluster/model-cache"))
 
 
 HF_HOSTS = ("huggingface.co", "www.huggingface.co", "hf.co")
+
+# --- dual-layout repos (every Mistral) ---------------------------------------
+#
+# Mistral publishes the SAME weights twice in one repo: a native `consolidated-*` set and
+# an HF `model-*` set. Downloading both costs exactly double for nothing —
+# `mistralai/Mistral-Medium-3.5-128B` is 248.9 GiB on the wire for 124.4 GiB of model.
+#
+# Worse than the bandwidth, it corrupts the fit maths. Summing every `*.safetensors` in
+# such a repo reports 2× the real footprint, and on 2026-08-11 that arithmetic ruled three
+# candidates out of a sourcing sweep as "too big" when all three fit at TP=2 with room. The
+# sizing rule that follows: **size ONE layout, and read `.safetensors.parameters` (the
+# dtype histogram) for the precision** — never trust a byte total or a repo's `fp8` tag.
+#
+# WHICH LAYOUT: native, by default. vLLM validates the tokenizer TYPE for Mistral
+# architectures and refuses an HF one outright ("The tokenizer must be an instance of
+# MistralTokenizer"), so these models are on the native path regardless — and the proven
+# GB10 recipe is the three-flag trio `--tokenizer-mode/--config-format/--load-format
+# mistral`, all of which want the native side. The HF set is the one we would never load.
+#
+# The reverse case is real too and is why `--layout` exists: `nvidia/…-NVFP4` ships ONLY
+# the HF layout (no `consolidated.safetensors.index.json` at all), so nothing is skipped
+# there and `--load-format mistral` has no index to read.
+NATIVE_PREFIX = "consolidated"
+NATIVE_IGNORE = ("consolidated*",)
+HF_IGNORE = ("model-*.safetensors", "model.safetensors", "model.safetensors.index.json")
+
+
+def _layouts(filenames) -> tuple[bool, bool]:
+    """(has_native, has_hf) — judged on WEIGHT files, not on config.
+
+    `config.json` and `params.json` often coexist innocently; it is two full sets of
+    tensors that make a repo dual-layout.
+    """
+    native = any(n.startswith(NATIVE_PREFIX) and n.endswith(".safetensors")
+                 for n in filenames)
+    hf = any(n == "model.safetensors"
+             or (n.startswith("model-") and n.endswith(".safetensors"))
+             for n in filenames)
+    return native, hf
+
+
+def choose_layout(filenames, prefer: str = "native") -> tuple[str, tuple[str, ...]]:
+    """Pure: (chosen_layout, ignore_patterns). The whole decision, so it is testable.
+
+    Skips nothing unless BOTH layouts are actually present — a single-layout repo must
+    never have its only weights filtered away, which would be a silent, expensive failure
+    discovered at load time.
+    """
+    if prefer == "both":
+        return "both", ()
+    native, hf = _layouts(filenames)
+    if not (native and hf):
+        return ("native" if native else "hf" if hf else "unknown"), ()
+    if prefer == "hf":
+        return "hf", NATIVE_IGNORE
+    return "native", HF_IGNORE
 
 
 def normalize_repo(arg: str) -> str:
@@ -96,7 +153,21 @@ def human(nbytes: float) -> str:
     return f"{nbytes:.1f} TiB"
 
 
-def download(repo: str, target: Path) -> bool:
+def repo_files(repo: str):
+    """[(name, size)] from the Hub, or [] if it cannot be asked.
+
+    Best-effort by design: a layout optimisation must never be the reason a download
+    refuses to start. If this fails we fetch everything, which is correct, just bigger.
+    """
+    try:
+        from huggingface_hub import HfApi
+        info = HfApi().model_info(repo, files_metadata=True)
+        return [(s.rfilename, getattr(s, "size", None) or 0) for s in info.siblings]
+    except Exception:  # noqa: BLE001 - see docstring
+        return []
+
+
+def download(repo: str, target: Path, ignore_patterns=()) -> bool:
     """Fetch on a WORKER thread so the main thread can still take a signal.
 
     `snapshot_download` spends its life inside hf_xet's Rust extension. CPython only runs
@@ -128,7 +199,13 @@ def download(repo: str, target: Path) -> bool:
 
     def run():
         try:
-            outcome["path"] = snapshot_download(repo_id=repo, local_dir=str(target))
+            # `ignore_patterns` is passed ONLY when there is something to skip, so the
+            # ordinary call stays byte-for-byte the measured incantation — no kwarg at
+            # its own default, which is what the defaults test guards.
+            kwargs = {"repo_id": repo, "local_dir": str(target)}
+            if ignore_patterns:
+                kwargs["ignore_patterns"] = list(ignore_patterns)
+            outcome["path"] = snapshot_download(**kwargs)
         except BaseException as exc:  # noqa: BLE001 - reported on the main thread
             outcome["error"] = exc
 
@@ -144,13 +221,36 @@ def download(repo: str, target: Path) -> bool:
 
 
 def main() -> int:
-    args = sys.argv[1:]
+    argv = sys.argv[1:]
+    prefer, args, i = "native", [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--layout="):
+            prefer = a.split("=", 1)[1]
+        elif a == "--layout":
+            i += 1
+            prefer = argv[i] if i < len(argv) else ""
+        else:
+            args.append(a)
+        i += 1
+    if prefer not in ("native", "hf", "both"):
+        print(f"error: --layout must be native|hf|both, not {prefer!r}", file=sys.stderr)
+        return 2
+
     if not args or args[0] in ("-h", "--help"):
-        print("usage: ./sparky.sh download <hf-repo>", file=sys.stderr)
+        print("usage: ./sparky.sh download <hf-repo> [dest-name] [--layout native|hf|both]",
+              file=sys.stderr)
         print("   or: ./scripts/download.py <hf-repo-id> [dest-name]", file=sys.stderr)
         print("  e.g. ./sparky.sh download stepfun-ai/Step-3.7-Flash-NVFP4", file=sys.stderr)
         print("   or: ./sparky.sh download https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731",
               file=sys.stderr)
+        print("\n  --layout applies only to repos carrying BOTH weight layouts (every", file=sys.stderr)
+        print("  Mistral): `consolidated-*` native AND `model-*` HF, the same weights twice.",
+              file=sys.stderr)
+        print("  Default `native` — vLLM refuses an HF tokenizer for Mistral architectures,",
+              file=sys.stderr)
+        print("  so the HF set is the one we would never load. Single-layout repos are", file=sys.stderr)
+        print("  untouched: nothing is ever skipped unless both sets are present.", file=sys.stderr)
         return 2
 
     try:
@@ -169,8 +269,22 @@ def main() -> int:
 
     print(f"→ {repo}\n  → {target}")
     print(f"  pid {os.getpid()} · Ctrl-C to stop (resumes from what is on disk)")
-    print("  one connection, one file at a time — so the link stays usable\n")
-    if not download(repo, target):
+    print("  one connection, one file at a time — so the link stays usable")
+
+    listing = repo_files(repo)
+    chosen, ignore = choose_layout([n for n, _ in listing], prefer)
+    if ignore:
+        # fnmatch, because these are the same globs handed to snapshot_download —
+        # approximating them with string surgery is how the report drifts from the fetch.
+        skipped = sum(sz for n, sz in listing
+                      if any(fnmatch.fnmatch(n, p) for p in ignore))
+        kept = sum(sz for n, sz in listing) - skipped
+        print(f"  dual-layout repo → taking the {chosen} weights, skipping the other set")
+        print(f"  {human(kept)} instead of {human(kept + skipped)} — {human(skipped)} not fetched")
+    elif chosen in ("native", "hf"):
+        print(f"  single-layout repo ({chosen}) — fetching everything")
+    print()
+    if not download(repo, target, ignore):
         staged = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
         print(f"\n✗ stopped — {human(staged)} staged. Re-run the same command to resume.",
               file=sys.stderr)

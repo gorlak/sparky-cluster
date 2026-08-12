@@ -1,0 +1,158 @@
+---
+# ⚰️ RETIRED 2026-08-11 — NOT IN THE ALLOWLIST. Loaders glob profiles/*.yml
+#    non-recursively, so nothing here installs, serves, or keeps weights.
+#
+#    WHY: **dense**. GB10 decode is memory-bandwidth-bound — every token re-reads every
+#    active weight — and a dense model's active set IS its whole weight set. Measured
+#    2026-08-11 on the FP8 build: **3.44 tok/s single-stream, 84% of its theoretical
+#    ceiling**. There is no flag, quant or container that fixes this; the NVFP4 sibling
+#    only reaches ~5.7 tok/s by the same arithmetic. The replacement is
+#    `mistral-small-4-119b-2603-nvfp4` — same vendor, 119B total but ~6B ACTIVE.
+#
+#    Verdict is owned by docs/models/tombstones.md; this file keeps the CONFIG and what
+#    was learned building it, which was a great deal: the Mistral flag TRIO
+#    (`--tokenizer-mode` + `--config-format` + `--load-format mistral`, all three or the
+#    halves disagree), the dual-layout repo, and the DEF-0012 diagnosis. Re-verify
+#    parsers, architecture and quant algo before reviving.
+#    See ansible/profiles/retired/README.md.
+#
+#    HISTORY. The fact sheet (docs/models/retired/mistral-medium-3.5.md) was deleted with this
+#    retirement — it planned a model this cluster will not run. Read it at
+#    `git show fd4c6d8:docs/models/retired/mistral-medium-3.5.md`. Verdict: tombstones.md.
+#
+#
+# Mistral-Medium-3.5 (128B) — TP=2 across both nodes, container 26.07.
+#
+# WHY THIS MODEL: the first non-Chinese model in the fleet. Every incumbent (Step,
+# MiniMax, Qwen) comes from one ecosystem, and a European option is worth carrying on
+# diversity grounds alone — but it also happens to be the most COMFORTABLE big-shared
+# fit we have: ~44.5 GiB/node of weights against MiniMax's ~70, so it buys the widest
+# KV budget and the widest dev headroom of any TP=2 profile.
+#
+# QUANT — read this before touching the flags. The HF repo is named "...-NVFP4" but the
+# checkpoint is **not** plain NVFP4: `quant_algo: MIXED_PRECISION`, modelopt 0.37.0,
+# with 367 layers at FP8 and 249 at NVFP4 (per-layer map in `quantized_layers`). vLLM
+# has a ModelOpt MIXED_PRECISION config class that reads exactly that map, so it is
+# auto-detected — which means, as always, **NO `--quantization` flag** (it would
+# double-quantize into garbage; the standing footgun on this cluster).
+#
+# FP8 KV CACHE IS DECLARED BY THE CHECKPOINT: `kv_cache_quant_algo: FP8`. That is
+# DEF-0007's territory (FP8 KV + prefix caching → multi-turn corruption), never re-tested
+# since vLLM 0.19. So `--enable-prefix-caching` is deliberately ABSENT here: if the two
+# really do interact, the safe half to omit is the one we can add later for free.
+# Watch the startup log for whether vLLM honours the declared FP8 KV or falls back to
+# bf16 — the KV numbers below differ 2× between those cases, and it decides how much
+# concurrency this profile actually has.
+#
+# MEMORY MATH (gmu 0.75 — "big-shared with dev headroom", same archetype as MiniMax):
+#   weights 89 GiB total → ~44.5 GiB/node at TP=2
+#   gmu 0.75 × 121 = 90.75 GiB vLLM budget/node − 44.5 weights − ~1 graphs → ~45 GiB KV/rank
+#   KV/token = 2 × 88 layers × 8 kv_heads × 128 head_dim = 352 KiB (bf16) / 176 KiB (FP8);
+#     at TP=2 the 8 KV heads split 4/4, so per rank that is 176 KiB (bf16) / 88 KiB (FP8)
+#   → ~45 GiB KV holds ~268k tokens (bf16) or ~536k (FP8) per rank
+#   At max_model_len 131072 that is ~2 (bf16) or ~4 (FP8) concurrent full-length sequences.
+#   Outside headroom: 121 − 90.75 ≈ ~30 GiB/node for system + dev.
+#
+# CONTEXT: trained max is 262144, but via YaRN from an original 4096 (factor 64). 131072
+# is half the extended ceiling and already generous; going to 262144 would spend the
+# whole KV budget on a single sequence for the most extrapolated part of the rope curve.
+#
+# REASONING + TOOLS: the chat template uses Mistral's `[THINK]…[/THINK]` and
+# `[TOOL_CALLS]` / `[AVAILABLE_TOOLS]` / `[TOOL_RESULTS]` conventions, so both parsers
+# are `mistral` (vLLM's Ministral-3-Reasoning recipe). `text_config.model_type` is
+# literally `ministral3`. No speculative decoding here, so DEF-0011 (MTP breaks
+# constrained decoding) does not apply — all four tool_choice shapes should work.
+#
+# TOKENIZER — `--tokenizer-mode mistral` IS REQUIRED, and this cost a bring-up to learn.
+# The directory carries BOTH HF (`tokenizer.json`, `config.json`,
+# `model.safetensors.index.json`) and Mistral-native (`params.json`, `tekken.json`)
+# artifacts, so the HF path looked available. It is not: vLLM validates the tokenizer
+# TYPE for this architecture and refuses at config time —
+#   ValidationError: Value error, The tokenizer must be an instance of MistralTokenizer
+# The presence of `tokenizer.json` says the file is there, not that vLLM will accept it.
+# `--config-format`/`--load-format` are NOT needed: config parsing got as far as
+# quantization detection before the tokenizer check fired, so only the tokenizer is
+# Mistral-native in a way that matters.
+#
+# PROBED BEFORE ACTIVATION (ADR-0019): 26.07 reports `Mistral3ForConditionalGeneration`
+# supported and lists `modelopt_mixed` among its quantization methods, and the first
+# bring-up confirmed both at runtime — it detected the FP8, NVFP4 and W4A16_NVFP4 layer
+# groups correctly before failing on the tokenizer alone. See
+# docs/models/retired/mistral-medium-3.5.md.
+
+# ONE NAME. profile == engine == served_as == the lowercased canonical HF model
+# name, so the scoreboard, the systemd unit, the API and huggingface.co all agree.
+# `hf_repo` is the exact upstream id for eyeball-matching against the Hub.
+profile_name: mistral-medium-3.5-128b-nvfp4
+hf_repo: nvidia/Mistral-Medium-3.5-128B-NVFP4
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [big-shared, mixed-precision, vision]
+# ⚠️ ON TRIAL — DEF-0012. Unparked 2026-08-11 to run the register's next candidate
+#    ATTENDED. The engine crash-looped at startup and never served, text included: the
+#    checkpoint ships BOTH HF and Mistral-native artifacts and the two disagree, so HF's
+#    PixtralProcessor sees one image in the prompt text and zero in the input ids.
+#
+#    THE CANDIDATE: `--config-format mistral` on BOTH ranks, so the CONFIG half takes the
+#    native path the TOKENIZER half was already forced onto. vLLM's own Mistral recipe
+#    prescribes the two together; the hybrid state is ours, not upstream's. It replaces
+#    the `--limit-mm-per-prompt {"image":0}` WAR, which DEF-0012 records as NOT working —
+#    vLLM runs multimodal profiling regardless of the declared limit.
+#
+#    TRIAL RESULT 2026-08-11 — HALF RIGHT, AND THE FIX IS ONE MORE FLAG.
+#    The multimodal symptom is GONE: no more `Mismatch in 'image' token count`. Config and
+#    tokenizer now agree. It then died further in, at weight load:
+#      quantization=fp8, quantization_config=None          <- the MIXED_PRECISION map, lost
+#      KeyError: 'language_model.embed_tokens.weight'      <- llama.py:479, load_weights
+#    Both halves are ONE cause: `load_format` stayed `auto` while `config_format` went
+#    native. vLLM built a Mistral-native config, then asked an HF-named weight loader to
+#    satisfy it. **The mixed state was never resolved — it moved down one layer.**
+#
+#    SO THE FLAGS TRAVEL AS A TRIO, and we were running two of three. NVIDIA's own DGX
+#    Spark forum shows the working GB10 recipe for a sibling model using all three
+#    together: `--tokenizer-mode mistral --config-format mistral --load-format mistral`.
+#    `--load-format mistral` is added below; this is the next attended trial.
+#
+#    ⚠️ RETRACTION — this checkpoint is probably NOT "mis-assembled". An earlier note here
+#    said so and told you to reject it. That was wrong, and the evidence is two-fold:
+#    (1) dual HF-plus-native artifacts is the **Mistral publishing convention** — every
+#    Mistral-3 repo checked ships both `config.json` and `params.json`/`tekken.json`;
+#    (2) `zdy1995love/Mistral-Medium-3.5-128B-NVFP4`, structurally identical to this repo,
+#    **serves on a DGX Spark** (forum performance report, vLLM 0.20.2rc1, no tokenizer or
+#    config-format errors). The fault is in our flags and/or 0.24.0, not in the bytes.
+#
+#    RESIDUAL RISK for the next trial: this repo has `model.safetensors.index.json` but no
+#    `consolidated.safetensors.index.json`, so `--load-format mistral` may not find an
+#    index it recognises. If it fails THAT way, the honest reading is "this repo cannot
+#    take the fully-native path" — and the fallback is the reverse experiment: drop
+#    `--config-format`/`--load-format` entirely and keep the HF config (which DOES carry
+#    the MIXED_PRECISION map), leaving only the processor to solve.
+#    See scouting-reports/2026-08-mistral-sourcing.md for the field of alternatives.
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
+serving_topology:
+  - name: mistral-medium-3.5-128b-nvfp4
+    kind: vllm
+    model: Mistral-Medium-3.5-128B-NVFP4
+    served_as: mistral-medium-3.5-128b-nvfp4
+    gpu_memory_utilization: "0.75"
+    max_model_len: 131072
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --tokenizer-mode mistral
+      # DEF-0012 candidate — the config half of the native path. Belongs on BOTH ranks
+      # for the same reason `--tokenizer-mode` does: every rank builds its own
+      # VllmConfig, so a head-only flag makes the worker disagree with the head.
+      - --config-format mistral
+      # The THIRD of the trio, added 2026-08-11 after the trial died with
+      # `KeyError: 'language_model.embed_tokens.weight'` — a native config asking an
+      # HF-named loader for native weight names. Without this, `load_format` stays `auto`
+      # and the config/loader halves disagree exactly as config/tokenizer used to.
+      - --load-format mistral
+      - --reasoning-parser mistral
+      - --enable-auto-tool-choice
+      - --tool-call-parser mistral
+    worker_extra_args:
+      - --enable-chunked-prefill
+      - --tokenizer-mode mistral
+      - --config-format mistral
+      - --load-format mistral

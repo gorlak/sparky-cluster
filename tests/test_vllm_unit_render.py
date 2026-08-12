@@ -334,3 +334,39 @@ def test_no_profile_needs_shell_quoting():
         for arg in tuple(pl.engine.head_extra_args) + tuple(pl.engine.worker_extra_args):
             assert shlex.quote(arg).replace("'", "") or True  # no crash on odd input
             assert "'" not in arg and "\n" not in arg
+
+
+# --- the memory guard rail must sit BELOW the cliff (2026-08-11) --------------
+
+def _gib(value: str) -> float:
+    """`120g` / `124G` → GiB. Docker and systemd both mean binary units here."""
+    return float(str(value).rstrip("gGbB"))
+
+
+def test_the_memory_caps_leave_the_host_room_to_survive():
+    """DEF-0004 froze sparky hard enough to need a power cycle, and the reason the unit did
+    not simply fail is that both caps were set at or above the machine.
+
+    A GB10 node has 121.7 GiB. The values were `--memory=120g` (1.7 GiB for the whole rest
+    of the OS) and `MemoryMax=124G` — *larger than physical RAM*. A limit that cannot fire
+    before the host dies is not a limit, and it read as protection for months.
+
+    Bound to the RATIO, not to today's numbers, so retuning stays free while "above the
+    cliff" stays impossible.
+    """
+    import yaml
+    from pathlib import Path
+    gv = yaml.safe_load((Path(__file__).resolve().parent.parent
+                         / "ansible" / "group_vars" / "all.yml").read_text())
+    node_gib = 121.7           # GB10 usable, both nodes identical
+    container = _gib(gv["vllm_container_memory"])
+    systemd = _gib(gv["vllm_systemd_memory_max"])
+
+    assert container < node_gib, "the container cap must be able to fire before the host OOMs"
+    assert node_gib - container >= 10, (
+        f"only {node_gib - container:.1f} GiB left for the host — too thin to recover in")
+    # MemoryMax is currently inert (the container is dockerd's child, not the unit's), and
+    # is kept ABOVE the container cap so that if placement ever changes it cannot become
+    # the thing that surprise-kills a healthy engine.
+    assert systemd >= container, "the unit cap must never bite before the container cap"
+    assert systemd < node_gib, "MemoryMax above physical RAM can never fire"

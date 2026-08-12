@@ -1,7 +1,7 @@
 <div id="runbookarea"
      {% if rb.status == 'running' %}hx-get="{{ root }}/runbooks" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
   <h2>
-    Runbooks
+    runbooks
     {% if rb.status == 'running' %}<span class="badge running">{{ rb.name }} running…</span>{% endif %}
   </h2>
   <p class="hint">

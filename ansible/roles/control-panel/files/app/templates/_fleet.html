@@ -3,9 +3,9 @@
    change, and what is measuring come first. It also sits OUTSIDE #actionarea, so an
    activation's htmx swaps leave it alone — a deploy is the only thing that can move it. #}
 {% if fleet %}
-<h3>Deployed fleet</h3>
+<h2>deployed cluster</h2>
 <p class="hint">
-  What <code>deploy</code> installed — the boundary of what may run. Adding or
+  What <code>deploy</code> installed across the cluster — the boundary of what may run. Adding or
   removing a model, or changing a profile's flags, is a deploy (human,
   password-gated), not something this panel can do.
   {% if fleet.deployed_at %}<span class="ts">Last deploy: {{ fleet.deployed_at }}</span>{% endif %}

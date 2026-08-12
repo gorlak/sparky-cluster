@@ -316,3 +316,50 @@ def test_prometheus_scrapes_the_panel_for_what_no_exporter_knows():
     assert "127.0.0.1:{{ control_panel_port }}" in conf
     compose = (ROLES / "prometheus" / "templates" / "docker-compose.yml.j2").read_text()
     assert "network_mode: host" in compose, "the loopback scrape would not resolve"
+
+
+def test_no_duplicate_keys_in_any_yaml():
+    """A duplicate mapping key silently DISCARDS the earlier value (2026-08-12).
+
+    Editing `roles/caddy/tasks/main.yml` to add a task, the replacement matched only as far
+    as `dest:` — so the new task was inserted mid-task and the original's `mode`/`owner`/
+    `group` were orphaned onto it, producing `mode:` twice. Ansible's own reaction is a
+    WARNING it prints mid-run and then carries on ("Using last defined value only"), and
+    `sparky lint` stayed green because `ansible-playbook --syntax-check` does not treat it
+    as an error. So the only thing standing between that edit and a silently wrong file
+    mode was somebody reading deploy output carefully.
+
+    PyYAML's SafeLoader also accepts duplicates silently, hence the custom constructor:
+    the check has to be built, it is not free anywhere in the stack.
+    """
+    import glob
+    import yaml
+    from yaml.constructor import ConstructorError
+
+    class Strict(yaml.SafeLoader):
+        pass
+
+    def no_dupes(loader, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise ConstructorError(None, None, f"duplicate key {key!r}", key_node.start_mark)
+            seen.add(key)
+        return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+    Strict.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_dupes)
+
+    root = Path(__file__).resolve().parent.parent
+    files = (glob.glob(str(root / "ansible" / "**" / "*.yml"), recursive=True)
+             + glob.glob(str(root / "runbooks" / "*.yml")))
+    assert files, "expected to find ansible/runbook YAML to check"
+    problems = []
+    for f in files:
+        try:
+            list(yaml.load_all(open(f), Strict))
+        except ConstructorError as exc:
+            problems.append(f"{Path(f).relative_to(root)}: {exc.problem} at {exc.problem_mark}")
+        except yaml.YAMLError:
+            pass          # Jinja-templated YAML that does not parse standalone; not our concern
+    assert not problems, "duplicate keys silently drop values:\n  " + "\n  ".join(problems)

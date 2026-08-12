@@ -527,3 +527,44 @@ def test_bools_still_mean_what_they_used_to(rec):
     assert rec._needs_stop(True) and not rec._needs_stop(False)
     p = rec.plan("qwen", engines(BIG, SOLO), "snoopy", markers={}, active={"big": True})
     assert p.stop == ["big"]
+
+
+def test_success_is_refused_when_another_profile_is_live(monkeypatch):
+    """A gate that passes proves something is healthy — not that it is what you asked for.
+
+    2026-08-12: an `-eagle` activation printed `…-eagle: live and gated` while the smoke
+    table printed beside it named the CONTROL engine. A second activation had changed the
+    selection underneath the first, and every step of `bring_up` reasons about the
+    profile as a REQUEST while the smoke gate reads the LIVE topology. Nothing compared
+    them.
+
+    The cluster was fine; only the report was wrong — which is the worse of the two. A
+    wrong engine that says so is a bug you fix in a minute. A wrong engine that says
+    "gated" is a trap: it is exactly the state someone commits, benchmarks, or walks away
+    from.
+    """
+    from sparky import activate as act
+
+    monkeypatch.setattr(act, "activate", lambda p, force=False: 0)
+    monkeypatch.setattr(act, "wait_for_ready", lambda *a, **k: True)
+    monkeypatch.setattr(act, "live_profile", lambda: "some-other-profile")
+    import sparky.cli as cli
+    monkeypatch.setattr(cli, "_smoke", lambda *a, **k: 0)
+
+    with pytest.raises(act.NotLive, match="is what is serving"):
+        act.bring_up("the-one-i-asked-for")
+
+
+def test_success_is_reported_when_the_live_profile_matches(monkeypatch):
+    """The converse, so the guard cannot be satisfied by simply never succeeding."""
+    from sparky import activate as act
+
+    seen = []
+    monkeypatch.setattr(act, "activate", lambda p, force=False: 0)
+    monkeypatch.setattr(act, "wait_for_ready", lambda *a, **k: True)
+    monkeypatch.setattr(act, "live_profile", lambda: "wanted")
+    import sparky.cli as cli
+    monkeypatch.setattr(cli, "_smoke", lambda *a, **k: 0)
+
+    act.bring_up("wanted", on_event=seen.append)
+    assert any("live and gated" in m for m in seen)

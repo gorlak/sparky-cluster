@@ -1,0 +1,84 @@
+/* Shared look for every page this panel serves — control and scoreboard.
+ *
+ * WHY IT EXISTS: the two pages grew separately and drifted into two visual languages —
+ * one said "Cluster Control" in a 42rem column with bold table headers, the other said
+ * "fleet scoreboard" lowercase in a 66rem column with 0.8rem faded ones. Same app, same
+ * user, two designs. Anything defined here is defined ONCE; a page's own <style> block
+ * is for what is genuinely particular to it (the scoreboard's bars and deltas, the
+ * panel's buttons and dialogs), never for restating a heading size.
+ *
+ * NO CDN, NO FONTS, NO FRAMEWORK. The panel must render on a LAN with no egress — that
+ * constraint is why htmx is vendored at deploy time, and it applies here too.
+ *
+ * "Cluster", never "fleet", in anything a person reads. `fleet` survives in code and in
+ * `fleet.json` where it is a precise internal term; the UI says what the hardware is.
+ */
+
+:root {
+  color-scheme: light dark;
+  /* One page width for both views (2026-08-11). The scoreboard's roomier column won —
+     its tables need it, and the panel's status/deploy tables were being squeezed into
+     42rem for no reason. */
+  --page: 66rem;
+  --line: rgba(128, 128, 128, .28);
+  --good: #2e7d32;
+  --bad:  #c62828;
+  --warn: #ef6c00;
+  --info: #0277bd;
+  --muted: .65;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  max-width: var(--page);
+  margin: 4rem auto;
+  padding: 0 1.25rem;
+}
+
+/* One heading scale. The scoreboard used to run h1 at 1.3rem and h2 at 1rem, which put
+   its section headings below the panel's body text — the two pages disagreed about what
+   a heading even looks like. */
+/* `cluster control` and `cluster scoreboard` are siblings and must LOOK like siblings —
+   same size, same weight, same case. Stated explicitly rather than left to the UA default
+   so neither page can quietly drift by adding its own h1 rule. */
+h1 { font-size: 1.6rem;  font-weight: 600; margin: 0 0 .25rem; }
+h2 { font-size: 1.15rem; margin: 2rem 0 .3rem; }
+/* h3 is a MODAL title, not a page section — since 2026-08-12 every page section on both
+   views is an h2, and the only h3s left are inside <dialog>. The two pages used to
+   disagree here: the panel's "Deployed cluster" was an h3 while its sibling "Actions" was
+   an h2, so one section header rendered a size and a top-gap smaller than the other for no
+   reason a reader could see. Section headings are also lowercase on both pages now. */
+h3 { font-size: 1rem;    margin: 1.6rem 0 .3rem; }
+dialog h3 { margin-top: 0; }
+
+.sub  { opacity: var(--muted); margin-top: 0; font-size: .9rem; }
+.hint { opacity: var(--muted); font-size: .85rem; margin: .2rem 0 .6rem; }
+.ts   { opacity: .5; font-size: .85rem; }
+
+a { text-decoration: none; font-weight: 600; }
+code {
+  padding: .1rem .3rem; border-radius: .3rem; background: #8882;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Tables carry most of both pages, so they are the thing most worth sharing.
+   `tabular-nums` came from the scoreboard and is right everywhere: it stops columns of
+   figures shifting as they update under htmx. */
+table {
+  border-collapse: collapse; width: 100%; margin: 1rem 0;
+  font-variant-numeric: tabular-nums;
+}
+th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; font-size: .85rem; opacity: .75; }
+
+/* Wide content scrolls INSIDE its own box rather than making the page scroll sideways. */
+.scroll { overflow-x: auto; }
+
+.ok  { color: var(--good); font-weight: 600; }
+.bad { color: var(--bad);  font-weight: 600; }
+.missing { opacity: .35; }
+
+/* The cross-links between the two pages, so each is reachable from the other. */
+.nav { margin-top: 2.5rem; font-size: .9rem; }

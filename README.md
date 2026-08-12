@@ -95,9 +95,12 @@ guessing. See [ADR-0018](docs/adr/0018-provision-select-split.md).
 ## Current state — profiles (the allowlist)
 
 Profiles live at `ansible/profiles/<name>.yml`; each captures the full
-`serving_topology` (engines, models, nodes, ports, `gmu`, `max_model_len`). Names are
-the `<model>-<version>-<quant>` triple; a `-single` suffix marks the single-node
-(snoopy) TP=1 shape, while bare big-shared profiles are TP=2 across both nodes.
+`serving_topology` (engines, models, nodes, ports, `gmu`, `max_model_len`). A profile's name is
+the upstream repo's model name **lowercased and copied verbatim** — the quant appears
+because the vendor put it there, never because we appended one; the only suffixes we
+invent are topology suffixes (`-single` = the single-node TP=1 shape). Bare big-shared
+profiles are TP=2 across both nodes. See `docs/profiles.md` and
+`topology.name_matches_repo`, which enforces it.
 Single-node serving runs on **snoopy by design** — sparky is the head (frontends) + dev
 node, so single-node models serve on the resource-richer worker.
 
@@ -121,11 +124,10 @@ decode, throughput and KV capacity for every model measured; the paired numbers 
 | `qwen3-vl-235b-a22b-instruct-nvfp4` | Qwen3-VL-235B — **75.0%** MMLU-Pro subset, vision + tools (`hermes`) | 23.8 tok/s | 131k / 534k |
 | `nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4` | Nemotron-3-Puzzle-75B — hybrid Mamba; **the long-context model** | 32.0 tok/s | 131k / **35.2M** |
 | `nvidia-nemotron-3-super-120b-a12b-nvfp4` | Nemotron-3-Super-120B-A12B — Puzzle's uncompressed upstream; `MIXED_PRECISION` despite the name | *new* | 262k / ~31M est |
-| `qwen3.6-35b-a3b-nvfp4` | Qwen3.6-35B-A3B — the fast generalist | **100.2 tok/s** | 262k / 16.3M |
+| `qwen3.6-35b-a3b-nvfp4` | Qwen3.6-35B-A3B — the fast generalist, **and vision-capable** (passes the vision gate) | **100.2 tok/s** | 262k / 16.3M |
 | `qwen3-coder-next-nvfp4` | Qwen3-Coder-Next | 54.0 tok/s | 262k / 5.98M |
 | `minimax-m2.7-nvfp4` | MiniMax-M2.7 — soaked 64 min clean; reasons past the eval's cap on 32% of items | 24.9 tok/s | 131k / 449k |
-| `mistral-medium-3.5-128b-nvfp4` | Mistral-Medium-3.5 (`MIXED_PRECISION`, `--tokenizer-mode mistral`) — the European option | — | — |
-| `step-3.7-flash-nvfp4` | **⛔ parked** (`blocked: true`; upstream VL bug, DEF-0006 — re-probed on 26.07, still missing) | — | — |
+| `mistral-small-4-119b-2603-nvfp4` | Mistral-Small-4-119B — **119B total, ~6.6B active** (128 experts, 4+1); MLA, vision. The European option | 49.0 tok/s | 65k / **36.5×** |
 
 **Every profile is offering far less context than it holds.** The `usable ctx` column is
 `max_model_len` — a number we chose — against the KV cache actually allocated. Nemotron

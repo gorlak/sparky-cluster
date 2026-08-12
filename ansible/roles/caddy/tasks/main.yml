@@ -50,9 +50,24 @@
   ansible.builtin.template:
     src: index.html.j2
     dest: "{{ caddy_dir }}/landing/index.html"
+    mode: "0644"
     owner: root
     group: root
+
+# ONE stylesheet for all four pages — `sparky cluster`, `cluster control`,
+# `cluster scoreboard`, `cluster metrics`. The source of truth lives with the control
+# panel because that app serves it at /admin/static; the landing page is a static file
+# under a different root, so the same file is copied here rather than duplicated in the
+# repo. Reaching across roles for a `src:` is deliberate: the alternative is two copies
+# that drift, which is exactly what this replaced (this page carried the panel's OLD
+# 42rem body rule long after the panel moved on).
+- name: Install the shared stylesheet beside the landing page
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/roles/control-panel/files/app/static/app.css"
+    dest: "{{ caddy_dir }}/landing/app.css"
     mode: "0644"
+    owner: root
+    group: root
 
 - name: Template the Caddy compose file
   ansible.builtin.template:

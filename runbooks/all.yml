@@ -40,10 +40,19 @@ jobs:
   # after four hours of Qwen3-VL is how a night gets wasted.
   - profile: qwen3.6-35b-a3b-nvfp4
   - profile: qwen3-coder-next-nvfp4
+  # `covers: allowlist` counts ACTIVATABLE profiles, so this list moves whenever a profile
+  # is parked or unparked — that is the mechanism keeping it honest, not a chore.
+  # 2026-08-11/12: `step-3.7-flash-nvfp4` joined when DEF-0006 cleared and left again the
+  # next day when DEF-0017 parked it (its `<think>` path emits token soup);
+  # `mistral-small-4-119b-2603-nvfp4` replaced the retired dense Mistral-Medium pair; and
+  # the `-eagle` arm was added and then removed again when DEF-0016 parked it.
+  #
+  # Ordered cheapest-first by weights-per-node, so a harness problem surfaces in minutes
+  # rather than four hours into Qwen3-VL: mistral-small-4 ~33 GiB/node, minimax ~65.
+  # ⚠️ mistral-small-4 is a compressed-tensors MoE — DEF-0004's neighbourhood. Its first
+  # activation was attended and clean (2026-08-12); it is in the campaign on that basis.
+  - profile: mistral-small-4-119b-2603-nvfp4
   - profile: minimax-m2.7-nvfp4
-  # `mistral-medium-3.5-128b-nvfp4` is absent because it is PARKED (DEF-0012 — the engine
-  # never serves). `covers: allowlist` counts activatable profiles, so lint agrees; when
-  # the defect clears and the profile unblocks, lint will require it back here.
   - profile: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
   - profile: nvidia-nemotron-3-super-120b-a12b-nvfp4
   - profile: qwen3-vl-235b-a22b-instruct-nvfp4

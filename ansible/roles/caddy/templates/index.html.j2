@@ -4,26 +4,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DGX Spark Cluster</title>
+  <title>sparky cluster</title>
+  <!-- Same stylesheet the control panel and scoreboard use, installed beside this file by
+       the caddy role. All four pages are one product; before 2026-08-12 this one carried
+       its own copy of the panel's OLD values (42rem, no font-size) and had already drifted
+       apart from it. What stays below is only what this page alone needs. -->
+  <link rel="stylesheet" href="/app.css">
   <style>
-    :root { color-scheme: light dark; }
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      max-width: 42rem; margin: 4rem auto; padding: 0 1.25rem; line-height: 1.5;
-    }
-    h1 { margin-bottom: 0.25rem; }
-    .sub { opacity: 0.65; margin-top: 0; }
     ul { list-style: none; padding: 0; }
-    li { margin: 0.75rem 0; padding: 0.9rem 1.1rem; border: 1px solid; border-radius: 0.6rem; }
-    a { font-size: 1.1rem; font-weight: 600; text-decoration: none; }
-    .blurb { display: block; opacity: 0.7; font-size: 0.9rem; margin-top: 0.2rem; }
-    #failsafe-banner { display: none; margin: 0 0 1.5rem; padding: 0.9rem 1.1rem;
-      border: 1px solid #c62828; border-radius: 0.6rem; background: #c6282814; }
-    #failsafe-banner strong { color: #c62828; }
+    li { margin: .75rem 0; padding: .9rem 1.1rem; border: 1px solid var(--line);
+         border-radius: .6rem; }
+    li a { font-size: 1.1rem; }
+    .blurb { display: block; opacity: .7; font-size: .9rem; margin-top: .2rem; }
+    #failsafe-banner { display: none; margin: 0 0 1.5rem; padding: .9rem 1.1rem;
+      border: 1px solid var(--bad); border-radius: .6rem; background: #c6282814; }
+    #failsafe-banner strong { color: var(--bad); }
   </style>
 </head>
 <body>
-  <h1>DGX Spark Cluster</h1>
+  <h1>sparky cluster</h1>
   <p class="sub">{{ web_domain }}</p>
   <div id="failsafe-banner">
     <strong>⚠ Cluster in fail-safe recovery</strong>

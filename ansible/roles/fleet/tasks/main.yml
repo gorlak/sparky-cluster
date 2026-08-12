@@ -34,7 +34,14 @@
 - name: Derive the fleet facts for this host
   ansible.builtin.set_fact:
     fleet_allowlist: "{{ fleet_profiles | selectattr('blocked', 'falsy') | map(attribute='name') | sort | list }}"
-    fleet_models: "{{ fleet_engines | map(attribute='model') | unique | sort | list }}"
+    # `model` PLUS `extra_models` — weights an engine needs but does not serve, today a
+    # speculative-decoding draft. The draft is named inside a FLAG, which is an opaque
+    # string here, so without this union the deploy would never move it out of the inbox
+    # and the engine would die on a missing path (2026-08-11, EAGLE for Mistral-Small-4).
+    fleet_models: >-
+      {{ (fleet_engines | map(attribute='model') | list
+          + fleet_engines | map(attribute='extra_models', default=[]) | flatten)
+         | unique | sort | list }}
     host_engines: "{{ fleet_engines | selectattr('nodes', 'contains', inventory_hostname) | list }}"
 
 # Per-node disk tracks what each node actually RUNS, not the whole fleet — with one
@@ -47,7 +54,9 @@
   ansible.builtin.set_fact:
     host_models: >-
       {{ (fleet_models if inventory_hostname in groups['head']
-          else host_engines | map(attribute='model') | unique | list) | sort | list }}
+          else host_engines | map(attribute='model') | list
+               + host_engines | map(attribute='extra_models', default=[]) | flatten)
+         | unique | sort | list }}
 
 # --- validation: fail the deploy before anything is written ------------------
 # These are fleet-wide invariants, so they run once, on the control node.

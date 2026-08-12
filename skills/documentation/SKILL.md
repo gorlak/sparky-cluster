@@ -8,6 +8,7 @@ description: Conventions for this repo's docs/ tree — model fact sheets, upgra
 | Location | Kind | Purpose |
 |---|---|---|
 | `docs/models/<model>.md` | **Fact sheet** | Independent statement of fact about **one** model — analyzed on its own, never vs another. |
+| `docs/models/retired/<model>.md` | **Frozen fact sheet** | A retired model's sheet, kept for its engineering (memory math, quant findings, workarounds) and **not maintained**. Its status and next-step sections are history, not a plan. **Do not read one unless its filename is the model you are actually investigating** — a 250-line sheet saying "Target quant: NVFP4 — preferred" outweighs a one-line tombstone row in anyone's attention, which is how a rejected model gets re-proposed. The verdict is never here. |
 | `docs/upgrades/<kind>-<…>.md` | **Upgrade tracker** | Living, gated tracker of a version/model **transition** and its cluster implications. |
 | `docs/adr/NNNN-*.md` | **Decision record** | Immutable record of a decision already made — the "why." See "Decision records" below. **Not** for living state. |
 | `docs/defects.md` | **Defect register** | Living index of **open** defects the cluster carries, each with a *clears-when* condition. Rolls up (links, never duplicates) the per-tracker WAR registers, ADR-0014, and README shortcomings. |
@@ -82,7 +83,7 @@ Fact sheets are just `<model>.md`.
 
 ## Model fact sheet structure (`docs/models/<model>.md`)
 
-Copy an existing one (e.g. `docs/models/step-3.7-flash.md`). Shape:
+Copy an existing one (e.g. `docs/models/deepseek-v4-flash.md`). Shape:
 
 - **Header:** Last updated · Hardware line · **Installed quant** · **Target quant**.
 - **Model Overview:** developer, architecture (MoE vs dense — say which), params (total / active), context window, special features, HF links.

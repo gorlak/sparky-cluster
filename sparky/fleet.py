@@ -68,7 +68,7 @@ class Fleet:
     def models(self) -> list[str]:
         """Every model the fleet keeps — including parked profiles', which is the
         point of `blocked`: it holds the weights so re-testing costs no download."""
-        return sorted({pl.engine.model for pl in self.placements})
+        return sorted({m for pl in self.placements for m in pl.engine.all_models})
 
     @property
     def nodes(self) -> list[str]:
@@ -88,7 +88,7 @@ class Fleet:
         """
         if head is not None and node == head:
             return self.models
-        return sorted({e.model for e in self.engines_on(node)})
+        return sorted({m for e in self.engines_on(node) for m in e.all_models})
 
     def evictions_on(self, node: str, present: list[str], *, head: str | None = None) -> list[str]:
         """What `deploy --evict` would delete on `node`, given what's on its disk."""
@@ -149,6 +149,43 @@ class Fleet:
                         f"systemd's $VAR expansion unquotes); single quotes and newlines "
                         f'are not. Write JSON args unspaced, e.g. -sc {{"method":"mtp"}}')
 
+        # --- flags that MUST be on both ranks ------------------------------------
+        # Every rank builds its own VllmConfig from its own argv. A flag that changes the
+        # MODEL — how it is parsed, loaded, or executed — on only one rank makes the ranks
+        # disagree about the work to do, and TP=2 then deadlocks: each blocks on a
+        # collective the other never issues. It presents as a hang at startup, minutes
+        # from the flag that caused it, with no error naming it.
+        #
+        # This happened THREE TIMES on 2026-08-11/12 before the rule was written down:
+        #   * `--tokenizer-mode mistral` head-only  -> config-time refusal
+        #   * `--config-format mistral` without `--load-format`  -> KeyError at weight load
+        #   * `--speculative-config` head-only  -> rank 1 blocked ~12 min in
+        #     `_dummy_sampler_run -> tensor_model_parallel_all_gather` and died with
+        #     `DistBackendError … possible application crash on rank 0`, while rank 0
+        #     looped `No available shared memory broadcast block found` forever.
+        #
+        # The opposite case is legitimate and must stay allowed: API-surface flags
+        # (`--enable-auto-tool-choice`, `--tool-call-parser`, `--reasoning-parser`) belong
+        # to the API server, which runs on the head alone. So this is a NAMED LIST, not a
+        # blanket "both lists must match" — the two kinds of flag genuinely differ.
+        for pl in self.placements:
+            if not pl.engine.is_multinode:
+                continue
+            head = {a.split()[0] for a in pl.engine.head_extra_args if a.strip()}
+            worker = {a.split()[0] for a in pl.engine.worker_extra_args if a.strip()}
+            for flag in BOTH_RANK_FLAGS:
+                if flag in head and flag not in worker:
+                    problems.append(
+                        f"{pl.engine.name}: {flag} is on the head but not the worker. It "
+                        f"changes how the MODEL is built, and every rank builds its own "
+                        f"VllmConfig — so the ranks would disagree and TP=2 deadlocks at "
+                        f"startup — exactly this cost an hour of stalled cluster on 2026-08-12; see docs/bring-up-failures.md. "
+                        f"Add it to worker_extra_args too.")
+                if flag in worker and flag not in head:
+                    problems.append(
+                        f"{pl.engine.name}: {flag} is on the worker but not the head — "
+                        f"same desync, mirrored. Add it to head_extra_args too.")
+
         managed = managed_images()
         if managed:
             for p in self.profiles:
@@ -160,6 +197,22 @@ class Fleet:
 
         if problems:
             raise FleetError("\n".join(f"  - {p}" for p in problems))
+
+
+# Flags that configure the MODEL rather than the API server, so every rank needs them.
+# Keep this list SHORT and evidence-led: a flag earns a place by having desynchronised the
+# ranks, or by obviously being able to. API-surface flags must NOT be added — they are
+# head-only by design and listing them here would make every working profile fail lint.
+BOTH_RANK_FLAGS: frozenset[str] = frozenset({
+    "--tokenizer-mode",      # config-time tokenizer TYPE validation, per rank
+    "--config-format",       # which config file the rank parses
+    "--load-format",         # which weight layout the rank's loader expects
+    "--speculative-config",  # adds a draft model + an extra profiling pass, per rank
+    "--quantization",        # changes the kernels a rank loads
+    "--kv-cache-dtype",      # changes each rank's KV allocation
+    "--attention-backend",   # each rank builds its own attention; a split here deadlocks
+    "--limit-mm-per-prompt", # multimodal config, and profiling runs per rank
+})
 
 
 def managed_images(path=GROUP_VARS) -> set[str]:

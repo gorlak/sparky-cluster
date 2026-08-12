@@ -27,7 +27,9 @@ NVFP4 quantizations (Step-3.7-Flash-NVFP4, MiniMax NVFP4, …) need the b12x SM1
 FP4 kernels merged to vLLM main on 2026-05-20 (PR #40082), first shipped in a
 container ≥ 26.05/26.06. **26.04 predates them.** NVFP4 roughly halves the per-node
 weight footprint vs FP8, which unlocks big-shared-with-headroom profiles on this
-2× GB10 cluster (see `docs/models/step-3.7-flash.md`). So the target container is a
+2× GB10 cluster (fact sheet deleted when Step-3.7 was retired 2026-08-12 —
+`docs/models/retired/step-3.7-flash.md`; verdict in `docs/models/tombstones.md`).
+So the target container is a
 prerequisite for the whole NVFP4 line of work.
 
 ## What happened (2026-07-02)
@@ -291,6 +293,8 @@ load-hang symptom + the regression boundary.
 ## References
 
 - ADR-0009 — fail-safe boot (the net that makes retrying safe)
-- `docs/models/step-3.7-flash.md` — NVFP4 target model + memory analysis
+- Step-3.7-Flash — NVFP4 target model + memory analysis. **Model retired 2026-08-12**;
+  fact sheet deleted, see `docs/models/retired/step-3.7-flash.md` and the
+  verdict in [`models/tombstones.md`](../models/tombstones.md)
 - `ansible/group_vars/all.yml` — the `vllm_image` pin (with the hang note)
 - `ansible/roles/common/files/nccl-env.conf` — the NVLS killswitch

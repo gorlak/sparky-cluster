@@ -9,11 +9,17 @@ Two GB10 nodes were bought and wired with 200 Gbit RoCE **specifically to run on
 across both, dedicated** — maximum intelligence and speed, both machines fully committed.
 Rank every sweep by these tiers:
 
-- **Tier 1 — the point.** The **smartest model that fits TP=2 fully-committed across both
-  nodes and still runs reasonably fast** — multimodal too, when the container supports its
-  vision path. This flagship slot is the primary job. "Fully committed" means filling the
-  ~215 GiB two-node budget (~108 GiB/node) with the best weights — a candidate that only
-  fits by leaving a node or half the RAM idle is *under-using the hardware*, not winning.
+- **Tier 1 — the point.** The **smartest model that fits TP=2 across both nodes and still
+  decodes fast enough to talk to** — multimodal too, when the container supports its vision
+  path. This flagship slot is the primary job. "Fully committed" means filling the ~215 GiB
+  two-node budget (~108 GiB/node) with the best weights — a candidate that only fits by
+  leaving a node idle is *under-using the hardware*.
+
+  ⚠️ **But "fills the box" is a CAPACITY test, not a speed one, and reading it as both cost
+  a bring-up on 2026-08-11.** `mistral-medium-3.5-128b` — dense, official FP8, 62 GiB/node,
+  a textbook "fully committed" fit — loaded and served perfectly at **3.44 tok/s**. Not a
+  misconfiguration: 84% of its theoretical ceiling. See the arithmetic below and **do it
+  before proposing anything.**
 - **Tier 2 — secondary / experimental.** Single-node (`-single`, on snoopy by design) and
   dev-headroom profiles exist only to spare a node for experimentation. **"Frees a node" is a cost here,
   not a feature.**
@@ -23,6 +29,48 @@ fast-enough model that fills both nodes?* Everything else is secondary. When Tie
 candidates are close on intelligence+speed, **vendor/region diversity is a tiebreaker** —
 the suite is currently all-Chinese, so a strong European option (Mistral especially) or
 other diversity is a plus, all else near-equal.
+
+## Decode speed is ARITHMETIC — do it before you propose a model
+
+GB10 decode is **memory-bandwidth-bound** (`docs/profile-tuning.md`): every token re-reads
+the **active** weights, so speed is set by bytes-read-per-token, not by cleverness. One
+division, thirty seconds, and it is the difference between a flagship and a curiosity:
+
+```
+ceiling tok/s  ≈  273 GB/s  ÷  (active weight bytes per NODE)
+active bytes per node  ≈  active_params × bytes_per_param ÷ 2      # TP=2
+bytes_per_param: FP8 ≈ 1 · NVFP4 ≈ 0.5 · BF16 ≈ 2
+```
+
+Expect **50–85% of that ceiling** in practice. Calibrated against the fleet:
+
+| model | active | reads/token/node | ceiling | measured |
+|---|---|---|---|---|
+| `mistral-medium-3.5-128b` | **128B (dense)** | 66.8 GB | 4.1 | **3.44** |
+| `qwen3-vl-235b-a22b-instruct-nvfp4` | 22B | 6.4 GB | 43 | 23.8 |
+| `minimax-m2.7-nvfp4` | ~10B | — | — | 24.9 |
+| `qwen3.6-35b-a3b-nvfp4` | 3B | 1.0 GB | 270 | 100.2 |
+
+**THE SHORTCUT: the `A<n>B` in a model's name is the speed number; the total is the
+capacity number.** `Qwen3.6-35B-**A3B**` reads 3B per token. A name with no `A<n>B` is
+dense, and dense means active = total.
+
+### What this means for ranking
+
+- **Dense models above ~30B are a write-off for the flagship slot** on this hardware,
+  however good they are. A dense 128B cannot be made fast: there is no flag, no quant and
+  no container that stops a token needing every weight. At NVFP4 a dense model needs
+  ≲50B for ~20 tok/s; at FP8, ≲25B.
+- **The ideal Tier-1 shape is a LARGE-TOTAL, SMALL-ACTIVE MoE** — it fills the box with
+  capacity and quality while reading almost none of it per token. That is not a compromise
+  between the two goals; it is how you get both, and it is why every fast model in this
+  fleet is an MoE. Treating that as a coincidence is what produced the 3.44 tok/s result.
+- **A small-footprint MoE is NOT "under-using the hardware".** Judge occupancy on TOTAL
+  weights, KV budget and quality; judge speed on ACTIVE weights. `mistral-small-4-119b`
+  at 33 GiB/node looks half-empty and reads ~1.8 GB/token — it is the better flagship
+  candidate *because* of the gap between those two numbers, not despite it.
+- **Report both numbers for every candidate**, in the format below. A proposal that gives
+  total size without active size has not answered the first question anyone will ask.
 
 ## Cluster Constraints
 
@@ -99,6 +147,12 @@ that matter (exact NCCL/container versions, flags, whether it needed a hard rese
 `docs/models/` fact sheet** so it isn't re-discovered later. A forum report of "it hangs
 on GB10" for a container/quant we don't run yet is a **blocker to record**, not a detail
 to skip.
+
+**`docs/models/retired/` is frozen history — skip it.** Those sheets are kept for their
+engineering, not their conclusions, and they still read as plans ("Target quant: NVFP4 —
+preferred") for models this cluster rejected. Open one only when its filename is the model
+you are investigating, and take the verdict from the tombstone register, never from the
+sheet.
 
 **Screen candidates against [`docs/models/tombstones.md`](../../docs/models/tombstones.md)
 before reporting them** — a sweep that re-surfaces a rejected model has cost time twice.

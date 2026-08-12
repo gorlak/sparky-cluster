@@ -297,20 +297,145 @@ model is at fault.
 *2026-08-11 · Mistral-Medium-3.5 → Qwen3-VL-235B · DEF-0012*
 
 ### `AttributeError: 'Step3VLProcessor' object has no attribute '_get_num_multimodal_tokens'`
-**Cause.** vLLM's multimodal machinery calls a method the **transformers**-side
-`Step3VLProcessor` does not define, during startup profiling — so the engine never serves,
-text included. Orthogonal to NVFP4 and to our container's vLLM: the missing method is on
-the processor transformers ships, not on anything NVIDIA packages, which is why three
-container bumps have not touched it.
-**Check.** `./sparky.sh probe attr vllm.model_executor.models.step3_vl Step3VLProcessor._get_num_multimodal_tokens`
-against the image **before** pointing a profile at it — twenty seconds, no activation,
-no weights read (ADR-0019). Re-probed on 26.07 on 2026-08-10: still `false`.
+**Cause.** *Re-diagnosed 2026-08-11 — the two earlier readings of this error were both
+wrong, and each cost a month of parking.* The traceback's own path is the tell:
+`vllm/model_executor/models/transformers/multimodal.py` is vLLM's **generic
+transformers-backend fallback**, entered only when vLLM has **no native implementation of
+the architecture**. So the error is not really about a missing method; it is about being
+on the fallback path at all.
 
-Note the class name when checking upstream: vLLM main defines `Step3VLMultiModalProcessor`
-and `Step3VLProcessingInfo`, *not* `Step3VLProcessor`, and defines no
-`_get_num_multimodal_tokens` at all. Chasing this in vLLM is chasing the wrong repo.
-**Unblock path.** StepFun publishes `vllm/vllm-openai:stepfun37` with an official Step-3.7
-recipe, pinning its own transformers. Adopt it as a **per-profile `vllm_image`** (ADR-0013)
-so one model changes container without the fleet following — and probe it first, because a
-different container is a different vLLM and 0.x minors break flags.
+And the object it names belongs to neither of the repos previously blamed. This checkpoint
+is `Step3p7ForConditionalGeneration`, whose `config.json` carries an `auto_map` pointing at
+**remote code inside the checkpoint directory** —
+`"AutoProcessor": "processing_step3.Step3VLProcessor"`. The `Step3VLProcessor` in the
+traceback is therefore a file in `/opt/vllm/models/<model>/processing_step3.py`, shipped by
+StepFun with the weights. It defines `get_num_image_tokens`, never the underscore-prefixed
+method the fallback demands. Verified: our staged copy is byte-identical (sha256
+`983f9fc3…`) to the Hub's current file, and **neither** `stepfun-ai/Step-3.7-Flash-NVFP4`
+nor `stepfun-ai/Step-3.7-Flash` defines the method as of today.
+
+Three repos were blamed in turn — vLLM, then transformers, then the container — and the
+file was on our own disks the whole time. **When a traceback names a class, find out which
+package actually defines it before deciding whose bug it is**; a checkpoint with an
+`auto_map` and a global `--trust-remote-code` is a fourth source of code in the process,
+and it is the one nobody thinks of.
+
+**Check.** Ask whether vLLM implements the architecture, not whether some class has some
+method:
+```bash
+./sparky.sh probe archs Step3p7ForConditionalGeneration
+```
+`probe attr` was the wrong instrument here and misreported for a month: it returns `false`
+for an **absent class** exactly as it does for an absent method, so
+`probe attr vllm.model_executor.models.step3_vl Step3VLProcessor._get_num_multimodal_tokens`
+answered `false` on 2026-08-10 because `step3_vl` has no `Step3VLProcessor` — a module for
+a *different* model (Step-3, not Step-3.7). Use `probe archs` for "does vLLM know this
+model"; reserve `probe attr` for a method on a class you have confirmed exists.
+
+**Unblock path.** vLLM **0.24.0 (26.07) ships a native `step3p7` module**, so the fallback
+that raised is never entered. Probed 2026-08-11: `probe archs Step3p7ForConditionalGeneration`
+→ `true`, and `probe attr vllm.model_executor.models.step3p7 Step3p7ForConditionalGeneration`
+→ `true`. The profile was unparked on that basis — no new container required.
+
+If it recurs anyway (config/processor resolution can still reach `auto_map` under the
+template's global `--trust-remote-code` even when the *model* class is native), the next
+option is StepFun's own `vllm/vllm-openai:stepfun37`. Its `stepfun37-arm64-cu130` variant
+is real, is `linux/arm64`, and carries `TORCH_CUDA_ARCH_LIST=… 12.0 12.1` — native sm_121
+cubins, where NGC 26.07 reaches sm_121 only via `12.0+PTX`. **But it is not a drop-in
+pull**: it sets `ENTRYPOINT ["vllm","serve"]` while our unit already appends
+`vllm serve /models/…`, so the command would double up. Adopting it means a derived image
+that clears the entrypoint (`roles/images/files/<context>/`), not a `pull:` line. Its
+`NVIDIA_REQUIRE_CUDA` also caps at `driver<576` against our 580.159.03, which the probe
+would not catch — the probe runs without `--gpus`, so the runtime never evaluates it.
 *2026-08-11 · Step-3.7-Flash-NVFP4 → DEF-0006*
+
+### Engine never becomes ready — `No available shared memory broadcast block found in 60 seconds` (head) + `DistBackendError … possible application crash on rank 0` (worker)
+
+**Cause.** The two ranks were given **different serve flags**, so they built different
+`VllmConfig`s and disagreed about how many collectives to run. TP=2 then deadlocks: each
+blocks on a collective the other never issues. The head loops the shm-broadcast message
+forever; the worker sits in whatever collective it reached and eventually dies blaming
+rank 0 — **which is a red herring**, rank 0 did not crash.
+
+Seen 2026-08-12 with `--speculative-config` in `head_extra_args` only. Rank 0 ran EAGLE's
+extra draft profiling pass; rank 1 did not. Rank 1 blocked ~12 minutes in
+`profile_run → _dummy_sampler_run → compute_logits → tensor_model_parallel_all_gather`.
+Cost: an hour of stalled cluster, and **no error in either log named the flag**.
+
+**Check.** Compare the ranks — the fastest possible diagnosis, and it is conclusive:
+```bash
+grep -o "VLLM_SERVE_ARGS=.*" /opt/vllm/engines/<engine>.env | tr ' ' '\n' | sort > /tmp/head
+ssh <worker> "grep -o 'VLLM_SERVE_ARGS=.*' /opt/vllm/engines/<engine>.env" | tr ' ' '\n' | sort | diff /tmp/head -
+```
+Ignore `--node-rank`, `--headless` and `--master-addr`, which are *supposed* to differ.
+
+**Fix / prevention.** Put every MODEL-configuring flag on **both** ranks. `sparky lint`
+now enforces this for `fleet.BOTH_RANK_FLAGS` (`--tokenizer-mode`, `--config-format`,
+`--load-format`, `--speculative-config`, `--quantization`, `--kv-cache-dtype`) and refuses
+the deploy — so this class cannot reach an activation again. API-surface flags
+(`--tool-call-parser`, `--reasoning-parser`, `--enable-auto-tool-choice`) are head-only by
+design and are deliberately NOT in that set.
+
+**The pattern.** This was the third rank-desync in two days — `--tokenizer-mode` head-only,
+then `--config-format` without `--load-format`, then this. Each presented completely
+differently (a config-time refusal, a `KeyError` at weight load, a silent deadlock), which
+is exactly why it kept being re-diagnosed from scratch instead of recognised.
+*2026-08-12 · mistral-small-4-119b-2603-nvfp4-eagle*
+
+### `assert m.max_query_len <= self.reorder_batch_threshold  # decode only` → `AssertionError`
+
+**Cause.** **MLA attention and speculative decoding are incompatible on the `TRITON_MLA`
+backend.** `TRITON_MLA` is decode-only — it asserts one query token per sequence — but
+spec-decode submits `num_speculative_tokens + 1` query tokens when the target model
+verifies a proposal. Fires in `build_for_cudagraph_capture`, after the weights load, so it
+looks like a late/mysterious startup failure rather than a flag conflict.
+
+**Check.** Before combining spec-decode with an MLA model (`kv_lora_rank` present in
+`params.json`/`config.json`), grep the startup log for the backend vLLM chose:
+```bash
+journalctl -u vllm@<engine>.service | grep -oE "Using [A-Z_]+ (MLA )?(attention|prefill) backend"
+```
+`Using TRITON_MLA attention backend` plus a `--speculative-config` is the failing pair.
+Note prefill and decode can differ — ours used `FLASH_ATTN MLA` for prefill and
+`TRITON_MLA` for decode, and only decode asserts.
+
+**Fix — and there ISN'T one on sm_121 / vLLM 0.24.0.** Mistral's recipe specifies
+`--attention-backend FLASH_ATTN_MLA`, and it was worth trying, but the flag parses and then
+the backend refuses:
+
+    ValueError: Selected backend AttentionBackendEnum.FLASH_ATTN_MLA is not valid for
+    this configuration
+
+FLASH_ATTN MLA is valid for **prefill** on this hardware (every activation logs
+`Using FLASH_ATTN MLA prefill backend`) but not for **decode**. So both MLA decode
+backends are ruled out — `TRITON_MLA` forbids multi-token queries, `FLASH_ATTN_MLA` does
+not exist for this configuration. **Speculative decoding and MLA cannot be combined here.**
+
+The only lever left is `VLLM_MLA_DISABLE=1`, which trades ~25x the KV per token
+(22.5 KiB → ~576 KiB) and a context ceiling near 40k for maybe 1.5–2x decode. Not worth it.
+**THE CHECK, and it is one grep of a log you already have.** vLLM prints the backends it
+considered, and for this model on sm_121 it considered exactly one:
+
+```bash
+journalctl -u vllm@<engine>.service | grep -oE "out of potential backends: \[[^]]*\]"
+#   out of potential backends: ['TRITON_MLA']
+```
+
+**A single-entry list is the answer.** vLLM's enum has six MLA backends — `TRITON_MLA`,
+`FLASH_ATTN_MLA`, `FLASHINFER_MLA`, `FLASHMLA`, `CUTLASS_MLA`, `FLASHMLA_SPARSE`, all
+present in the build (`probe attr vllm.platforms.interface AttentionBackendEnum.<NAME>`) —
+but only the ones in that list are *available for this model on this hardware*. If it
+contains only `TRITON_MLA`, no `--attention-backend` value can help, because there is
+nothing else to select. FlashInfer being installed (0.6.14 here, the version Mistral's own
+recipe names) does **not** make `FLASHINFER_MLA` available; availability is decided per
+model and platform, not by the package being present.
+
+Doing this grep first would have saved two of the three activations spent here.
+
+**And clean up the corpse before retrying.** A worker that fails while the head restarts
+leaves rank 1 alive, spinning `Failed to check the "should dump" flag on TCPStore` against
+a dead rendezvous, which poisons the next attempt too. The fastest tell is **asymmetric
+memory** — a healthy TP=2 holds a similar amount on both nodes, so 8 GiB on the head
+against 47 on the worker means the head never loaded and the worker is left over. `free -g`
+on both nodes beats reading either log.
+*2026-08-12 · mistral-small-4-119b-2603-nvfp4-eagle*

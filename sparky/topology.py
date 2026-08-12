@@ -45,6 +45,21 @@ class Engine:
     max_model_len: int
     head_extra_args: tuple[str, ...] = ()
     worker_extra_args: tuple[str, ...] = ()
+    # Weights this engine NEEDS but does not SERVE — today, a speculative-decoding draft
+    # model. `model` drives the served name and the API; the fleet role derives which
+    # weights each node must hold from these two together.
+    #
+    # It exists because a draft is named inside a FLAG
+    # (`--speculative-config {"model":"/models/…-eagle",…}`) and a flag is an opaque
+    # string to everything upstream of the engine. Without this the deploy would leave
+    # the draft in the inbox, never mirror it to the worker, and the engine would die on
+    # a path that is not there — a failure whose cause is nowhere near its symptom.
+    extra_models: tuple[str, ...] = ()
+
+    @property
+    def all_models(self) -> tuple[str, ...]:
+        """Every weight directory this engine needs on a node that runs it."""
+        return (self.model, *self.extra_models)
 
     @property
     def api_node(self) -> str:
@@ -105,6 +120,47 @@ ARCHETYPES: dict[str, str] = {
     "tool-calling":    "carries a verified --tool-call-parser (a guessed name refuses to start)",
     "vision":          "multimodal — the vision gate applies",
 }
+
+# The ONLY suffixes we are allowed to invent — a closed set, and deliberately tiny.
+#
+# A profile's name IS the upstream repo's model name, lowercased. It is NOT composed. The
+# quant appears in most names (`…-nvfp4`, `…-awq`) purely because the VENDOR put it in the
+# repo name — `nvidia/Mistral-Medium-3.5-128B-NVFP4` really is called that. When a vendor
+# ships a quant as its base repo (`mistralai/Mistral-Medium-3.5-128B`, genuinely FP8), the
+# profile is `mistral-medium-3.5-128b`, and adding `-fp8` would invent a name that matches
+# nothing on the Hub — breaking the one property the scheme exists for.
+#
+# That mistake was made on 2026-08-11, by following `docs/profiles.md`, which described the
+# name as a "`<model>-<version>-<quant>` triple" — a rule for CONSTRUCTING names when the
+# enforced rule is to COPY one.
+#
+# WHAT A SUFFIX IS FOR: **a second way of serving the SAME weights** — something a repo
+# name cannot express, because upstream ships one checkpoint and we serve it two ways. That
+# is the whole test, and it admits exactly two kinds:
+#
+#   * TOPOLOGY   — `-single`: TP=1 on one worker instead of TP=2 across both.
+#   * OPTIMIZATION — `-eagle`, `-mtp3`: speculative decoding on, against a bare-name twin
+#     with it off. These exist to be **A/B'd** (ADR-0014): the pair is the experiment, and
+#     collapsing them into one edited profile destroys the control. The retired
+#     `qwen3.6-35b-a3b-nvfp4-mtp3-single` / `…-nvfp4-single` pair is the precedent.
+#
+# The first version of this constant listed only `-single`, which would have refused
+# `-mtp3` — a name the repo had already shipped — and pushed the EAGLE experiment into
+# editing one profile in place. A quant or precision still never qualifies: it is either in
+# the upstream name already or it is not ours to add.
+VARIANT_SUFFIXES: tuple[str, ...] = ("-single", "-eagle", "-mtp3")
+
+
+def name_matches_repo(profile_name: str, hf_repo: str) -> bool:
+    """Is `profile_name` the repo's model name, give or take one topology suffix?
+
+    The enforced half of the naming rule, as a function so the test and any future lint
+    check cannot drift apart the way the three prose copies did.
+    """
+    model = hf_repo.partition("/")[2].lower()
+    if profile_name == model:
+        return True
+    return any(profile_name == model + s for s in VARIANT_SUFFIXES)
 
 
 @dataclass(frozen=True)
@@ -191,6 +247,7 @@ def _engine_from_dict(d: dict) -> Engine:
         max_model_len=int(d["max_model_len"]),
         head_extra_args=tuple(d.get("head_extra_args") or ()),
         worker_extra_args=tuple(d.get("worker_extra_args") or ()),
+        extra_models=tuple(d.get("extra_models") or ()),
     )
 
 

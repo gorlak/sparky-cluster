@@ -1,3 +1,10 @@
+> ⚰️ **RETIRED 2026-08-12** — broken generation paths — `<think>` and images both emit token soup.
+> The **verdict** and its *reconsider-when* live in [`../tombstones.md`](../tombstones.md), which owns them; nothing here restates one.
+>
+> This sheet is kept for the **engineering**: the memory math, the footprints, the
+> quant findings, the workarounds. Its status and "next steps" sections are frozen
+> in place and are **history, not a plan** — read them as what was believed then.
+
 # Step-3.7-Flash on 2× DGX Spark — Status Tracker
 
 **Last updated:** 2026-07-02

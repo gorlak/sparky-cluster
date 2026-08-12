@@ -95,8 +95,13 @@ The mechanical steps are in the README ("Adding models / profiles"); the fan-out
 3. **Profile:** copy the nearest-shape `ansible/profiles/<name>.yml` and edit
    `serving_topology` + `vllm_image`. Confirm its image is in `container_images`.
    Three fields are **required and enforced by `lint`** (all added 2026-08-10):
-   - **the name itself** is the lowercased canonical HF model name, plus an optional
-     `-flavour` suffix for a second way of serving the same weights. `profile_name`,
+   - **the name itself** is the lowercased canonical HF model name, **copied verbatim**,
+     plus at most one suffix from `topology.VARIANT_SUFFIXES` when the same weights are
+     served a second way — topology (`-single`) or optimization (`-eagle`, `-mtp3`). Nothing else may be
+     appended — in particular **never a quant or precision of your own**: a quant appears
+     in a name only when the vendor put it in the repo name. (This line used to say "an
+     optional `-flavour` suffix", which the test has always refused; that mismatch produced
+     a `-fp8` profile on 2026-08-11.) `profile_name`,
      the engine `name` and `served_as` are all that same string — one name everywhere,
      so a scoreboard row, a systemd unit and a Hub page are obviously the same model.
    - **`hf_repo:`** the exact upstream `org/Name`. The org is *not* recoverable from

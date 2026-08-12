@@ -7,6 +7,11 @@
 #    and quant algo before reviving — all three have cost a deploy when assumed.
 #    See ansible/profiles/retired/README.md.
 #
+#    HISTORY. Its fact sheet (docs/models/retired/step-3.5-flash.md) was deleted on 2026-08-12,
+#    when Step-3.7 was retired too and the whole family left the fleet. Read it at
+#    `git show a741c9f:docs/models/retired/step-3.5-flash.md`.
+#
+#
 # Profile: step-3.5-flash-fp8 — Step-3.5-Flash-FP8, big-shared TP=2 across sparky + snoopy.
 # The stable, known-good "step" slot (26.04 default container). Its successor
 # candidate is `step-3.7-nvfp4` (Step-3.7-Flash-NVFP4 on 26.06) — A/B them by

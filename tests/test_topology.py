@@ -35,9 +35,24 @@ def test_empty_profile_has_no_engines():
     assert p.blocked is False
 
 
-def test_blocked_profile_parses_as_parked():
-    # `blocked: true` is the park gesture (ADR-0018): weights kept, not activatable.
-    assert topology.load_profile("step-3.7-flash-nvfp4").blocked is True
+def test_blocked_profile_parses_as_parked(tmp_path):
+    """`blocked: true` is the park gesture (ADR-0018): weights kept, not activatable.
+
+    Bound to the PARSER, not to a parked model. The previous version asserted against
+    `step-3.7-flash-nvfp4` and broke the day that profile unparked (2026-08-11) — which
+    is the failure mode `test_big_shared_tp2` below already documents: a test named after
+    a mechanism, pinned to a model that has no reason to stay still. The allowlist is
+    *meant* to reach zero parked profiles; a test that fails when a defect clears is a
+    test that punishes the good outcome.
+    """
+    p = tmp_path / "parked.yml"
+    p.write_text("profile_name: parked\nblocked: true\nserving_topology: []\n")
+    assert topology.load_profile(p).blocked is True
+    # The default matters as much as the gesture: absent means activatable, so a profile
+    # cannot be parked by a typo in the key.
+    q = tmp_path / "live.yml"
+    q.write_text("profile_name: live\nserving_topology: []\n")
+    assert topology.load_profile(q).blocked is False
 
 
 def test_big_shared_tp2():
@@ -91,9 +106,39 @@ def test_the_hf_repo_is_recorded_and_matches_the_profile_name():
         assert prof.hf_repo, f"{prof.name}: no hf_repo"
         org, _, name = prof.hf_repo.partition("/")
         assert org and name, f"{prof.name}: hf_repo {prof.hf_repo!r} is not org/Name"
-        assert name.lower() == prof.name, (
+        assert topology.name_matches_repo(prof.name, prof.hf_repo), (
             f"{prof.name}: name disagrees with hf_repo {prof.hf_repo!r} "
-            f"(expected profile name {name.lower()!r})")
+            f"(expected {name.lower()!r}, optionally + one of "
+            f"{', '.join(topology.VARIANT_SUFFIXES)})")
+
+
+def test_only_variant_suffixes_may_be_invented():
+    """The name is COPIED from the repo, not composed — and the closed set is why.
+
+    Two bugs met on 2026-08-11. A profile was named `mistral-medium-3.5-128b-fp8` because
+    `docs/profiles.md` called the name a "`<model>-<version>-<quant>` triple", which reads
+    as an instruction to build one; the upstream repo is `mistralai/Mistral-Medium-3.5-128B`
+    and there is no `-fp8` anywhere on the Hub. Meanwhile `docs/updating.md` permitted "an
+    optional `-flavour` suffix" that this very test forbade outright — so the docs allowed
+    what lint rejected, and separately described a rule nothing enforced.
+
+    The exact-equality assertion also quietly forbade `-single`, a documented shape that
+    could return at any time. So: copy the repo name, plus at most one TOPOLOGY suffix.
+    """
+    repo = "mistralai/Mistral-Medium-3.5-128B"
+    assert topology.name_matches_repo("mistral-medium-3.5-128b", repo)
+    assert topology.name_matches_repo("mistral-medium-3.5-128b-single", repo)
+    # Optimization variants too — a spec-decode profile exists to be A/B'd against its
+    # bare-name twin, and the first version of the closed set wrongly refused them.
+    assert topology.name_matches_repo("mistral-medium-3.5-128b-eagle", repo)
+    assert topology.name_matches_repo("mistral-medium-3.5-128b-mtp3", repo)
+    # The actual mistake, and the class it belongs to: a quant/precision we appended.
+    for invented in ("mistral-medium-3.5-128b-fp8", "mistral-medium-3.5-128b-nvfp4",
+                     "mistral-medium-3.5-128b-fast", "mistral-medium-3.5-128b-v2"):
+        assert not topology.name_matches_repo(invented, repo), f"{invented} must be refused"
+    # A vendor-supplied quant IS part of the repo name, so it needs no special case.
+    assert topology.name_matches_repo("mistral-medium-3.5-128b-nvfp4",
+                                      "nvidia/Mistral-Medium-3.5-128B-NVFP4")
 
 
 def test_single_node_profile_runs_on_snoopy():

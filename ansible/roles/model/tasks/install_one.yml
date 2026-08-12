@@ -7,11 +7,22 @@
 # in-flight (or crashed-partial) download is left alone and ingested on a later
 # deploy once complete — instead of `mv`-ing a half-written model into the canonical
 # store (which also breaks the running download). See docs/updating.md.
+#
+# "Is this a model?" is answered by `model_descriptors` (defaults/main.yml), NOT by
+# `config.json` alone — a Mistral-native checkpoint has only `params.json`, and hardcoding
+# the HF name failed a deploy on 2026-08-11 with weights already staged and verified.
 
 - name: Check whether {{ model }} is already installed
   ansible.builtin.stat:
-    path: "{{ vllm_models_dir }}/{{ model }}/config.json"
-  register: model_installed
+    path: "{{ vllm_models_dir }}/{{ model }}/{{ item }}"
+  loop: "{{ model_descriptors }}"
+  register: model_installed_probe
+
+- name: Note whether {{ model }} is installed
+  ansible.builtin.set_fact:
+    model_is_installed: >-
+      {{ model_installed_probe.results
+         | map(attribute='stat.exists') | select | list | length > 0 }}
 
 - name: Check whether {{ model }} is still downloading (has *.incomplete)
   ansible.builtin.find:
@@ -20,7 +31,7 @@
     recurse: true
     hidden: true
   register: model_partial
-  when: not model_installed.stat.exists
+  when: not model_is_installed | bool
 
 - name: Skip {{ model }} — download in progress / partial, not ready to ingest
   ansible.builtin.debug:
@@ -29,26 +40,35 @@
       — a download is in progress or was interrupted. It will be ingested on a later
       deploy once complete.
   when:
-    - not model_installed.stat.exists
+    - not model_is_installed | bool
     - (model_partial.matched | default(0) | int) > 0
 
 - name: Install {{ model }} from staging
   when:
-    - not model_installed.stat.exists
+    - not model_is_installed | bool
     - (model_partial.matched | default(0) | int) == 0
   block:
     - name: Verify staged copy exists ({{ model }})
       ansible.builtin.stat:
-        path: "{{ model_cache_dir }}/{{ model }}/config.json"
-      register: model_staged
+        path: "{{ model_cache_dir }}/{{ model }}/{{ item }}"
+      loop: "{{ model_descriptors }}"
+      register: model_staged_probe
 
     - name: Fail clearly if {{ model }} is neither installed nor staged
       ansible.builtin.fail:
+        # Names what was looked FOR, not just what was missing. The old message said the
+        # weights were "not staged" while 66 GiB of them sat in the inbox, and sent the
+        # operator off to re-download something they already had.
         msg: >-
           {{ model }} is not installed at {{ vllm_models_dir }} and not staged at
-          {{ model_cache_dir }}/{{ model }}. Download the weights into the staging
-          dir first (and ensure they're present on this node).
-      when: not model_staged.stat.exists
+          {{ model_cache_dir }}/{{ model }} — no descriptor
+          ({{ model_descriptors | join(' or ') }}) found in either place.
+          If the weights ARE there, this is a layout the role does not recognise:
+          add its descriptor to `model_descriptors` (roles/model/defaults/main.yml)
+          rather than re-downloading.
+      when: >-
+        {{ model_staged_probe.results
+           | map(attribute='stat.exists') | select | list | length == 0 }}
 
     - name: Move staged weights into place ({{ model }} — instant, same filesystem)
       ansible.builtin.command:
@@ -62,7 +82,14 @@
         group: "{{ vllm_group }}"
         recurse: true
 
+# The engine runs as `vllm`, so a descriptor the deploy can read but the service cannot is
+# a bring-up failure deferred to activation time. Checked against whichever descriptor this
+# checkpoint actually has.
 - name: Confirm the vllm user can read {{ model }} config
-  ansible.builtin.command: >-
-    runuser -u {{ vllm_user }} -- test -r {{ vllm_models_dir }}/{{ model }}/config.json
+  # `>-` folds newlines into spaces, so every separator here must be explicit — a
+  # multi-line `for … do … done` would fold into a syntax error.
+  ansible.builtin.shell:
+    cmd: >-
+      runuser -u {{ vllm_user }} -- sh -c 'for f in {{ model_descriptors | join(" ") }};
+      do [ -r "{{ vllm_models_dir }}/{{ model }}/$f" ] && exit 0; done; exit 1'
   changed_when: false

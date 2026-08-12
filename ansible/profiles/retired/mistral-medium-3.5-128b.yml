@@ -1,0 +1,118 @@
+---
+# ⚰️ RETIRED 2026-08-11 — NOT IN THE ALLOWLIST. Loaders glob profiles/*.yml
+#    non-recursively, so nothing here installs, serves, or keeps weights.
+#
+#    WHY: **dense**. GB10 decode is memory-bandwidth-bound — every token re-reads every
+#    active weight — and a dense model's active set IS its whole weight set. Measured
+#    2026-08-11 on the FP8 build: **3.44 tok/s single-stream, 84% of its theoretical
+#    ceiling**. There is no flag, quant or container that fixes this; the NVFP4 sibling
+#    only reaches ~5.7 tok/s by the same arithmetic. The replacement is
+#    `mistral-small-4-119b-2603-nvfp4` — same vendor, 119B total but ~6B ACTIVE.
+#
+#    Verdict is owned by docs/models/tombstones.md; this file keeps the CONFIG and what
+#    was learned building it, which was a great deal: the Mistral flag TRIO
+#    (`--tokenizer-mode` + `--config-format` + `--load-format mistral`, all three or the
+#    halves disagree), the dual-layout repo, and the DEF-0012 diagnosis. Re-verify
+#    parsers, architecture and quant algo before reviving.
+#    See ansible/profiles/retired/README.md.
+#
+# Mistral-Medium-3.5-128B, OFFICIAL FP8 — TP=2 across both nodes, container 26.07.
+#
+# WHY THIS AND NOT THE NVFP4 SIBLING. `mistral-medium-3.5-128b-nvfp4` (NVIDIA's quant of
+# this same model) has never served — DEF-0012 — and the 2026-08-11 sweep found the reason
+# is structural, not incidental: that repo ships ONLY the HF weight layout
+# (`model.safetensors.index.json`, **no `consolidated.safetensors.index.json`**), so the
+# proven Mistral recipe's `--load-format mistral` has no native index to read and may be
+# unrunnable there no matter what we set. THIS repo — Mistral's own — ships **both**
+# layouts, so the native path is actually available.
+#
+# It is also the better model on this cluster's own terms: official rather than a
+# third-party quant, and **dense 128B**, which is the Tier-1 shape. `Mistral-Small-4` is
+# sparse and lands at ~33 GiB/node, leaving most of the 121 GiB pool idle —
+# [[model-discovery]] is explicit that fitting by leaving hardware idle is under-using it.
+#
+# SIZING — READ THIS BEFORE TRUSTING ANY BYTE COUNT. The repo holds the SAME weights twice:
+# 124.4 GiB of native `consolidated-*` plus 124.4 GiB of HF `model-*`, 248.9 GiB on the
+# Hub for a 124.4 GiB model. Summing `*.safetensors` reports double, and on 2026-08-11 that
+# arithmetic wrongly ruled this model out of a sweep as "too big". `sparky download` now
+# takes one layout (`--layout native|hf|both`, default native). Size from ONE layout, and
+# read precision from `.safetensors.parameters`, never from a repo's tags:
+#   {"F8_E4M3": 121_802_588_160, "BF16": 5_901_622_016}   ← genuinely FP8, dtype-verified
+#
+# ⚠️ THE VISION RISK, AND IT IS THE ONE THING TO WATCH ON FIRST ACTIVATION.
+# The two config halves declare quantization DIFFERENTLY, and only one carries exclusions:
+#   config.json  (HF)     → quant_method fp8, and
+#                           modules_to_not_convert: [model.vision_tower,
+#                                                    model.multi_modal_projector, lm_head]
+#   params.json  (native) → quantization: {qformat_weight: fp8_e4m3, qscheme_act: TENSOR}
+#                           — NO exclusion list at all
+# We are taking the native path, so the exclusion list is the half we do not read. That is
+# **exactly the shape of Step-3.7's failure the same day**: text quality passed while the
+# vision probe returned degenerate garbage, because a vision tower quantized without
+# calibration produces numerically meaningless embeddings feeding a healthy LM.
+#
+# The mitigating evidence: 5.9B params are stored **BF16 on disk** — almost certainly the
+# vision tower, projector and lm_head — so the tensors are already unquantized whichever
+# layout you load. The open question is only whether vLLM's native-config path tries to
+# apply FP8 to them anyway. **The smoke gate's vision probe answers it in one activation.**
+#   * vision passes  → nothing to do.
+#   * vision garbage → re-stage the HF layout (`sparky download <repo> --layout hf`) and
+#     drop `--config-format`/`--load-format`, keeping the HF config that HAS the exclusion
+#     list. That costs 124 GiB, which is why this note exists rather than a guess.
+#
+# MEMORY MATH (gmu 0.75 — big-shared with dev headroom):
+#   weights 124.4 GiB total → ~62.2 GiB/node at TP=2
+#   gmu 0.75 × 121 = 90.75 GiB/node budget − 62.2 weights − ~1 graphs → ~27.5 GiB KV/rank
+#   KV/token = 2 × 88 layers × 8 kv_heads × 128 head_dim = 352 KiB (bf16); at TP=2 the 8 KV
+#     heads split 4/4, so ~176 KiB per rank
+#   → ~27.5 GiB KV holds ~164k tokens/rank. At max_model_len 131072 that is ~1.25 concurrent
+#     full-length sequences — thin, and the first thing to tune. `gmu` has room to rise
+#     (0.85 → ~40 GiB KV/rank) once the load is proven; raise gmu before cutting context.
+#
+# CONTEXT: trained max 262144 via YaRN from an original 4096. 131072 matches the NVFP4
+# sibling's reasoning — half the extended ceiling, already generous, and it keeps a single
+# sequence from consuming the whole KV budget on the most extrapolated part of the curve.
+#
+# NO `--quantization` FLAG. The checkpoint self-declares on both halves; overriding a
+# self-declaring checkpoint double-quantizes into garbage, the standing footgun here.
+
+# ONE NAME. profile == engine == served_as == the lowercased canonical HF model name,
+# copied verbatim. NOT `-fp8`: Mistral ships FP8 as the BASE repo, so the quant is not in
+# the upstream name and appending one would invent a name matching nothing on the Hub. The
+# NVFP4 sibling is distinguishable because NVIDIA put NVFP4 in ITS repo name.
+profile_name: mistral-medium-3.5-128b
+hf_repo: mistralai/Mistral-Medium-3.5-128B
+archetypes: [big-shared, vision]
+
+# Staged and verified 2026-08-11, so the park it was written with is lifted: **21/21
+# native-layout files present and size-exact against the Hub**, 124.5 GiB, no
+# `.incomplete`, `consolidated.safetensors.index.json` present, and the HF `model-*` half
+# correctly absent — `sparky download` took one layout and saved 124.4 GiB.
+# (It was parked while the fetch was in flight because a `deploy` MOVES the inbox copy and
+# mirrors it, so deploying mid-transfer would have replicated a truncated checkpoint.)
+
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
+
+serving_topology:
+  - name: mistral-medium-3.5-128b
+    kind: vllm
+    model: Mistral-Medium-3.5-128B  # dir under /opt/vllm/models
+    served_as: mistral-medium-3.5-128b
+    gpu_memory_utilization: "0.75"
+    max_model_len: 131072
+    head_extra_args:
+      - --enable-chunked-prefill
+      # THE TRIO, on both ranks. Two of three is what left DEF-0012 with a native config
+      # and an HF-named weight loader (`KeyError: language_model.embed_tokens.weight`).
+      # Every rank builds its own VllmConfig, so a head-only flag desynchronises the pair.
+      - --tokenizer-mode mistral
+      - --config-format mistral
+      - --load-format mistral
+      - --reasoning-parser mistral
+      - --enable-auto-tool-choice
+      - --tool-call-parser mistral
+    worker_extra_args:
+      - --enable-chunked-prefill
+      - --tokenizer-mode mistral
+      - --config-format mistral
+      - --load-format mistral

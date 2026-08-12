@@ -207,7 +207,7 @@ skill and run a memory-profiled bring-up before committing a dense profile.
 5. **T5 — state file + control panel + teardown.** Write `current-topology.json`;
    control panel reads it for status and per-engine P3 actions; teardown prunes.
 6. **Then (done differently):** authored a profile *family* instead of a single
-   multi-tenant config — `qwen3-vl-235b-a22b-instruct-nvfp4`, `step-3.7-flash-nvfp4`, `minimax-m2.7-nvfp4`, `qwen3-coder-next-nvfp4`, `qwen3.6-35b-a3b-nvfp4`, `empty` (see
+   multi-tenant config — `qwen3-vl-235b-a22b-instruct-nvfp4`, `mistral-small-4-119b-2603-nvfp4`, `minimax-m2.7-nvfp4`, `qwen3-coder-next-nvfp4`, `qwen3.6-35b-a3b-nvfp4`, `empty` (see
    [`profiles.md`](profiles.md)). The original `multi` (MiniMax TP=2 + Qwen30
    single-node co-resident on snoopy + talkie via Ollama) was attempted, hit a
    rank-asymmetric CUDA-graph KV squeeze under co-residency, and was retired in

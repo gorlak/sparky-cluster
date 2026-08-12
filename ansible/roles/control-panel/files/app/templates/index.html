@@ -3,50 +3,39 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Cluster Control</title>
+  <title>cluster control</title>
+  {# Everything shared with the scoreboard — page width, heading scale, tables, colours —
+     lives in one stylesheet so the two views cannot drift into two designs again. What
+     stays below is only what is particular to THIS page: buttons, dialogs, the run log,
+     status badges and banners. #}
+  <link rel="stylesheet" href="{{ root }}/static/app.css">
   <script src="{{ root }}/static/htmx.min.js"></script>
   <style>
-    :root { color-scheme: light dark; }
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      max-width: 42rem; margin: 4rem auto; padding: 0 1.25rem; line-height: 1.5;
-    }
-    h1 { margin-bottom: 0.25rem; }
-    h2 { margin-top: 2rem; }
-    .sub { opacity: 0.65; margin-top: 0; }
-    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-    th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #8884; }
-    code { padding: 0.1rem 0.3rem; border-radius: 0.3rem; background: #8882; }
-    .ok  { color: #2e7d32; font-weight: 600; }
-    .bad { color: #c62828; font-weight: 600; }
-    .ts  { opacity: 0.5; font-size: 0.85rem; }
-    a { text-decoration: none; font-weight: 600; }
-    .hint { opacity: .65; font-size: .85rem; margin: .2rem 0 .6rem; }
     .actions { display: flex; gap: .6rem; flex-wrap: wrap; margin: .5rem 0 1rem; }
     .btn { font: inherit; padding: .5rem .9rem; border: 1px solid #8886; border-radius: .4rem; background: #8881; cursor: pointer; }
     .btn:hover { background: #8882; }
-    .btn.danger { border-color: #c62828aa; color: #c62828; }
+    .btn.danger { border-color: #c62828aa; color: var(--bad); }
     .btn.danger:hover { background: #c628281a; }
     dialog { border: 1px solid #8886; border-radius: .5rem; max-width: 28rem; padding: 1.2rem; }
     dialog::backdrop { background: #0006; }
     .modal-actions { display: flex; justify-content: flex-end; gap: .5rem; margin: 1rem 0 0; padding: 0; }
     .log { background: #111; color: #ddd; padding: .8rem; border-radius: .4rem; max-height: 24rem; overflow: auto; white-space: pre-wrap; font-size: .8rem; line-height: 1.35; }
     .badge { font-size: .8rem; padding: .1rem .5rem; border-radius: .4rem; vertical-align: middle; font-weight: 600; }
-    .badge.running { background: #0277bd33; color: #0277bd; }
-    .badge.ok { background: #2e7d3233; color: #2e7d32; }
-    .badge.bad { background: #c6282833; color: #c62828; }
-    .loading { color: #ef6c00; font-weight: 600; }
-    .badge.serving { background: #2e7d3233; color: #2e7d32; }
-    .badge.loading, .badge.switching { background: #ef6c0033; color: #ef6c00; }
+    .badge.running { background: #0277bd33; color: var(--info); }
+    .badge.ok { background: #2e7d3233; color: var(--good); }
+    .badge.bad { background: #c6282833; color: var(--bad); }
+    .loading { color: var(--warn); font-weight: 600; }
+    .badge.serving { background: #2e7d3233; color: var(--good); }
+    .badge.loading, .badge.switching { background: #ef6c0033; color: var(--warn); }
     .badge.idle    { background: #8883; color: inherit; }
-    .badge.stalled, .badge.down, .badge.failsafe { background: #c6282833; color: #c62828; }
-    .banner { border: 1px solid #c62828; background: #c6282814; border-radius: .5rem; padding: .8rem 1rem; margin: 0 0 1.2rem; }
-    .banner strong { color: #c62828; }
+    .badge.stalled, .badge.down, .badge.failsafe { background: #c6282833; color: var(--bad); }
+    .banner { border: 1px solid var(--bad); background: #c6282814; border-radius: .5rem; padding: .8rem 1rem; margin: 0 0 1.2rem; }
+    .banner strong { color: var(--bad); }
     .banner p { margin: .4rem 0 .2rem; font-size: .9rem; opacity: .85; }
-    .banner.loading { border-color: #ef6c00; background: #ef6c0014; }
-    .banner.loading strong { color: #ef6c00; }
-    .failsafe-banner { border: 1px solid #c62828; background: #c6282814; border-radius: .5rem; padding: .8rem 1rem; margin: 0 0 1.2rem; }
-    .failsafe-banner strong { color: #c62828; }
+    .banner.loading { border-color: var(--warn); background: #ef6c0014; }
+    .banner.loading strong { color: var(--warn); }
+    .failsafe-banner { border: 1px solid var(--bad); background: #c6282814; border-radius: .5rem; padding: .8rem 1rem; margin: 0 0 1.2rem; }
+    .failsafe-banner strong { color: var(--bad); }
     .failsafe-banner p { margin: .4rem 0 .7rem; font-size: .9rem; opacity: .85; }
     /* One runbook per row: button, then what it costs, then what it is for. A bare name
        is a poor label for something that takes the cluster for an evening. */
@@ -59,7 +48,7 @@
   </style>
 </head>
 <body>
-  <h1>DGX Spark Cluster — Control</h1>
+  <h1>cluster control</h1>
   <p class="sub">Live status and cluster actions.</p>
   {% include "_status.html" %}
   {% if run and run.status == 'running' %}
@@ -69,7 +58,11 @@
   {% endif %}
   {% include "_runbooks.html" %}
   {% include "_fleet.html" %}
-  <p style="margin-top:2rem"><a href="/">← all services</a></p>
+  {# The scoreboard linked back here but nothing linked TO it, so the measurements were
+     reachable only by knowing the URL. Two views of one cluster should each name the
+     other. #}
+  <p class="nav"><a href="{{ root }}/scoreboard">cluster scoreboard →</a>
+    · <a href="/">all services</a></p>
 
   <script>
     // Keep the run log scrolled to the newest output after each poll swap.

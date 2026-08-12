@@ -38,6 +38,69 @@ retirement docs we discussed are not among them" — rather than writing a
 message for work that is not there. A commit message that overstates its own
 diff is worse than a terse one, because it is the record everyone trusts later.
 
+## The user deploys; you take it from there
+
+`deploy` is password-gated, so it is the one step that is **theirs** (ADR-0018). Everything
+either side of it is **yours**, and the handover is where an agent most often stalls.
+
+**"deploying now" / "deploy is going" is a cue to act, not to wait.** When you hear it:
+
+1. **Watch for it to finish — and "finish" means the OPERATOR SAYS SO.** Do not go idle and
+   do not ask "shall I proceed?"; the next step was agreed when the change was written. But
+   do not infer completion from artifacts either.
+
+   > **Never treat a side effect as a completion signal.** On 2026-08-11 a deploy was
+   > declared "landed" because a model directory and an engine env file had appeared. Both
+   > appear **mid-run** — `model` and `vllm` are roles 4 and 6 of 15 — and the deploy was
+   > still going. The activation started on top of it collided with the last role
+   > (`fleet-state`), which failed with *"another activation is in flight — refusing to
+   > interleave."* The reconciler's mutual exclusion contained it and nothing was corrupted,
+   > but the deploy died one task from the end.
+
+   **The reliable signal is POSITIVE evidence from the deploy's LAST role.** `fleet-state`
+   runs last and stamps `deployed_at` into `/opt/cluster/fleet.json`, so a `deployed_at`
+   newer than the change you are waiting on proves the deploy ran *all the way through*
+   after that change:
+
+   ```bash
+   python3 -c "import json;print(json.load(open('/opt/cluster/fleet.json'))['deployed_at'])"
+   ```
+
+   Compare it to the mtime of the profile or group_var you edited. Newer means done; older
+   means still running, or it failed before the end.
+
+   Then confirm the thing you actually care about landed — for a TP=2 flag change, on
+   **both** ranks:
+   ```bash
+   ssh <worker> "grep -o 'VLLM_SERVE_ARGS=.*' /opt/vllm/engines/<engine>.env" | tr ' ' '\n' | grep -c -- --your-flag
+   ```
+
+   Weaker signals, and why: *a file appearing* proves nothing (`model` and `vllm` are roles
+   4 and 6 of 15 — this is the mistake that caused the collision above). *The
+   `ansible-playbook` process being gone* is better but still absence-of-evidence, and it
+   can read as gone in the gap between plays; if you use it, check twice a few seconds
+   apart. **A deploy and an activation must never overlap:** the deploy's `fleet-state`
+   role drives the same reconciler `activate` does, and one of the two will lose.
+2. **Verify the deploy did what it was for** — the profile is activatable, the flags
+   rendered into the engine env file, the weights landed on both nodes. A deploy that
+   half-succeeded is much cheaper to catch here than after an activation.
+3. **Take the next step immediately.** Usually that is `activate <profile>`, then read the
+   startup log and the smoke gate. See [[operations]] for the how.
+4. **Report the outcome**, not the intention.
+
+If a deploy FAILS, diagnose it and fix the cause rather than handing the error back. A
+failure whose fix is in the repo (a role that assumes an HF-layout checkpoint, a flag that
+does not survive the env-file round trip) is ordinary work — do it, then say "re-run".
+
+**Deploys are cheap; do not hoard them.** Batching several ready profiles into one deploy
+is free and good. *Delaying* a change, parking a profile "until the next deploy", or
+writing three paragraphs of justification to avoid a second one all trade a cheap thing for
+an expensive one. Ship the best-supported guess and let the smoke gate be the test.
+
+What stays expensive, and still deserves the care: **activations** — serialize them, one
+variable at a time, and attend the first activation of anything in DEF-0004's
+node-freeze territory — plus model downloads and anything that could take a node down.
+
 ## A bug found mid-feature: stash the feature, fix the bug, pop it back
 
 **When a bug surfaces while a feature is in progress in the worktree: stash the feature,

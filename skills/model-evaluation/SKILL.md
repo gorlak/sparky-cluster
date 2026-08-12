@@ -8,6 +8,42 @@ description: Evaluating models for this cluster — the pre-deployment fit check
 Work through these in order before writing any service files or configs.
 Failures here are cheap. Failures after a full deploy are expensive.
 
+### 0. Will it be fast enough? — the ACTIVE-parameter gate, before anything else
+
+The cheapest possible rejection, and the one this checklist used to lack. GB10 decode is
+memory-bandwidth-bound, so a model's speed is fixed by how many weight bytes a token
+reads. **Two divisions, before you look at anything else:**
+
+```
+active bytes/node ≈ active_params × bytes_per_param ÷ 2        # TP=2
+ceiling tok/s     ≈ 273 GB/s ÷ active bytes/node               # expect 30–85% of it
+```
+
+`bytes_per_param`: FP8 ≈ 1 · NVFP4 ≈ 0.5 · BF16 ≈ 2. **Active params are the `A<n>B` in
+the name** (`Qwen3.6-35B-A3B` → 3B); a name with no `A<n>B` is dense, and **dense means
+active = total**.
+
+Measured 2026-08-11, which is where these numbers come from:
+
+| | active | ceiling | measured | of ceiling |
+|---|---|---|---|---|
+| `mistral-medium-3.5-128b` (dense FP8) | 128B | 4.1 | **3.44** | 84% |
+| `mistral-small-4-119b-2603-nvfp4` (MoE) | ~6.6B | ~165 | **49.0** | 30% |
+| `qwen3.6-35b-a3b-nvfp4` | 3B | ~270 | 100.2 | 37% |
+
+**The two models above differ by 14× in speed and are from the same vendor at the same
+total size.** Nothing else in this checklist would have separated them — the dense one
+passes every other test on this page, loads cleanly, and serves all four smoke columns.
+
+Note the efficiency spread: very sparse MoEs land near **30%** of ceiling (routing and
+attention dominate once weight-reading stops being the bottleneck), while a dense model
+runs near 85% because reading weights is *all* it does. So treat the ceiling as an upper
+bound and assume ~⅓ of it for a sparse MoE.
+
+**Reject at this step if the ceiling is single-digit.** No flag, quant, container or
+`gpu_memory_utilization` can move it; the only fix would be a token needing fewer weights.
+See [`models/tombstones.md`](../../docs/models/tombstones.md) for the dense Mistral entry.
+
 ### 1. Verify actual size first — before downloading if you can
 
 Size the repo straight from the Hub, no download needed (see [[model-discovery]]):

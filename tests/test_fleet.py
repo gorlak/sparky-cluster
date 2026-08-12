@@ -23,7 +23,7 @@ def write(dir_, name, body):
 
 
 def profile_yaml(name, *, model="M", nodes=("sparky", "snoopy"), engine=None,
-                 blocked=False, port=8000, args=()):
+                 blocked=False, port=8000, args=(), worker_args=()):
     engine = engine or name
     return f"""\
         profile_name: {name}
@@ -39,7 +39,7 @@ def profile_yaml(name, *, model="M", nodes=("sparky", "snoopy"), engine=None,
             gpu_memory_utilization: "0.8"
             max_model_len: 32768
             head_extra_args: [{', '.join(json.dumps(a) for a in args)}]
-            worker_extra_args: []
+            worker_extra_args: [{', '.join(json.dumps(a) for a in worker_args)}]
         """
 
 
@@ -145,8 +145,14 @@ def test_a_single_quoted_flag_is_rejected(dir_):
 def test_spaces_and_double_quotes_in_a_flag_are_fine(dir_):
     """Spaces become separate argv words — which is exactly what a `--flag value`
     entry wants — and systemd does no quote processing, so JSON passes through."""
-    write(dir_, "a", profile_yaml("a", args=["--tool-call-parser step3p5",
-                                             '--speculative-config {"method":"mtp"}']))
+    # `--speculative-config` is placed on BOTH ranks: it configures the model, and since
+    # 2026-08-12 lint refuses it head-only (the ranks desync and TP=2 deadlocks).
+    # `--tool-call-parser` stays head-only, which is correct: it belongs to the API server.
+    write(dir_, "a",
+          profile_yaml("a",
+                       args=["--tool-call-parser step3p5",
+                             '--speculative-config {"method":"mtp"}'],
+                       worker_args=['--speculative-config {"method":"mtp"}']))
     load_fleet(dir_).validate()
 
 
@@ -168,7 +174,12 @@ def test_the_real_fleet_is_deployable():
 def test_the_real_allowlist_excludes_parked_profiles():
     fleet = load_fleet()
     parked = [p.name for p in fleet.profiles if p.blocked]
-    assert parked, "expected at least one parked candidate (step-3.7-flash-nvfp4)"
+    # Deliberately does NOT name a model. The parenthetical here used to say
+    # "(step-3.7-flash-nvfp4)", which stopped being true on 2026-08-11 when DEF-0006
+    # cleared and that profile unparked — the assertion still passed, so the message
+    # quietly became a lie about the fleet. Which profiles are parked is exactly the sort
+    # of thing that churns; that at least one exists is the invariant worth asserting.
+    assert parked, "expected at least one parked candidate in the committed profiles"
     for name in parked:
         assert name not in fleet.allowlist
         # …but its weights are still kept, which is the whole point of parking.
@@ -215,3 +226,45 @@ def test_the_real_fleets_images_are_all_managed():
     for p in load_fleet().profiles:
         if p.vllm_image:
             assert p.vllm_image in managed, f"{p.name}: {p.vllm_image}"
+
+
+# --- flags that must reach every rank (2026-08-12) ----------------------------
+
+def test_a_model_flag_on_one_rank_only_is_refused(dir_):
+    """Why this is a lint failure rather than a comment.
+
+    `--speculative-config` was written into `head_extra_args` alone. Every rank builds its
+    own VllmConfig from its own argv, so rank 0 ran EAGLE's extra draft profiling pass and
+    rank 1 did not — the ranks disagreed about how many collectives to run and TP=2
+    deadlocked at startup. Rank 1 blocked ~12 minutes in
+    `_dummy_sampler_run -> tensor_model_parallel_all_gather` then died with
+    `DistBackendError … possible application crash on rank 0`; rank 0 looped
+    `No available shared memory broadcast block found` indefinitely. An hour of stalled
+    cluster, and nothing in either log named the flag.
+
+    It was the THIRD head-only-flag desync in two days (`--tokenizer-mode`, then
+    `--config-format` without `--load-format`, then this), which is what turned a
+    convention that was written in a profile comment into something enforced.
+    """
+    write(dir_, "a", profile_yaml("a", args=['--speculative-config {"method":"eagle"}']))
+    with pytest.raises(FleetError, match="not the worker"):
+        load_fleet(dir_).validate()
+
+
+def test_the_mirrored_desync_is_refused_too(dir_):
+    """Worker-only is the same bug seen from the other side, and just as deadly."""
+    write(dir_, "a", profile_yaml("a", worker_args=["--tokenizer-mode mistral"]))
+    with pytest.raises(FleetError, match="not the head"):
+        load_fleet(dir_).validate()
+
+
+def test_api_surface_flags_stay_head_only():
+    """The converse, and why this is a NAMED LIST rather than 'the two lists must match'.
+
+    `--tool-call-parser`, `--reasoning-parser` and `--enable-auto-tool-choice` belong to
+    the API server, which runs on the head alone. Every serving profile has them head-only;
+    a blanket equality rule would fail all of them.
+    """
+    from sparky import fleet
+    for flag in ("--tool-call-parser", "--reasoning-parser", "--enable-auto-tool-choice"):
+        assert flag not in fleet.BOTH_RANK_FLAGS, f"{flag} is head-only by design"

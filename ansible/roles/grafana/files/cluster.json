@@ -1,445 +1,353 @@
 {
- "annotations": {
-  "list": []
- },
- "editable": true,
- "graphTooltip": 1,
- "schemaVersion": 39,
- "title": "DGX Spark Cluster",
- "tags": [
-  "cluster"
- ],
- "time": {
-  "from": "now-1h",
-  "to": "now"
- },
- "refresh": "10s",
- "templating": {
-  "list": []
- },
- "panels": [
-  {
-   "id": 9,
-   "type": "stat",
-   "title": "Serving",
-   "description": "The activated PROFILE \u2014 the basename of its ansible/profiles/<name>.yml, which is the identity everything else keys on: what `activate` takes, what the trend store labels a measurement with, what a scoreboard row is called. `empty` means nothing is serving, on purpose. Read from the reconciler's current-topology.json; vLLM's own metrics cannot say, because their `model_name` label is the stable alias every engine advertises so chat survives an activation.",
-   "gridPos": {
-    "h": 3,
-    "w": 16,
-    "x": 0,
-    "y": 0
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "fieldConfig": {
-    "defaults": {
-     "color": {
-      "mode": "fixed",
-      "fixedColor": "text"
-     },
-     "mappings": []
-    },
-    "overrides": []
-   },
-   "options": {
-    "reduceOptions": {
-     "calcs": [
-      "lastNotNull"
-     ],
-     "fields": "",
-     "values": false
-    },
-    "textMode": "name",
-    "colorMode": "none",
-    "graphMode": "none",
-    "justifyMode": "center",
-    "wideLayout": true
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "sparky_active_profile",
-     "legendFormat": "{{profile}}",
-     "instant": true
-    }
-   ]
+  "annotations": {
+    "list": []
   },
-  {
-   "id": 10,
-   "type": "stat",
-   "title": "Runbook",
-   "description": "The runbook currently holding the cluster (ADR-0021). While one runs, serving is whatever it is measuring \u2014 so a number on this dashboard belongs to a candidate, not to the promoted model.",
-   "gridPos": {
-    "h": 3,
-    "w": 8,
-    "x": 16,
-    "y": 0
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "fieldConfig": {
-    "defaults": {
-     "color": {
-      "mode": "fixed",
-      "fixedColor": "text"
-     },
-     "mappings": []
-    },
-    "overrides": []
-   },
-   "options": {
-    "reduceOptions": {
-     "calcs": [
-      "lastNotNull"
-     ],
-     "fields": "",
-     "values": false
-    },
-    "textMode": "name",
-    "colorMode": "none",
-    "graphMode": "none",
-    "justifyMode": "center",
-    "wideLayout": true
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "sparky_runbook_running",
-     "legendFormat": "{{runbook}}",
-     "instant": true
-    }
-   ]
+  "editable": true,
+  "graphTooltip": 2,
+  "schemaVersion": 39,
+  "title": "cluster metrics",
+  "tags": [
+    "cluster"
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
   },
-  {
-   "id": 1,
-   "type": "stat",
-   "title": "Output tokens/s",
-   "gridPos": {
-    "h": 4,
-    "w": 8,
-    "x": 0,
-    "y": 3
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "fieldConfig": {
-    "defaults": {
-     "unit": "none",
-     "decimals": 1
-    },
-    "overrides": []
-   },
-   "options": {
-    "reduceOptions": {
-     "calcs": [
-      "lastNotNull"
-     ]
-    },
-    "colorMode": "value"
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "sum by (model_name) (rate(vllm:generation_tokens_total[1m]))",
-     "legendFormat": "{{model_name}}"
-    }
-   ]
+  "refresh": "10s",
+  "templating": {
+    "list": []
   },
-  {
-   "id": 2,
-   "type": "stat",
-   "title": "Requests running / waiting",
-   "gridPos": {
-    "h": 4,
-    "w": 8,
-    "x": 8,
-    "y": 3
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "options": {
-    "reduceOptions": {
-     "calcs": [
-      "lastNotNull"
-     ]
-    },
-    "colorMode": "value"
-   },
-   "targets": [
+  "panels": [
     {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "sum by (model_name) (vllm:num_requests_running)",
-     "legendFormat": "{{model_name}} running"
+      "id": 9,
+      "type": "stat",
+      "title": "Serving",
+      "description": "The activated PROFILE \u2014 the basename of its ansible/profiles/<name>.yml, which is the identity everything else keys on: what `activate` takes, what the trend store labels a measurement with, what a scoreboard row is called. `empty` means nothing is serving, on purpose. Read from the reconciler's current-topology.json; vLLM's own metrics cannot say, because their `model_name` label is the stable alias every engine advertises so chat survives an activation.",
+      "gridPos": {
+        "h": 3,
+        "w": 16,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sparky_active_profile",
+          "legendFormat": "{{profile}}",
+          "instant": true
+        }
+      ]
     },
     {
-     "refId": "B",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "sum by (model_name) (vllm:num_requests_waiting)",
-     "legendFormat": "{{model_name}} waiting"
+      "id": 10,
+      "type": "stat",
+      "title": "Runbook",
+      "description": "The runbook currently holding the cluster (ADR-0021). While one runs, serving is whatever it is measuring \u2014 so a number on this dashboard belongs to a candidate, not to the promoted model.",
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sparky_runbook_running",
+          "legendFormat": "{{runbook}}",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Token throughput",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 3
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (model_name) (rate(vllm:generation_tokens_total[1m]))",
+          "legendFormat": "{{model_name}} out"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (model_name) (rate(vllm:prompt_tokens_total[1m]))",
+          "legendFormat": "{{model_name}} in"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "TTFT p99 (s)",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(vllm:time_to_first_token_seconds_bucket[5m])))",
+          "legendFormat": "{{model_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "GPU utilization (%)",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "nvidia_smi_utilization_gpu_ratio * 100",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "GPU temp (\u00b0C) / power (W)",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "nvidia_smi_temperature_gpu",
+          "legendFormat": "{{instance}} temp"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "nvidia_smi_power_draw_watts",
+          "legendFormat": "{{instance}} power"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Node memory used (%)",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+          "legendFormat": "{{instance}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Node CPU utilization (%)",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[2m])) * 100)",
+          "legendFormat": "{{instance}}"
+        }
+      ]
     }
-   ]
-  },
-  {
-   "id": 3,
-   "type": "stat",
-   "title": "TTFT p99 (s)",
-   "gridPos": {
-    "h": 4,
-    "w": 8,
-    "x": 16,
-    "y": 3
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "fieldConfig": {
-    "defaults": {
-     "unit": "s",
-     "decimals": 2
-    },
-    "overrides": []
-   },
-   "options": {
-    "reduceOptions": {
-     "calcs": [
-      "lastNotNull"
-     ]
-    },
-    "colorMode": "value"
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(vllm:time_to_first_token_seconds_bucket[5m])))",
-     "legendFormat": "{{model_name}}"
-    }
-   ]
-  },
-  {
-   "id": 4,
-   "type": "timeseries",
-   "title": "Token throughput",
-   "gridPos": {
-    "h": 7,
-    "w": 24,
-    "x": 0,
-    "y": 7
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "fieldConfig": {
-    "defaults": {
-     "unit": "none",
-     "custom": {
-      "drawStyle": "line",
-      "fillOpacity": 10
-     }
-    },
-    "overrides": []
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "sum by (model_name) (rate(vllm:generation_tokens_total[1m]))",
-     "legendFormat": "{{model_name}} out"
-    },
-    {
-     "refId": "B",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "sum by (model_name) (rate(vllm:prompt_tokens_total[1m]))",
-     "legendFormat": "{{model_name}} in"
-    }
-   ]
-  },
-  {
-   "id": 5,
-   "type": "timeseries",
-   "title": "GPU utilization (%)",
-   "gridPos": {
-    "h": 7,
-    "w": 24,
-    "x": 0,
-    "y": 14
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "fieldConfig": {
-    "defaults": {
-     "unit": "percent",
-     "min": 0,
-     "max": 100,
-     "custom": {
-      "drawStyle": "line",
-      "fillOpacity": 10
-     }
-    },
-    "overrides": []
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "nvidia_smi_utilization_gpu_ratio * 100",
-     "legendFormat": "{{instance}}"
-    }
-   ]
-  },
-  {
-   "id": 6,
-   "type": "timeseries",
-   "title": "GPU temp (\u00b0C) / power (W)",
-   "gridPos": {
-    "h": 7,
-    "w": 24,
-    "x": 0,
-    "y": 21
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "nvidia_smi_temperature_gpu",
-     "legendFormat": "{{instance}} temp"
-    },
-    {
-     "refId": "B",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "nvidia_smi_power_draw_watts",
-     "legendFormat": "{{instance}} power"
-    }
-   ]
-  },
-  {
-   "id": 8,
-   "type": "timeseries",
-   "title": "Node CPU utilization (%)",
-   "gridPos": {
-    "h": 7,
-    "w": 24,
-    "x": 0,
-    "y": 28
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "fieldConfig": {
-    "defaults": {
-     "unit": "percent",
-     "min": 0,
-     "max": 100,
-     "custom": {
-      "drawStyle": "line",
-      "fillOpacity": 10
-     }
-    },
-    "overrides": []
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[2m])) * 100)",
-     "legendFormat": "{{instance}}"
-    }
-   ]
-  },
-  {
-   "id": 7,
-   "type": "timeseries",
-   "title": "Node memory used (%)",
-   "gridPos": {
-    "h": 7,
-    "w": 24,
-    "x": 0,
-    "y": 35
-   },
-   "datasource": {
-    "type": "prometheus",
-    "uid": "prometheus"
-   },
-   "fieldConfig": {
-    "defaults": {
-     "unit": "percent",
-     "min": 0,
-     "max": 100,
-     "custom": {
-      "drawStyle": "line",
-      "fillOpacity": 10
-     }
-    },
-    "overrides": []
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "prometheus",
-      "uid": "prometheus"
-     },
-     "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
-     "legendFormat": "{{instance}}"
-    }
-   ]
-  }
- ]
+  ]
 }

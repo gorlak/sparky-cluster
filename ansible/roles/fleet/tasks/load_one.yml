@@ -32,6 +32,9 @@
     _engine_defaults:
       nodes: "{{ groups['head'] + (groups['worker'] | default([])) }}"
       port: 8000
+      # Always present, so every consumer can map over it without a filter default.
+      # Weights the engine needs but does not serve — a spec-decode draft, today.
+      extra_models: []
       tensor_parallel_size: "{{ (groups['head'] + (groups['worker'] | default([]))) | length }}"
 
 - name: Register {{ profile_path | basename }} in the fleet
@@ -53,5 +56,7 @@
       blocked: "{{ _p.blocked | default(false) | bool }}"
       image: "{{ _image }}"
       engines: "{{ _vllm | map(attribute='name') | list }}"
-      models: "{{ _vllm | map(attribute='model') | unique | sort | list }}"
+      models: >-
+        {{ (_vllm | map(attribute='model') | list
+            + _vllm | map(attribute='extra_models') | flatten) | unique | sort | list }}
       nodes: "{{ _vllm | map(attribute='nodes') | flatten | unique | sort | list }}"

@@ -76,9 +76,38 @@ def write_request(profile: str, profile_path: Path = DESIRED_PROFILE) -> None:
     it. A rename would hand ownership to whoever activated last and lock the others
     out. Atomicity buys nothing here — a torn read is not a valid profile name, and
     the reconciler treats anything it can't parse as `empty`.
+
+    **NO `O_CREAT` ON THE EXISTING FILE, and this is load-bearing.** `open(path, "w")`
+    — the obvious spelling, and what this function used until 2026-08-11 — passes
+    `O_CREAT|O_TRUNC|O_WRONLY`, and the kernel refuses that combination here with
+    `EACCES`:
+
+      * `/opt/cluster` is **sticky** (`drwxrwsr-t`), deliberately — ADR-0018 keeps the
+        measurement artifacts `activate`-writable without letting one identity replace
+        another's files;
+      * `desired-profile` is owned by **`activator`**, not by the caller;
+      * this host runs **`fs.protected_regular = 2`**, which blocks `O_CREAT` opens of
+        an existing regular file in a sticky directory when the opener owns neither the
+        file nor the directory.
+
+    All three are correct on their own, and together they made `activate` unusable for
+    every member of the group except `activator` itself — the panel kept working while
+    geoff and the agent could not activate at all. The `W_OK` bit lies here:
+    `os.access()` and `ls -l` both report the file writable, because it *is* — just not
+    via `O_CREAT`. Drop the flag and the same write succeeds.
+
+    `O_CREAT` is still used for the genuinely-absent case (a cluster deployed before the
+    file existed), where creating a new file in the directory is permitted.
     """
-    with open(profile_path, "w") as handle:
-        handle.write(profile + "\n")
+    payload = (profile + "\n").encode()
+    try:
+        fd = os.open(profile_path, os.O_WRONLY | os.O_TRUNC)
+    except FileNotFoundError:
+        fd = os.open(profile_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o664)
+    try:
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
 
 
 def group_diagnosis(group: str = ACTIVATE_GROUP) -> str:
@@ -98,8 +127,34 @@ def group_diagnosis(group: str = ACTIVATE_GROUP) -> str:
     user = getpass.getuser()
     in_session = gid in os.getgroups()
     if in_session:
-        return (f"you ARE in '{group}' and the file is group-writable, so this is not a "
-                f"group problem — check: ls -l {DESIRED_PROFILE}")
+        # The old text here said "this is not a group problem — check: ls -l", which is
+        # true and useless: `ls -l` shows `rw` for the group you are in, so it sends you
+        # looking for a permission bug that is not in the permission bits. Name the
+        # actual mechanism instead — it cost an afternoon on 2026-08-11.
+        protected = "?"
+        try:
+            protected = Path("/proc/sys/fs/protected_regular").read_text().strip()
+        except OSError:
+            pass
+        sticky = ""
+        try:
+            sticky = " (sticky)" if os.stat(DESIRED_PROFILE.parent).st_mode & 0o1000 else ""
+        except OSError:
+            pass
+        owner = ""
+        try:
+            owner = f", owned by uid {os.stat(DESIRED_PROFILE).st_uid}"
+        except OSError:
+            pass
+        return (f"you ARE in '{group}' and the file is group-writable, so the permission "
+                f"BITS are fine — which is exactly what makes this confusing.\n"
+                f"  Most likely `fs.protected_regular` (= {protected} here): the kernel "
+                f"refuses an O_CREAT open of an existing file in a sticky directory when "
+                f"you own neither. {DESIRED_PROFILE.parent}{sticky}{owner}.\n"
+                f"  Writing WITHOUT O_CREAT succeeds — `sparky` does that since "
+                f"2026-08-11, so a failure here means something else changed:\n"
+                f"    ls -l {DESIRED_PROFILE}\n"
+                f"    sysctl fs.protected_regular")
     if user in members:
         return (f"you are a member of '{group}' but THIS SESSION predates it — group "
                 f"membership is granted at login. Fix it in one of two ways:\n"
@@ -250,4 +305,23 @@ def bring_up(profile: str, *, force: bool = False, wait: bool = True,
     if _smoke(None, str(SMOKE_REPORT)) != 0:
         raise NotLive(f"{profile} came up but FAILED the smoke gate — it answers, but not "
                       f"the shapes callers send. See {SMOKE_REPORT}")
+
+    # THE GATE PROVED SOMETHING IS HEALTHY. This proves it is the thing we ASKED FOR.
+    #
+    # Every step above is about the profile as a request; the smoke gate reads the LIVE
+    # topology and probes whatever is actually serving. Nothing compared the two, so a
+    # concurrent activation — or any race that changes the selection between the request
+    # and the gate — produced a confident false success: on 2026-08-12 an `-eagle`
+    # activation printed `…-eagle: live and gated` while the smoke table beside it named
+    # the CONTROL engine, because the control had been activated underneath it. The
+    # cluster was correct; only the report lied, which is the worse failure of the two —
+    # a wrong engine that says so is a bug, a wrong engine that says "gated" is a trap.
+    live = live_profile()
+    if live != profile:
+        raise NotLive(
+            f"{profile} was requested, but {live!r} is what is serving — the smoke gate "
+            f"passed against the WRONG profile. Another activation almost certainly ran "
+            f"underneath this one (a concurrent `activate`, or a deploy's `fleet-state` "
+            f"role). Nothing is broken; this refuses to report success for a profile that "
+            f"is not live. Re-run the activation once the other one has finished.")
     emit(f"{profile}: live and gated")

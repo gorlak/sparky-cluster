@@ -13,6 +13,7 @@ one does.
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import os
 import signal
@@ -87,8 +88,16 @@ def test_a_blocked_download_still_dies_on_sigint(tmp_path):
         d = importlib.util.module_from_spec(spec)
         sys.modules["d"] = d
         spec.loader.exec_module(d)
-        d.snapshot_download = lambda **kw: time.sleep(600)   # never returns, like a 156 GiB fetch
-        print("READY", flush=True)
+        # READY is printed from INSIDE the stub, which `download()` only reaches after it
+        # has installed both signal handlers — so "READY" now PROVES the handlers are
+        # armed. Printing it before `download()` (as this did until 2026-08-12) is a race:
+        # the signal can arrive while the default disposition is still in place, and the
+        # process dies with -15 instead of the handler's 130. Microseconds when the box is
+        # idle; wide enough to fail during a live vLLM compile.
+        def _blocked(**kw):
+            print("READY", flush=True)
+            time.sleep(600)          # never returns, like a 156 GiB fetch
+        d.snapshot_download = _blocked
         d.download("fake/repo", {str(tmp_path)!r})
     """))
     proc = subprocess.Popen([sys.executable, str(harness)], stdout=subprocess.PIPE,
@@ -117,8 +126,12 @@ def test_sigterm_kills_it_too(tmp_path):
         d = importlib.util.module_from_spec(spec)
         sys.modules["d"] = d
         spec.loader.exec_module(d)
-        d.snapshot_download = lambda **kw: time.sleep(600)
-        print("READY", flush=True)
+        # Printed from inside the stub — see the SIGINT test above: READY must mean "the
+        # handlers are installed", not "the process started".
+        def _blocked(**kw):
+            print("READY", flush=True)
+            time.sleep(600)
+        d.snapshot_download = _blocked
         d.download("fake/repo", {str(tmp_path)!r})
     """))
     proc = subprocess.Popen([sys.executable, str(harness)], stdout=subprocess.PIPE,
@@ -175,6 +188,17 @@ def test_snapshot_download_is_left_at_its_own_defaults(tmp_path):
     assert set(seen) == {"repo_id", "local_dir"}, f"unexpected kwargs: {sorted(seen)}"
 
 
+def test_ignore_patterns_are_passed_only_when_there_is_something_to_skip(tmp_path):
+    """The other half of the guard above. A dual-layout repo MUST filter, and a
+    single-layout one must not pass the kwarg at all — `ignore_patterns=None` would be a
+    no-op that still widens the measured call surface for every download we do."""
+    module = _module()
+    seen = {}
+    module.snapshot_download = lambda **kw: seen.update(kw) or str(tmp_path)
+    assert module.download("fake/repo", tmp_path, module.HF_IGNORE) is True
+    assert seen.get("ignore_patterns") == list(module.HF_IGNORE)
+
+
 # --- accepting what the browser gives you ------------------------------------
 
 def test_a_pasted_hub_url_becomes_a_repo_id():
@@ -227,3 +251,73 @@ def test_something_that_is_not_a_repo_id_is_refused():
         except ValueError:
             continue
         raise AssertionError(f"accepted: {bad!r}")
+
+
+# --- dual-layout repos (2026-08-11) -----------------------------------------
+#
+# Mistral publishes the same weights twice in one repo — a native `consolidated-*` set and
+# an HF `model-*` set. Fetching both doubles the transfer for nothing, and summing all the
+# `*.safetensors` reports twice the real footprint: on 2026-08-11 that arithmetic ruled
+# three candidates out of a sourcing sweep as "too big" when every one of them fit.
+
+MISTRAL_DUAL = [                     # mistralai/Mistral-Medium-3.5-128B
+    "config.json", "params.json", "tekken.json", "tokenizer.json",
+    "consolidated.safetensors.index.json", "consolidated-00001-of-00013.safetensors",
+    "model.safetensors.index.json", "model-00001-of-00051.safetensors",
+]
+NATIVE_ONLY = [                      # mistralai/Mistral-Small-4-119B-2603-NVFP4
+    "params.json", "tekken.json",
+    "consolidated.safetensors.index.json", "consolidated-00001-of-00013.safetensors",
+]
+HF_ONLY = [                          # nvidia/Mistral-Medium-3.5-128B-NVFP4
+    "config.json", "hf_quant_config.json", "params.json", "tekken.json",
+    "model.safetensors.index.json", "model-00001-of-00044.safetensors",
+]
+
+
+def test_a_dual_layout_repo_takes_the_native_set_by_default():
+    """vLLM refuses an HF tokenizer for Mistral architectures, so these models are on the
+    native path regardless — the HF set is the one we would never load."""
+    module = _module()
+    chosen, ignore = module.choose_layout(MISTRAL_DUAL)
+    assert chosen == "native"
+    assert any(fnmatch.fnmatch("model-00001-of-00051.safetensors", p) for p in ignore)
+    assert any(fnmatch.fnmatch("model.safetensors.index.json", p) for p in ignore)
+    assert not any(fnmatch.fnmatch("consolidated-00001-of-00013.safetensors", p)
+                   for p in ignore), "never skip the set we are keeping"
+
+
+def test_layout_hf_skips_the_native_set_instead():
+    module = _module()
+    chosen, ignore = module.choose_layout(MISTRAL_DUAL, prefer="hf")
+    assert chosen == "hf"
+    assert any(fnmatch.fnmatch("consolidated-00001-of-00013.safetensors", p) for p in ignore)
+    assert not any(fnmatch.fnmatch("model-00001-of-00051.safetensors", p) for p in ignore)
+
+
+def test_layout_both_skips_nothing():
+    module = _module()
+    assert module.choose_layout(MISTRAL_DUAL, prefer="both") == ("both", ())
+
+
+def test_a_single_layout_repo_never_has_its_only_weights_skipped():
+    """THE failure this must never cause. Filtering the only weight set would download a
+    config-shaped directory that fails at load time, long after the transfer is gone —
+    and `nvidia/…-NVFP4` (HF-only) still carries `params.json` and `tekken.json`, so a
+    naive 'is this a Mistral?' test would wrongly call it dual-layout."""
+    module = _module()
+    for filenames, expected in ((NATIVE_ONLY, "native"), (HF_ONLY, "hf")):
+        chosen, ignore = module.choose_layout(filenames)
+        assert chosen == expected
+        assert ignore == (), f"{expected}-only repo must skip nothing"
+        for prefer in ("native", "hf", "both"):
+            assert module.choose_layout(filenames, prefer=prefer)[1] == () or prefer == "both"
+
+
+def test_config_files_alone_do_not_make_a_repo_dual_layout():
+    """`config.json` and `params.json` coexist innocently in most Mistral repos. It is two
+    full sets of TENSORS that make it dual, and judging on config would skip real weights."""
+    module = _module()
+    chosen, ignore = module.choose_layout(
+        ["config.json", "params.json", "tekken.json", "model-00001-of-00044.safetensors"])
+    assert (chosen, ignore) == ("hf", ())

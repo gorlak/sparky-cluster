@@ -10,29 +10,25 @@
 
    No CDN, no framework, no fonts — the page must render on a LAN with no egress. #}
 <!doctype html>
-<title>fleet scoreboard</title>
+<title>cluster scoreboard</title>
+{# Page width, heading scale, table chrome and colours are shared with the control panel
+   (static/app.css) so the two views read as one product. What stays below is only what
+   this page needs: numeric alignment, best-marking, the A/B deltas and the bars. #}
+<link rel="stylesheet" href="{{ root }}/static/app.css">
 <style>
-  :root { color-scheme: light dark; --good:#16a34a; --bad:#ef4444; --line:rgba(128,128,128,.25); }
-  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 66rem; padding: 0 1rem; }
-  h1 { font-size: 1.3rem; margin-bottom: .2rem; }
-  h2 { font-size: 1rem; margin: 2.5rem 0 .3rem; }
-  .sub { opacity: .65; font-size: .85rem; margin-bottom: 1.5rem; }
-  .hint { opacity: .65; font-size: .85rem; margin: 0 0 .8rem; }
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-  th, td { padding: .45rem .6rem; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  /* Numbers right, names left — the one table convention the panel does not share,
+     because the panel's tables are names and states rather than magnitudes. */
+  th, td { text-align: right; white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; font-family: ui-monospace, monospace; }
-  th { font-weight: 600; font-size: .8rem; opacity: .7; text-transform: lowercase; }
+  td:first-child { white-space: normal; }
   .best { font-weight: 700; color: var(--good); }
   .flag { opacity: .6; font-size: .8rem; }
-  .missing { opacity: .35; }
   .model { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
   .model:hover { color: #2563eb; border-bottom-style: solid; }
   .repo { display: block; font-size: .78rem; opacity: .55;
           font-family: ui-monospace, monospace; }
   .retired { font-size: .7rem; border: 1px solid currentColor; border-radius: 3px;
              padding: 0 .25rem; margin-left: .3rem; vertical-align: .1em; }
-  td:first-child { white-space: normal; }
   figure { margin: 1rem 0 0; }
   figcaption { opacity: .65; font-size: .85rem; margin-top: .5rem; }
   .note { margin-top: 1.5rem; padding: .75rem 1rem; border-left: 3px solid #f59e0b;
@@ -44,11 +40,11 @@
   .bar { height: .75rem; border-radius: 2px; background: currentColor; opacity: .8; display: block; }
   .barcell { width: 45%; }
 </style>
-<h1>fleet scoreboard</h1>
-<div class="sub">
+<h1>cluster scoreboard</h1>
+<p class="sub">
   {{ data.rows | length }} models · generated {{ data.generated }}
-  · <a href="/admin">control panel</a>
-</div>
+  · <a href="{{ root }}/">cluster control</a>
+</p>
 
 <div class="scroll">
 <table>

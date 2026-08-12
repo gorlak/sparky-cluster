@@ -110,11 +110,27 @@ def test_covers_allowlist_catches_a_profile_the_runbook_forgot():
     assert problems and "omits" in problems[0]
 
 
-def test_covers_allowlist_catches_a_profile_that_cannot_be_activated():
+def test_covers_allowlist_catches_a_profile_that_cannot_be_activated(monkeypatch):
     """A parked (`blocked: true`) profile keeps its weights precisely so it cannot be
-    activated. Listing one would quarantine on the first job every single run."""
+    activated. Listing one would quarantine on the first job every single run.
+
+    The allowlist is SYNTHETIC here. The previous version named the real
+    `step-3.7-flash-nvfp4`, and unparking it on 2026-08-11 turned this test green-for-the-
+    wrong-reason territory — it stopped exercising the parked branch at all. Worse, there
+    may now be no parked profile to borrow: the fleet's goal is zero. So the fixture
+    supplies one.
+    """
+    from sparky import topology
+
+    live = topology.load_profile("qwen3.6-35b-a3b-nvfp4")
+    # `is_empty` is derived from `engines`, and an empty profile is excluded before
+    # `blocked` is ever consulted — so the stand-in needs an engine to reach the branch
+    # under test.
+    parked = topology.Profile(name="parked-model", engines=live.engines, blocked=True)
+    monkeypatch.setattr(topology, "all_profiles", lambda *a, **k: [live, parked])
+
     spec = {"covers": "allowlist", "defaults": {"regiments": ["tools"]},
-            "jobs": [{"profile": "step-3.7-flash-nvfp4"}]}
+            "jobs": [{"profile": live.name}, {"profile": "parked-model"}]}
     problems = runbook.validate("all", spec)
     assert problems and "not activatable" in " ".join(problems)
 

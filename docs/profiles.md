@@ -10,8 +10,24 @@ the whole fleet to it, and `./sparky.sh activate <name>` then picks which one se
 Adding a profile and *running* it are separate acts at separate privilege levels: the
 first is a password-gated deploy, the second needs no root at all.
 
-**Naming.** Profile names are the `<model>-<version>-<quant>` triple
-(e.g. `qwen3-coder-next-nvfp4`, `minimax-m2.7-nvfp4`). A **bare name is the TP=2
+**Naming — the name is COPIED, never composed.** A profile's name is the upstream repo's
+model name, **lowercased, verbatim**: `nvidia/Mistral-Medium-3.5-128B-NVFP4` →
+`mistral-medium-3.5-128b-nvfp4`. Most names carry a quant because the *vendor* put it in
+the repo name, not because we append one — so when a vendor ships a quant as its base repo
+(`mistralai/Mistral-Medium-3.5-128B` is genuinely FP8) the profile is
+`mistral-medium-3.5-128b`, and `-fp8` would be a name that matches nothing on the Hub.
+
+> This used to read "profile names are the `<model>-<version>-<quant>` triple", which
+> describes *building* a name and produced exactly that mistake on 2026-08-11. The rule is
+> enforced by `topology.name_matches_repo` and `tests/test_topology.py`; if this prose and
+> that function ever disagree again, **the function is right**.
+
+The only suffixes we may invent are the closed set `topology.VARIANT_SUFFIXES`, and the
+test for membership is **a second way of serving the SAME weights** — something a repo name
+cannot express. Two kinds qualify: **topology** (`-single`, TP=1 instead of TP=2) and
+**optimization** (`-eagle`, `-mtp3`, speculative decoding on against a bare-name twin with
+it off). The optimization pair exists to be A/B'd (ADR-0014) — editing one profile in place
+destroys the control. A **bare name is the TP=2
 big-shared shape**, which since 2026-08-10 is every serving profile. A `-single`
 suffix marks the snoopy-only TP=1 shape; none remain live, and the retired ones are
 in [`../ansible/profiles/retired/`](../ansible/profiles/retired/). (`-dual` — one
@@ -38,11 +54,10 @@ we are choosing not to offer, and on this fleet it is enormous.
 | [`qwen3-vl-235b-a22b-instruct-nvfp4`](#qwen3-vl-235b-a22b-instruct-nvfp4) | Qwen3-VL-235B-A22B | 23.8 tok/s | 131k / 534k | **75.0%** MMLU-Pro subset — the accuracy leader. Vision + tools verified |
 | [`nvidia-nemotron-3-super-120b-a12b-nvfp4`](#nvidia-nemotron-3-super-120b-a12b-nvfp4) | Nemotron-3-Super-120B-A12B | *unmeasured* | 262k / ~31M est | new 2026-08-10; Puzzle's uncompressed upstream |
 | [`nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4`](#nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4) | Nemotron-3-Puzzle-75B-A9B | 32.0 tok/s | 131k / **35.2M** | the long-context model — hybrid Mamba, 8 of 88 layers attention |
-| [`qwen3.6-35b-a3b-nvfp4`](#qwen36-35b-nvfp4) | Qwen3.6-35B-A3B | **100.2 tok/s** | 262k / 16.3M | the fast generalist; TPOT 9.6 ms |
+| [`qwen3.6-35b-a3b-nvfp4`](#qwen36-35b-nvfp4) | Qwen3.6-35B-A3B | **100.2 tok/s** | 262k / 16.3M | the fast generalist; TPOT 9.6 ms. **Also a VL** — passes the vision gate, which the tables did not say until 2026-08-12 |
 | [`qwen3-coder-next-nvfp4`](#qwen3-coder-next-nvfp4) | Qwen3-Coder-Next | 54.0 tok/s | 262k / 5.98M | coding; also the DEF-0003 exercise (no spec-decode masking it) |
 | [`minimax-m2.7-nvfp4`](#minimax-m27-nvfp4) | MiniMax-M2.7 | 24.9 tok/s | 131k / 449k | best raw throughput (148.9 tok/s @16); reasons past the eval cap on 32% of items |
-| [`mistral-medium-3.5-128b-nvfp4`](#mistral-medium-35-nvfp4) | Mistral-Medium-3.5-128B | *unmeasured* | 131k / — | the European option; `MIXED_PRECISION`, `--tokenizer-mode mistral` |
-| [`step-3.7-flash-nvfp4`](#step-37-nvfp4) | Step-3.7-Flash-NVFP4 | — | — | ⛔ **PARKED** — DEF-0006, re-probed on 26.07 and still missing |
+| [`mistral-small-4-119b-2603-nvfp4`](#mistral-small-4-119b-2603-nvfp4) | Mistral-Small-4-119B | **49.0 tok/s** | 65k / 51.3 GiB (36.5× conc.) | the European option; 119B total but **~6.6B active** (128 experts, 4+1) + MLA — the shape this hardware wants |
 | [`empty`](#empty) | — | — | — | nothing serving; the fail-safe target |
 
 **Every profile is TP=2 across both nodes.** That is not a coincidence and not a policy —
@@ -81,7 +96,8 @@ argument for a single-node profile, and no current model makes it.
 - **Why:** the uncompressed upstream of Puzzle (120B/A12B vs 75B/A9B) in the same NemotronH
   hybrid family, so it should inherit the enormous cache for ~25 GiB more disk.
 - ⚠️ **`MIXED_PRECISION` despite the `-NVFP4` name**, and it declares an FP8 KV cache.
-  Never pass `--quantization`. Same shape as `mistral-medium-3.5-128b-nvfp4`.
+  Never pass `--quantization`. Same `MIXED_PRECISION`-behind-an-NVFP4-name shape as the
+  retired `mistral-medium-3.5-128b-nvfp4`.
 
 ### nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
 - **Model:** `NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4` (~50 GiB); 26.07.
@@ -121,7 +137,38 @@ argument for a single-node profile, and no current model makes it.
 - ⚠️ Two traps, both paid for: the checkpoint is **`MIXED_PRECISION`**, not NVFP4 as the
   repo name says, and it needs **`--tokenizer-mode mistral`** on *both* ranks or it refuses
   to start with `must be an instance of MistralTokenizer`.
-- **Open:** DEF-0012 — `--limit-mm-per-prompt` does not skip multimodal profiling.
+- ⚠️ **ON TRIAL — DEF-0012, unparked 2026-08-11 and never yet served.** The checkpoint
+  ships BOTH HF and Mistral-native artifacts and they disagree, so HF's `PixtralProcessor`
+  counts one image in the prompt text and zero in the ids. `--limit-mm-per-prompt` does
+  **not** help — vLLM profiles multimodal regardless of the limit — and that WAR is gone.
+  The candidate under test is **`--config-format mistral` on both ranks**, putting the
+  config half on the native path the tokenizer half was already forced onto.
+- **Read the startup log for the quant path.** `params.json` carries no
+  `quantization_config`, so if `--config-format mistral` loses the MIXED_PRECISION layer
+  map the model loads unquantized or refuses. If it fails, the verdict is about **sourcing
+  this checkpoint**, not about the model: the fallback is an official Mistral-native FP8
+  or a pure-HF NVFP4 build.
+
+
+### mistral-small-4-119b-2603-nvfp4
+- **Model:** `Mistral-Small-4-119B-2603-NVFP4` (65.9 GiB, ~33 GiB/node at TP=2); 26.07.
+  **Never served.** Staged and verified 2026-08-11 — 23/23 files size-exact against the Hub.
+- **Why it is here:** the European slot, sourced properly after DEF-0012. It is the only
+  Mistral candidate whose *packaging* cannot reproduce that failure — **pure Mistral-native**
+  (`params.json` + `tekken.json` + `consolidated.safetensors.index.json`, no HF artifacts at
+  all), with the quant config **inside `params.json`**, so `--config-format mistral` cannot
+  discard it the way it did on the NVFP4 sibling.
+- **The flags travel as a trio** — `--tokenizer-mode` + `--config-format` + `--load-format`,
+  all `mistral`, on both ranks. Two of three is what broke DEF-0012.
+- ⚠️ **compressed-tensors MoE** (128 experts, 4 active + 1 shared) — [vllm#50925](https://github.com/vllm-project/vllm/issues/50925)
+  says that combination falls back to **Marlin** on sm_121, which is DEF-0004's territory
+  and a node-freeze rather than a hang. **Attend its first activation**, and do not reach
+  for `VLLM_NVFP4_GEMM_BACKEND=marlin` to fix a load failure without reading DEF-0004.
+- **MLA head_size is 320** (`kv_lora_rank 256 + qk_rope_head_dim 64`) — the exact value a
+  GB10 forum report could not run on vLLM 0.17.2rc1, forcing `VLLM_MLA_DISABLE=1` and a 40k
+  context cap. Whether 0.24.0 supports it is the most valuable thing the first activation
+  will tell us: with MLA the KV is ~22.5 KiB/token, without it ~25× worse.
+
 
 ## Switching what serves
 

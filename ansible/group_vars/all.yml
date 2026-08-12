@@ -168,9 +168,42 @@ model_cache_dir: /opt/cluster/model-cache
 # master port (29500) is used implicitly. Nothing to set globally here.
 
 # Docker run / systemd memory knobs shared by all engines.
+#
+# THESE ARE A GUARD RAIL AGAINST DEF-0004, and until 2026-08-11 they were set above the
+# cliff they were supposed to stop anyone falling off. The box has **121.7 GiB** total;
+# the values were `--memory=120g` (leaving 1.7 GiB for the entire rest of the OS) and
+# `MemoryMax=124G` (**larger than physical RAM**). Neither could fire before the host
+# died — which is exactly what happened when a Marlin-MoE weight load exhausted host RAM
+# and hard-froze sparky, needing a power cycle rather than failing the unit.
+#
+# MEASURED ON A LIVE ENGINE, and the measurement is why these are two different numbers:
+#
+#   * `MemoryMax` is on the SYSTEMD UNIT's cgroup, and the engine is not in it. ExecStart
+#     is `docker run`, so the container is a child of **dockerd**; the unit's cgroup holds
+#     one process using ~12 MB — the docker CLIENT. `MemoryMax` has therefore never
+#     bounded an engine, and `OOMPolicy=stop` next to it reads as protection that is not
+#     there. It is kept, deliberately ABOVE the container cap, so that if placement ever
+#     changes (a docker upgrade, `--cgroup-parent`, podman) it cannot become the thing
+#     that surprise-kills a healthy engine. The container cap is the real one.
+#
+#   * `--memory` IS effective — but on GB10 it bounds less than it looks like. That
+#     container cgroup reported `memory.current` of **4.7 GiB while the model held ~90
+#     GiB**: unified-memory GPU allocations are not charged to the cgroup at all. So this
+#     caps HOST-side allocation only.
+#
+# Which is still the right cap for the failure we actually had: DEF-0004 died at
+# `Loading safetensors … 0/27`, i.e. host-side read buffers, not device memory. Page cache
+# is charged here too but is reclaimable, so a large weight read reclaims rather than OOMs.
+# 105g leaves ~16 GiB for the host while clearing our engines' real host-side use by an
+# enormous margin (steady state ~5 GiB; `gpu_memory_utilization` 0.75–0.80 lives on the
+# GPU side of the accounting and is untouched by this).
+#
+# **This is a partial mitigation, not immunity** — it converts a host-RAM runaway from a
+# power cycle into a failed unit, and does nothing about device-side ballooning. The real
+# fix is upstream: vLLM 0.26.0 bounds the Marlin FP4 MoE repack peak (see DEF-0004).
 vllm_shm_size: 32g
-vllm_container_memory: 120g
-vllm_systemd_memory_max: 124G
+vllm_container_memory: 105g
+vllm_systemd_memory_max: 110G
 # One TEMPLATE unit (ADR-0018) means these are cluster constants, not per-rank
 # values. RestartSec suits the worker (it retries the rendezvous until the head is
 # up); the head rarely fails fast — waiting on a peer blocks inside

@@ -733,3 +733,59 @@ def test_the_panel_and_the_cli_show_the_same_menu_in_the_same_order(panel, tmp_p
     panel_order = [r["name"] for r in main.installed_runbooks()]
     cli_order = [r["name"] for r in runbook.describe(tmp_path / "runbooks")]
     assert panel_order == cli_order == ["earlier", "nightly", "later"]
+
+
+def test_the_dashboard_stacks_trends_above_host_noise():
+    """Panel ORDER is the dashboard's argument about what matters (2026-08-12).
+
+    Serving trends first — token throughput, then TTFT — then GPU, then the host. **Node
+    CPU is last on purpose**: on this cluster it is the least diagnostic row on the page
+    (decode is memory-bandwidth-bound, so the CPUs are idle while the interesting thing
+    happens) and it was sitting above node memory for no reason.
+
+    `Requests running / waiting` was removed rather than moved: at a fleet-wide
+    concurrency of one serving engine it read 1 or 0 and answered nothing the `Serving`
+    panel does not.
+    """
+    dashboard = json.loads((Path(__file__).resolve().parent.parent / "ansible" / "roles" /
+                            "grafana" / "files" / "cluster.json").read_text())
+    titles = {p["title"] for p in dashboard["panels"]}
+    assert "Requests running / waiting" not in titles
+
+    rows = sorted(dashboard["panels"], key=lambda p: p["gridPos"]["y"])
+    assert rows[-1]["title"] == "Node CPU utilization (%)", "CPU belongs at the bottom"
+
+    ts = [p for p in rows if p["type"] == "timeseries"]
+    assert [p["title"] for p in ts][:2] == ["Token throughput", "TTFT p99 (s)"], \
+        "the two serving trends lead the stack"
+
+    # Both serving metrics are PLOTS ONLY (2026-08-12). The big-number stats were removed:
+    # a single instantaneous value for a rate is the least informative thing on the page —
+    # 40 tok/s tells you nothing without knowing whether it is climbing, flat or collapsing,
+    # and the plot directly above it answers that. The only stats left are `Serving` and
+    # `Runbook`, which are STATES rather than magnitudes and have no trend to show.
+    assert {p["title"] for p in dashboard["panels"] if p["type"] == "stat"} == {"Serving", "Runbook"}
+    ttft = [p for p in dashboard["panels"] if p["title"] == "TTFT p99 (s)"]
+    assert [p["type"] for p in ttft] == ["timeseries"], "TTFT is a plot, not a number"
+    assert "time_to_first_token_seconds_bucket" in ttft[0]["targets"][0]["expr"]
+
+    # ONE time axis for the whole page. `graphTooltip: 2` is shared crosshair AND tooltip,
+    # so hovering any graph puts the cursor on every other and shows their values at that
+    # instant — which is the only way to answer "what was the GPU doing when TTFT spiked".
+    # It was 1 (crosshair, no values), which draws the line but tells you nothing.
+    assert dashboard["graphTooltip"] == 2, "shared crosshair + tooltip across the stack"
+
+    # Stats are NUMBERS, not sparklines. Grafana's stat default is `graphMode: "area"`, so
+    # leaving it unset renders a mini-graph with its own implicit horizontal scale that
+    # does not join the shared cursor — two time axes on one page, silently. Trends belong
+    # in the stack where they are comparable; the stat is for the glance.
+    for p_ in dashboard["panels"]:
+        if p_["type"] == "stat":
+            assert p_["options"]["graphMode"] == "none", f"{p_['title']!r} draws a sparkline"
+
+    # No gaps or overlaps in the vertical stack — a hand-edited gridPos is easy to get
+    # wrong and Grafana silently reflows it into something nobody designed.
+    full = [p for p in rows if p["gridPos"]["w"] == 24]
+    for a, b in zip(full, full[1:]):
+        assert b["gridPos"]["y"] == a["gridPos"]["y"] + a["gridPos"]["h"], \
+            f"{a['title']!r} -> {b['title']!r} leaves a gap or overlaps"

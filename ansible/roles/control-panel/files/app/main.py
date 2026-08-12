@@ -783,4 +783,4 @@ def scoreboard(request: Request):
         } for p in points]
     else:
         data["plot_points"] = []
-    return templates.TemplateResponse(request, "scoreboard.html", {"data": data})
+    return templates.TemplateResponse(request, "scoreboard.html", _ctx(request, data=data))
