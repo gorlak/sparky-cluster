@@ -8,6 +8,7 @@ description: Conventions for this repo's docs/ tree — model fact sheets, upgra
 | Location | Kind | Purpose |
 |---|---|---|
 | `docs/models/<model>.md` | **Fact sheet** | Independent statement of fact about **one** model — analyzed on its own, never vs another. |
+| `docs/models/candidates/<model>.md` | **Candidate fact sheet** | A model that **passed the fit and speed gates** but whose weights we do **not** hold, blocked on a named external thing (unreleased vLLM arch, absent quant, missing sm_121 kernel). Carries a **Blocked on** and a falsifiable **Clears when**. Neither a fleet model nor a rejection — filing one as a tombstone inverts the signal, and a defect's *clears-when* has no installed files to test. Promote to `docs/models/<model>.md` when the weights are staged; on rejection move the verdict to the tombstone register and **delete** the sheet. See [`docs/models/candidates/README.md`](../../docs/models/candidates/README.md). |
 | `docs/models/retired/<model>.md` | **Frozen fact sheet** | A retired model's sheet, kept for its engineering (memory math, quant findings, workarounds) and **not maintained**. Its status and next-step sections are history, not a plan. **Do not read one unless its filename is the model you are actually investigating** — a 250-line sheet saying "Target quant: NVFP4 — preferred" outweighs a one-line tombstone row in anyone's attention, which is how a rejected model gets re-proposed. The verdict is never here. |
 | `docs/upgrades/<kind>-<…>.md` | **Upgrade tracker** | Living, gated tracker of a version/model **transition** and its cluster implications. |
 | `docs/adr/NNNN-*.md` | **Decision record** | Immutable record of a decision already made — the "why." See "Decision records" below. **Not** for living state. |
@@ -29,6 +30,7 @@ The boundary matters and is enforced:
 - "Bump / upgrade the container to T" → **container upgrade tracker** `docs/upgrades/container-<coord>-T.md`, and walk the pathway in `docs/updating.md`.
 - "We're carrying a bug / working around an upstream issue" → a **DEF-NNNN row** in `docs/defects.md` (+ detail in its home).
 - "We evaluated model X and won't run it" → a row in `docs/models/tombstones.md`, and **move** the verdict there from wherever it sits. But first apply the retirement test below — most candidates fail it.
+- "We evaluated model X, we *want* it, and we can't serve it yet" → a **candidate fact sheet** `docs/models/candidates/X.md`. This is the case a wanted-but-unserveable model falls through: it is not a tombstone (we want it) and not a defect (nothing is installed to test a *clears-when* against). Requires a named blocker — "we haven't got round to it" is a to-do, not a candidate.
 - "How do I update X / what else needs touching?" → `docs/updating.md` (the change-pathway checklists).
 - "What needs updating / is there a newer version?" → the [[version-discovery]] skill (check + stage), which then walks `docs/updating.md`.
 - A settled, one-way decision → an **ADR** (see "Decision records" below), not a tracker.

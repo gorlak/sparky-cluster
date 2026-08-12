@@ -161,6 +161,10 @@ upgrading our models"**, after a notable release, or when a blocking dependency 
    owns the verdicts on models already ruled out, and states how to revisit one. Do that
    before sizing anything: a tombstoned model looks like a fresh candidate every time.
 
+   **And [`docs/models/candidates/`](../../docs/models/candidates/)** — models already
+   screened, wanted, and blocked on something named. If one is there the fit math is done;
+   re-check its *Clears when* instead of re-sizing it.
+
 3. **Assess each candidate's fit** with the checklist above — size it
    (`hf models ls <repo> --tree -h`, no download), do the per-node memory math at the
    profile's TP, and cross-check container/tooling needs against the blockers in

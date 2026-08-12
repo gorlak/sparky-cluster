@@ -159,6 +159,13 @@ before reporting them** — a sweep that re-surfaces a rejected model has cost t
 That register owns the verdicts and the rules for revisiting or adding one; follow them
 rather than re-doing the analysis here.
 
+**Then check [`docs/models/candidates/`](../../docs/models/candidates/)** — the models we
+already decided we *want* and cannot serve yet. Unlike `retired/`, these sheets are current
+and meant to be read. A hit means the screen is **already done**: report the existing sheet
+and whether its *Clears when* has been met, rather than re-deriving the arithmetic. Rescreening
+a yes costs exactly what rescreening a no does. If the blocker has cleared, say so — that is
+the most valuable thing a sweep can find.
+
 ## Polling etiquette (be a good web citizen)
 
 These sources are other people's servers — NVIDIA's community forum (a Discourse
