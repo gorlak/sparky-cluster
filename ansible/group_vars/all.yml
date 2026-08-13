@@ -104,6 +104,7 @@ vllm_allowlist_file: "{{ vllm_engines_dir }}/allowlist"
 # Invoked through two bounded triggers — a single-command sudoers entry locally,
 # and forced-command SSH cross-node. See roles/activate.
 activate_bin: /usr/local/sbin/vllm-activate
+idle_bin: /usr/local/sbin/vllm-idle
 # The second bounded grant (ADR-0019): read-only introspection of a DEPLOYED image.
 # Same shape as the reconciler — one fixed program, validated input, no docker grant.
 probe_bin: /usr/local/sbin/vllm-probe
@@ -124,6 +125,8 @@ activate_group: activate
 activate_ssh_key: "/home/{{ activate_user }}/.ssh/id_ed25519"
 # The activation REQUEST: group-writable, written with no sudo at all.
 desired_profile_file: /opt/cluster/desired-profile
+idle_state_file: /opt/cluster/idle-state.json
+last_serving_file: /opt/cluster/last-serving-profile
 # What `deploy` provisioned (the allowlist, per-node engines + weights). Read by
 # the control panel and agents; the counterpart of current-topology.json ("what is
 # live"), which the reconciler writes.
@@ -138,6 +141,85 @@ stable_model_name: sparky
 # health-checked upstream list and follow activation with no config rewrite.
 # The fleet role asserts every engine declares this port.
 vllm_api_port: 8000
+
+# --- scale to zero -----------------------------------------------------------------
+# A loaded-but-idle model is not free: measured 2026-08-12, it costs ~15.5 W fleet-wide
+# (both GPUs pinned at ~2400 MHz SM clock against 208 MHz truly idle, at 0.5% utilisation)
+# and holds `gpu_memory_utilization` worth of RAM — ~97 GiB on each node — whether or not
+# anything is asking it a question. On a box shared with other workloads that is the
+# dominant cost of leaving the cluster "on".
+#
+# So the fleet unloads itself after a long quiet period. TWO deliberate limits:
+#
+#  * The only thing the timer may do is activate `empty` — the fail-safe target, where the
+#    cluster already goes on any failure. It cannot choose or start a model, so the
+#    autonomous action can only ever move TOWARD the safe state.
+#  * Waking is a human act, through the panel or `./sparky.sh activate`. An unauthenticated
+#    request must never cause an activation; that is the load-bearing half of ADR-0018's
+#    "no web-API path to root", and it is why there is no /wake endpoint.
+#
+# The client-side courtesy lives in the Caddyfile (`lb_try_duration`): a request arriving
+# while nothing serves is HELD rather than refused, so the caller sees its normal wait UI
+# and then the real answer, once someone activates.
+idle_unload_enabled: true         # opt-in: a deploy must not start unloading by surprise
+idle_unload_after: 14400          # seconds of quiet before unloading (4 h). Hours, not
+                                  # minutes: it must survive a lunch, an afternoon of
+                                  # meetings, a weekend and overnight rather than firing
+                                  # between chat turns. The first request after it fires
+                                  # costs a cold start (~5 min on the fastest model,
+                                  # ~10 on the slowest), so the threshold is what keeps
+                                  # that rare. 0 disables entirely.
+# Wake is IMPLICIT: with the fleet at zero, Caddy holds an inference request and this
+# manager sees it as an in-flight request and restores what was last serving. No endpoint
+# and nothing invocable — it reads a counter. Restore-only: the profile name comes from a
+# file WE wrote when WE unloaded, so a caller can resume what the cluster was already
+# doing but can never choose a model, start one that was not running, or name a profile.
+# Implicit wake. With the fleet at zero, Caddy HOLDS an inference request on the model
+# listener (ADR-0022 part 4); the manager counts in-flight requests THERE — a listener
+# nothing else can reach — and restores what it unloaded. No endpoint, nothing invocable.
+#
+# The first attempt counted in-flight across all of :80 and was meaningless: the metric
+# carries {handler, server} and no host or path, so it lumped in Open WebUI's long-lived
+# websockets and read 3 with nothing waiting (2026-08-13). The separate listener is what
+# makes the question answerable rather than a heuristic.
+#
+# RESTORE, NEVER SELECT: the profile comes from a marker the manager wrote when IT
+# unloaded, so a request can resume what the cluster was already doing and can never
+# choose a model.
+idle_wake_enabled: true
+caddy_metrics_url: http://127.0.0.1:2019/metrics
+caddy_config_url: http://127.0.0.1:2019/config/apps/http/servers
+# How often the manager looks. This is now WAKE LATENCY as well as sleep granularity: a
+# held request waits up to this long before anything notices it, on top of the cold start.
+# Keep it short -- the check is two local HTTP gets. PRODUCTION: 1min
+idle_check_interval: 1min
+idle_check_jitter: 0              # NOT the usual 60. Jitter exists to keep periodic jobs
+                                  # off the same second, which matters on a busy host with
+                                  # many timers; here there is one, and any jitter is added
+                                  # directly to how long a caller waits to be noticed.
+# How long Caddy holds a request while no upstream is healthy.
+#
+# SIZE THIS AGAINST COLD-START-TO-SERVING, NOT WEIGHT-LOAD TIME. The first cut used 300s,
+# reasoning from qwen3.6's 84 s weight load. Measured end to end on 2026-08-13, a request
+# sent to an empty fleet was held **295.8 s** before the engine answered — four seconds
+# inside the limit, on the FASTEST model we have. Weight load is only the first phase;
+# CUDA graph capture and startup take several minutes more, and `sparky status` calls all
+# of it "loading weights".
+#
+# Observed activate-to-serving: qwen3.6 ~295 s. qwen3-vl-235b's weight load ALONE is 494 s
+# (full activation 12 min), so anything under ~600 s silently fails to cover the fleet.
+# 600s matches `response_header_timeout` below, so the two phases of waiting are equal.
+#
+# Most clients give up before this anyway — that is fine and is their choice to make. The
+# point is that Caddy is not the thing that gives up first.
+model_endpoint_wait: 600s
+# Loopback port for the model listener (ADR-0022 part 4). Its own listen address is what
+# gives it its own Caddy `server` label, which is what makes in-flight requests there mean
+# exactly one thing: a caller waiting for a model.
+model_inner_port: 8090
+# The outer hop must outlast the inner hold plus the engine's own response, or the public
+# vhost becomes the thing that gives up first and the holding buys nothing.
+model_endpoint_wait_total: 900s
 # The fixed model endpoint Open WebUI + Prometheus point at, configured once at
 # deploy time. Caddy resolves it to whichever node is currently serving.
 model_endpoint_host: "api.{{ web_domain }}"

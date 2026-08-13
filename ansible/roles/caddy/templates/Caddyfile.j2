@@ -4,6 +4,14 @@
 	# LAN-only HTTP; no public certs for these internal hostnames.
 	auto_https off
 	admin localhost:2019
+	servers {
+		# Per-server metrics, so `caddy_http_requests_in_flight` exists on the admin
+		# endpoint. That counter is how the idle manager sees DEMAND: with the fleet scaled
+		# to zero, a held inference request is an in-flight request that nothing is serving
+		# — which is the signal to wake. Without this Caddy publishes no HTTP metrics at all
+		# and the only alternative would be parsing an access log.
+		metrics
+	}
 }
 
 # The fixed model endpoint (ADR-0018). Open WebUI and Prometheus point HERE, once,
@@ -16,7 +24,24 @@
 # boot Caddy comes up static and converges the moment the restored engine passes
 # health. Replicas of one model, if ever wanted, are the same mechanism — two
 # healthy upstreams and Caddy balances.
-http://{{ model_endpoint_host }} {
+# THE MODEL LISTENER (ADR-0022 part 4) — model-bound traffic gets its own front door.
+#
+# Loopback-only, and it exists for OBSERVABILITY. Caddy labels HTTP metrics by *server*,
+# and a server is a set of listen addresses, so every site sharing :80 shares one counter.
+# `caddy_http_requests_in_flight` carries {handler, server} and no host or path dimension —
+# measured 2026-08-13 with nothing waiting at all it read 3 (Open WebUI's long-lived
+# websockets, a scrape, and the request doing the reading). On a shared front door the
+# question "is anyone waiting for a model?" is unanswerable.
+#
+# Here it is exact BY CONSTRUCTION: only the held inference paths are routed in, so
+# anything in flight on this listener IS a caller waiting for a model. The idle manager
+# reads exactly that. No thresholds, no heuristics.
+#
+# This is also where the WAITING lives (`lb_try_duration`): a request arriving while
+# nothing serves is held rather than refused, so the caller sees its ordinary wait UI and
+# then the model's real answer.
+:{{ model_inner_port }} {
+	bind 127.0.0.1
 	reverse_proxy {% for node in groups['all'] | sort %}{{ hostvars[node].vllm_host_ip }}:{{ vllm_api_port }} {% endfor %}{
 		lb_policy first
 		health_uri /health
@@ -24,11 +49,66 @@ http://{{ model_endpoint_host }} {
 		health_timeout 2s
 		health_status 2xx
 		fail_duration 10s
-		# A cold engine can take many minutes to load weights; don't cut the request
-		# that arrives while it finishes.
+		# Sized against COLD-START-TO-SERVING, not weight-load time. Measured 2026-08-13:
+		# a request to an empty fleet was held 295.8 s before the engine answered — and
+		# that is the FASTEST model (qwen3-vl-235b's weight load alone is 494 s).
+		lb_try_duration {{ model_endpoint_wait }}
+		lb_try_interval 2s
 		transport http {
 			dial_timeout 5s
 			response_header_timeout 600s
+		}
+	}
+}
+
+# The fixed model endpoint (ADR-0018). Open WebUI and Prometheus point HERE, once, at
+# deploy time — never at an engine's node.
+http://{{ model_endpoint_host }} {
+	# Inference goes through the model listener above, so it is counted there and held
+	# there. Everything else is answered right here and FAILS FAST: Prometheus scraping
+	# :80, the panel probing /health and `is_ready()` polling /v1/models all want the truth
+	# now, and holding them turns "the engine is down" into a timeout (measured: `sparky
+	# status` went from instant to 4.3 s when everything was held).
+	@inference path /v1/chat/completions /v1/completions /v1/embeddings /v1/responses
+	handle @inference {
+		reverse_proxy 127.0.0.1:{{ model_inner_port }} {
+			# Must outlast the inner hold plus the engine's own response, or this hop
+			# becomes the thing that gives up first and the holding is pointless.
+			transport http {
+				dial_timeout 5s
+				response_header_timeout {{ model_endpoint_wait_total }}
+			}
+		}
+	}
+
+	# Yes, this health-checks the engines a SECOND time (the model listener above has its
+	# own pool). Deliberate, not an oversight to be tidied away: the control plane must
+	# fail fast, so it cannot share the listener whose whole purpose is to wait. Two GETs
+	# of /health every 5s is a rounding error; merging them would mean either holding
+	# Prometheus or not holding callers.
+	handle {
+		reverse_proxy {% for node in groups['all'] | sort %}{{ hostvars[node].vllm_host_ip }}:{{ vllm_api_port }} {% endfor %}{
+			lb_policy first
+			health_uri /health
+			health_interval 5s
+			health_timeout 2s
+			health_status 2xx
+			fail_duration 10s
+		}
+	}
+
+	# The endpoint always advertises its stable alias, even with nothing loaded. Open WebUI
+	# resolves a model BEFORE it can compose a request: it GETs /v1/models, picks an id, and
+	# only then posts a completion. Scaled to zero that GET failed, the picker was empty and
+	# it sent `model: ""` -> "Model '' was not found" (observed 2026-08-13). This is NOT the
+	# fabricated-reply trick rejected for completions: a list states what the endpoint
+	# OFFERS, and it genuinely offers this alias — asleep, not absent. Readiness is measured
+	# against engines directly, never here, so a synthesised list cannot mislead a deploy.
+	handle_errors {
+		@models path /v1/models
+		handle @models {
+			header Content-Type application/json
+			respond `{"object":"list","data":[{"id":"{{ stable_model_name }}","object":"model","created":0,"owned_by":"vllm"}]}` 200
 		}
 	}
 }

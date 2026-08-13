@@ -1,3 +1,8 @@
+<!-- One wordmark, one home. It must live under ansible/ because that is what gets
+     published to /opt/cluster and served by the panel and the landing page; a copy in
+     docs/ purely for this line would be a second file to keep in step. -->
+<img src="ansible/roles/control-panel/files/app/static/sparky.png" alt="Sparky" width="202">
+
 # Sparky Cluster — vLLM + Open WebUI
 
 A two-node NVIDIA DGX Spark (GB10) cluster serving LLMs with vLLM + Open WebUI,

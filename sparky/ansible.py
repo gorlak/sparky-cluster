@@ -43,6 +43,8 @@ WORKER_HOST = "snoopy"
 # re-render engine files, pull an image or evict weights in the middle of a measurement.
 # tests/test_ansible.py pins the two constants together now.
 FLEET_LOCK = Path("/opt/cluster/fleet.lock")
+# Written ONLY by the deploy identity (see _playbook_cmd) so ownership stays stable.
+DEPLOY_LOG = Path("/opt/cluster/ansible.log")
 # The control panel is the ONLY live-status surface, and it needs no sudo: it queries
 # every node over the bounded status channel. There is deliberately no ansible/systemd
 # fallback any more — reading status is not privileged (plain `systemctl is-active`, or
@@ -114,7 +116,15 @@ def _playbook_cmd(playbook: str, extra: list[str]) -> list[str]:
     `flock` stays even though the caller pre-checks: the pre-check is for the message,
     this is for the race between checking and starting.
     """
-    return [*_as_deploy(), "flock", str(FLEET_LOCK), "ansible-playbook", playbook, *extra]
+    # ANSIBLE_LOG_PATH here, deliberately NOT `log_path` in ansible.cfg: that file is read
+    # by BOTH identities that run ansible — `deploy` for a deploy, and **geoff** for
+    # `sparky lint`, which shells out to `ansible-playbook --syntax-check`. Whichever ran
+    # first created the log and locked the other out, because /opt/cluster is sticky and
+    # `fs.protected_regular=2` refuses a non-owner open even when the mode bits allow it.
+    # `sparky lint` broke every deploy this way on 2026-08-13. Scoped here, only `deploy`
+    # ever writes it, so it is always deploy-owned; geoff reads it via the cluster group.
+    return [*_as_deploy(), "env", f"ANSIBLE_LOG_PATH={DEPLOY_LOG}",
+            "flock", str(FLEET_LOCK), "ansible-playbook", playbook, *extra]
 
 
 def publish() -> None:

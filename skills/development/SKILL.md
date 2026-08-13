@@ -45,9 +45,19 @@ either side of it is **yours**, and the handover is where an agent most often st
 
 **"deploying now" / "deploy is going" is a cue to act, not to wait.** When you hear it:
 
-1. **Watch for it to finish — and "finish" means the OPERATOR SAYS SO.** Do not go idle and
-   do not ask "shall I proceed?"; the next step was agreed when the change was written. But
-   do not infer completion from artifacts either.
+1. **Watch for it to finish — success OR failure — and then READ THE LOG either way.** Do
+   not go idle, do not ask "shall I proceed?", and do not hand the error back for the
+   operator to paste. The next step was agreed when the change was written. But do not
+   infer completion from artifacts either.
+
+   ```bash
+   tail -40 /opt/cluster/ansible.log          # log_path in ansible/ansible.cfg
+   ```
+
+   > **Do NOT watch the fleet lock to detect a deploy.** It is *free until the deploy takes
+   > it*, so a watcher started the moment the operator says "deploying" exits immediately
+   > with stale data and reports success for a deploy that never ran. That happened on
+   > 2026-08-13. Poll `deployed_at` for a CHANGE instead.
 
    > **Never treat a side effect as a completion signal.** On 2026-08-11 a deploy was
    > declared "landed" because a model directory and an engine env file had appeared. Both
@@ -84,6 +94,11 @@ either side of it is **yours**, and the handover is where an agent most often st
 2. **Verify the deploy did what it was for** — the profile is activatable, the flags
    rendered into the engine env file, the weights landed on both nodes. A deploy that
    half-succeeded is much cheaper to catch here than after an activation.
+
+   **Read `skipped` and `changed` as results, not noise.** A task that skipped when it
+   should have run (a `when:` that no longer matches, a host group that changed) is a
+   silent no-op, and a task that changed when nothing should have changed means something
+   is not converged. Both are findings on an otherwise green run.
 3. **Take the next step immediately.** Usually that is `activate <profile>`, then read the
    startup log and the smoke gate. See [[operations]] for the how.
 4. **Report the outcome**, not the intention.
@@ -91,6 +106,36 @@ either side of it is **yours**, and the handover is where an agent most often st
 If a deploy FAILS, diagnose it and fix the cause rather than handing the error back. A
 failure whose fix is in the repo (a role that assumes an HF-layout checkpoint, a flag that
 does not survive the env-file round trip) is ordinary work — do it, then say "re-run".
+
+## Adversarially review your own hunks BEFORE asking for a deploy
+
+A deploy costs the operator a password and a wait. Read your diff back as if someone else
+wrote it and you are trying to find the flaw — *then* ask.
+
+**The specific trap is scripted edits to YAML**, which produce **valid YAML that is
+semantically wrong** — and neither `sparky lint` nor `ansible-playbook --syntax-check` can
+see it, because both only prove the file parses. On 2026-08-13 three bugs shipped from this
+one cause:
+
+| bug | what the edit actually did |
+|---|---|
+| duplicate `mode:` | the insertion split an existing task, orphaning its keys onto the new one |
+| a misplaced `loop:` | anchored on a `when:` line that appears in several tasks |
+| `daemon_reload` in `vars:` | became a variable rather than a module parameter — a silent no-op, and the deploy then **failed** to start a unit whose file had changed |
+
+So, after any scripted edit to a task file: **print the resulting task and read it.** Do not
+trust that the replacement was right because the anchor string matched.
+
+```bash
+python3 -c "import yaml,sys; [print(t) for t in yaml.safe_load(open('ansible/roles/<r>/tasks/main.yml')) if 'thing' in str(t)]"
+```
+
+Worth checking in the same pass, because each has taken a deploy down: a **port** a new
+listener binds is actually free (Caddy runs `network_mode: host`, so a clash costs the
+whole web front end); every new `group_vars` key is both **defined and referenced** (a typo
+renders empty, not an error); and config syntax that lint does not validate — Caddy's
+`handle` takes exactly **one** matcher token, and `handle /a /b {` stops Caddy from
+starting at all.
 
 **Deploys are cheap; do not hoard them.** Batching several ready profiles into one deploy
 is free and good. *Delaying* a change, parking a profile "until the next deploy", or

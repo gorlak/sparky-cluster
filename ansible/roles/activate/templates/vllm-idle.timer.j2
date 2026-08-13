@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Check whether the fleet has gone quiet (scale to zero)
+
+[Timer]
+# THREE anchors, and the first one is load-bearing.
+#
+# `OnBootSec` is relative to BOOT and `OnUnitActiveSec` to the service's last run, so a
+# timer restarted mid-uptime (i.e. by every deploy) has neither: boot elapsed hours ago
+# and, with Persistent=false, a missed trigger is skipped rather than caught up; and the
+# service has not run since the restart, so there is nothing to count from. systemd then
+# schedules NOTHING — `systemctl list-timers` shows NEXT and LEFT as "-".
+#
+# Observed 2026-08-13: the deploy at 01:59:53 stopped scale-to-zero silently. A dead
+# dead-man's switch that announces nothing is the worst failure this file can have, which
+# is why `OnActiveSec` (relative to the TIMER starting) is here — it always has an anchor.
+OnActiveSec={{ idle_check_interval }}
+OnBootSec={{ idle_check_interval }}
+OnUnitActiveSec={{ idle_check_interval }}
+# Spread the wake-ups: nothing here is time-critical and a jittered timer keeps this off
+# the same second as every other periodic job on the box.
+RandomizedDelaySec={{ idle_check_jitter }}
+Persistent=false
+
+[Install]
+WantedBy=timers.target

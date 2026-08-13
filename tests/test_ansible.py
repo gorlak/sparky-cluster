@@ -6,6 +6,8 @@ password-gated. These assert that shape, plus the deploy/sweep mutex.
 
 import os
 
+from pathlib import Path
+
 import pytest
 
 from sparky import ansible
@@ -32,7 +34,28 @@ def test_playbook_cmd_takes_the_fleet_lock(monkeypatch):
     """A deploy reshapes the boundary while a sweep walks it — they must not interleave."""
     monkeypatch.setattr(ansible.getpass, "getuser", lambda: "deploy")
     cmd = ansible._playbook_cmd("site.yml", [])
-    assert cmd[:3] == ["flock", str(ansible.FLEET_LOCK), "ansible-playbook"]
+    # Position, not prefix: the command is wrapped (`env ANSIBLE_LOG_PATH=...`), so what
+    # matters is that flock still guards the playbook — not that it comes first.
+    i = cmd.index("flock")
+    assert cmd[i + 1] == str(ansible.FLEET_LOCK)
+    assert cmd[i + 2] == "ansible-playbook", "flock must wrap the playbook, not something else"
+
+
+def test_the_deploy_log_is_written_only_by_the_deploy_identity(monkeypatch):
+    """`log_path` in ansible.cfg would be read by BOTH identities that run ansible.
+
+    `sparky lint` shells out to `ansible-playbook --syntax-check` as **geoff**; a deploy
+    runs as **deploy**. Whichever ran first created the log and locked the other out —
+    /opt/cluster is sticky and `fs.protected_regular=2` refuses a non-owner open even when
+    the mode bits allow it. That broke every deploy on 2026-08-13 until the log was scoped
+    to the deploy invocation, where ownership is stable.
+    """
+    monkeypatch.setattr(ansible.getpass, "getuser", lambda: "deploy")
+    cmd = [str(c) for c in ansible._playbook_cmd("site.yml", [])]
+    assert any(c.startswith("ANSIBLE_LOG_PATH=") for c in cmd), "the deploy must log"
+    cfg = (Path(__file__).resolve().parent.parent / "ansible/ansible.cfg").read_text()
+    assert "log_path" not in cfg, \
+        "log_path in ansible.cfg is shared with `sparky lint`, which runs as geoff"
 
 
 def test_deploy_publishes_then_runs_site(monkeypatch):

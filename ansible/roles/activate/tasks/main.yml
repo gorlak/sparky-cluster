@@ -131,6 +131,59 @@
     mode: "0755"
   when: inventory_hostname in groups['head']
 
+- name: Install the idle unloader (scale to zero — the dead-man's switch)
+  # Not a privileged program: it runs as the activate identity and calls the SAME bounded
+  # reconciler through the SAME sudoers entry, so it adds no grant. Its one possible
+  # action is `activate empty`, the fail-safe target.
+  ansible.builtin.copy:
+    src: vllm-idle
+    dest: "{{ idle_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname in groups['head']
+
+- name: Install the idle unloader's unit and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - vllm-idle.service
+    - vllm-idle.timer
+  when: inventory_hostname in groups['head']
+
+- name: Give the idle unloader somewhere to keep its clock
+  # `activate`-writable, like the other things a run records rather than provisions.
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: "{{ activate_user }}"
+    group: "{{ activate_group }}"
+    mode: "0664"
+    modification_time: preserve
+    access_time: preserve
+  loop:
+    - "{{ idle_state_file }}"
+    - "{{ last_serving_file }}"
+  when: inventory_hostname in groups['head']
+
+- name: Enable the idle timer only when scale-to-zero is turned on
+  # Disabled by default. A deploy must never start unloading a fleet by surprise; turning
+  # this on is a deliberate edit to `idle_unload_enabled` in group_vars.
+  ansible.builtin.systemd_service:
+    name: vllm-idle.timer
+    enabled: "{{ _idle_on }}"
+    state: "{{ 'started' if _idle_on else 'stopped' }}"
+    daemon_reload: true
+  vars:
+    # `idle_unload_after: 0` disables too — see vllm-idle. Checked here as well so the
+    # timer is not even armed, rather than armed and no-opping every minute.
+    _idle_on: "{{ (idle_unload_enabled | bool) and (idle_unload_after | int) > 0 }}"
+  when: inventory_hostname in groups['head']
+
 - name: Install this node's reconciler wiring
   ansible.builtin.template:
     src: activate.conf.j2

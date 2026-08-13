@@ -209,6 +209,30 @@ API_PORT = 8000
 INVENTORY = ANSIBLE_DIR / "inventory.yml"
 
 
+def activation_fingerprint(path: Path = CURRENT_TOPOLOGY) -> tuple[str, str] | None:
+    """`(profile, activated_at)` — what is serving, and since when.
+
+    **Take this before a measurement and check it after.** A number is only meaningful if
+    the same engine produced all of it, and several things can move the fleet underneath a
+    run: scale-to-zero unloading an idle model (ADR-0022), a deploy's `fleet-state` role
+    converging the selection, a manual `activate`, or an engine that died and came back.
+
+    Deliberately NOT scale-to-zero-specific. `activated_at` changes for every one of those
+    causes, so one comparison covers them all — and will cover the next cause nobody has
+    thought of yet. `sweep` holds the fleet lock and is therefore already safe from the
+    unloader; a bare `bench` or `eval` holds nothing, which is the gap this closes.
+
+    Returns None when nothing is serving or the file is unreadable — an unreadable
+    fingerprint is not a match, so callers treat it as "moved".
+    """
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    profile, at = data.get("profile"), data.get("activated_at")
+    return (profile, at) if profile and at else None
+
+
 def fleet_nodes(inventory: Path = INVENTORY) -> tuple[str, ...]:
     """Every node, head first — the default `nodes` for an engine.
 

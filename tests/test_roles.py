@@ -419,3 +419,75 @@ def test_the_evict_dry_run_cannot_silently_report_nothing():
     read_task = read_task.split("- name:")[0]
     assert "check_mode: false" in read_task, \
         "the image read is skipped under --check, so the evict dry run reports nothing"
+
+
+def test_model_traffic_has_its_own_front_door(caddyfile=None):
+    """ADR-0022 part 4: model-bound traffic listens on its own address.
+
+    Not tidiness — OBSERVABILITY. Caddy labels HTTP metrics by *server*, and a server is a
+    set of listen addresses, so every site sharing :80 shares one counter.
+    `caddy_http_requests_in_flight` carries {handler, server} and no host or path: measured
+    2026-08-13 with nothing waiting it read 3 (Open WebUI websockets, a scrape, and the
+    request doing the reading). On a shared front door "is anyone waiting for a model?" is
+    unanswerable, and the idle manager tried to wake on every tick.
+
+    With its own listener the answer is exact by construction — but ONLY if the control
+    plane stays outside it. A /health or /metrics request in flight there would read as a
+    caller waiting, and "exact" would be a slogan.
+    """
+    import re
+    root = Path(__file__).resolve().parent.parent
+    caddy = (root / "ansible/roles/caddy/templates/Caddyfile.j2").read_text()
+
+    assert ":{{ model_inner_port }} {" in caddy, "the model listener is gone"
+    inner = caddy[caddy.index(":{{ model_inner_port }} {"):]
+    inner = inner[:inner.index("\n}\n") + 3]
+    assert "bind 127.0.0.1" in inner, "the model listener must not be reachable off-box"
+    assert "lb_try_duration" in inner, "the waiting belongs on the listener that counts it"
+
+    outer = caddy[caddy.index("http://{{ model_endpoint_host }}"):]
+    outer = outer[:outer.index("\n}\n") + 3]
+    cfg = "\n".join(l for l in outer.splitlines() if not l.lstrip().startswith("#"))
+
+    # `handle` takes exactly ONE matcher token: `handle /a /b {` is a parse error and Caddy
+    # then refuses to start at all, taking the landing page, chat, Grafana and the panel
+    # with it. Cost one deploy on 2026-08-13.
+    bad = re.search(r"handle\s+/\S+\s+/\S+", cfg)
+    assert not bad, f"multi-path handle is invalid Caddy syntax: {bad.group(0)!r}"
+    assert "@inference path /v1/chat/completions" in cfg
+
+    # first-match-wins: a catch-all before the specific route silently swallows it
+    assert cfg.index("handle @inference") < cfg.index("handle {")
+
+    held = cfg[cfg.index("handle @inference"):cfg.index("handle {")]
+    assert "{{ model_inner_port }}" in held, "inference must go through the model listener"
+    assert "lb_try_duration" not in cfg, \
+        "the outer vhost must not hold: the control plane answers here and wants the truth now"
+
+
+def test_the_endpoint_always_advertises_its_stable_alias():
+    """Open WebUI resolves a model BEFORE it can compose a request (2026-08-13).
+
+    It GETs /v1/models, picks an id, and only then posts a completion. Scaled to zero that
+    GET failed, the picker was empty, and it sent `model: ""` -> "Model '' was not found".
+    The request holding was never reached because the client could not get far enough to
+    make a request.
+
+    So the proxy synthesises the list when nothing answers. That is NOT the fabricated-reply
+    trick rejected for completions: a model list states what the endpoint OFFERS, and it
+    genuinely offers the stable alias — it is asleep, not absent. Nothing downstream treats
+    a model list as content, and readiness is measured against engines directly, never here.
+    """
+    root = Path(__file__).resolve().parent.parent
+    caddy = (root / "ansible/roles/caddy/templates/Caddyfile.j2").read_text()
+    block = caddy[caddy.index("http://{{ model_endpoint_host }}"):]
+    block = block[:block.index("\n}\n") + 3]
+
+    assert "handle_errors" in block, "no fallback: an empty fleet gives Open WebUI no model"
+    err = block[block.index("handle_errors"):]
+    assert "@models path /v1/models" in err
+    assert "{{ stable_model_name }}" in err, \
+        "advertise the SAME alias engines advertise, or chat breaks across activations"
+    # The fallback must be scoped to the model list. Synthesising a completion would be
+    # the data plane lying, which is the thing this whole design refused to do.
+    assert "/v1/chat/completions" not in err, "never fabricate a completion"

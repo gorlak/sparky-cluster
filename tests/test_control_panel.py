@@ -833,3 +833,47 @@ def test_the_dashboard_stacks_trends_above_host_noise():
     for a, b in zip(full, full[1:]):
         assert b["gridPos"]["y"] == a["gridPos"]["y"] + a["gridPos"]["h"], \
             f"{a['title']!r} -> {b['title']!r} leaves a gap or overlaps"
+
+
+def test_all_three_pages_carry_the_wordmark():
+    """Landing, control and scoreboard are one product (2026-08-13).
+
+    They already share `app.css` for exactly this reason — before 2026-08-12 the landing
+    page carried its own stale copy of the panel's old values and had drifted apart. The
+    wordmark follows the same rule: one asset, one CSS class, referenced by all three.
+    """
+    root = Path(__file__).resolve().parent.parent
+    pages = {
+        "landing": root / "ansible/roles/caddy/templates/index.html.j2",
+        "control": root / "ansible/roles/control-panel/files/app/templates/index.html",
+        "scoreboard": root / "ansible/roles/control-panel/files/app/templates/scoreboard.html",
+    }
+    for name, path in pages.items():
+        html = path.read_text()
+        assert 'class="wordmark"' in html, f"{name} lost the wordmark"
+        assert html.index("wordmark") < html.index("<h1"), f"{name}: wordmark belongs above the h1"
+
+    css = (root / "ansible/roles/control-panel/files/app/static/app.css").read_text()
+    assert ".wordmark" in css, "the sizing rule must stay in the SHARED stylesheet"
+
+
+def test_there_is_exactly_one_wordmark_and_the_readme_uses_it():
+    """One asset, one home (2026-08-13).
+
+    It has to live under `ansible/` because that is what gets published to /opt/cluster and
+    served by both the panel and the landing page; `docs/` is never rsynced. So the README
+    reaches across to it rather than keeping its own copy — the same call the caddy role
+    already makes for `app.css`, whose comment says why: "the alternative is two copies that
+    drift, which is exactly what this replaced."
+    """
+    root = Path(__file__).resolve().parent.parent
+    canonical = root / "ansible/roles/control-panel/files/app/static/sparky.png"
+    assert canonical.exists(), "the served wordmark is missing"
+
+    strays = [p for p in root.rglob("sparky.png")
+              if p != canonical and ".git" not in p.parts and "/opt/" not in str(p)]
+    assert not strays, f"a second copy of the wordmark appeared: {strays}"
+
+    readme = (root / "README.md").read_text()
+    assert "ansible/roles/control-panel/files/app/static/sparky.png" in readme, \
+        "the README must reference the canonical asset, not a copy of its own"

@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Dead-man's switch — unload the fleet after a long quiet period.
+
+A loaded-but-idle model costs ~15.5 W fleet-wide and holds ~97 GiB on each node whether
+or not anything is asking it anything (measured 2026-08-12: both GPUs pinned at ~2400 MHz
+SM clock, 0.5% utilisation). This drops the fleet to `empty` when nothing has used it for
+`IDLE_AFTER`.
+
+**It is not an autonomous scheduler and deliberately has almost no policy.** Its single
+possible action is `activate empty` — the fail-safe target, where the cluster already goes
+on any failure. It cannot choose a model, cannot start one, and cannot be steered by a
+request. That is what makes an unattended actor acceptable here: the only direction it can
+move the system is toward the safe state.
+
+**Waking is a human act** (the panel, or `./sparky.sh activate`). There is deliberately no
+endpoint that lets an unauthenticated request start a model — that is the load-bearing half
+of ADR-0018's "no web-API path to root". The client-side courtesy is in Caddy instead:
+`lb_try_duration` HOLDS a request arriving while nothing serves, so the caller sees its
+ordinary wait UI and then the real answer once someone activates.
+
+Runs as the `activate` identity from a systemd timer. Needs no privilege of its own: it
+writes the request file and calls the same bounded reconciler `./sparky.sh activate` calls.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+CLUSTER = Path("/opt/cluster")
+TOPOLOGY = CLUSTER / "current-topology.json"
+DESIRED = CLUSTER / "desired-profile"
+FLEET_LOCK = CLUSTER / "fleet.lock"
+STATE = CLUSTER / "idle-state.json"
+ACTIVATE_BIN = "/usr/local/sbin/vllm-activate"
+EMPTY = "empty"
+
+IDLE_AFTER = float(os.environ.get("IDLE_AFTER_SECONDS", 4 * 3600))
+CADDY_METRICS = os.environ.get("CADDY_METRICS", "http://127.0.0.1:2019/metrics")
+CADDY_CONFIG = os.environ.get("CADDY_CONFIG", "http://127.0.0.1:2019/config/apps/http/servers")
+INNER_PORT = os.environ.get("MODEL_INNER_PORT", "8090")
+WAKE_ENABLED = os.environ.get("IDLE_WAKE_ENABLED", "true").lower() in ("1", "true", "yes")
+LAST_PROFILE = CLUSTER / "last-serving-profile"
+ENABLED = os.environ.get("IDLE_UNLOAD_ENABLED", "false").lower() in ("1", "true", "yes")
+
+# `idle_unload_after: 0` means OFF, not "immediately".
+#
+# Read literally, a zero threshold says "idle for >= 0 seconds, so unload" — which fires on
+# the FIRST check and makes the cluster unserveable. Nobody types 0 to mean that; they type
+# it to mean "don't". Interpreting it the literal way would hand the most destructive
+# possible setting to the most natural way of asking for the least. So zero and negative
+# both disable, and the timer is left unenabled too — belt and braces, because either layer
+# alone would do and neither is where someone will look.
+DISABLED = (not ENABLED) or IDLE_AFTER <= 0
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def live_profile() -> str | None:
+    try:
+        return json.loads(TOPOLOGY.read_text()).get("profile")
+    except (OSError, ValueError):
+        return None
+
+
+def engine_urls() -> list[str]:
+    try:
+        return [e["api_url"] for e in json.loads(TOPOLOGY.read_text()).get("engines", [])]
+    except (OSError, ValueError, KeyError):
+        return []
+
+
+def fleet_busy() -> bool:
+    """Is a deploy or a measurement campaign holding the fleet lock?
+
+    Never unload underneath one: a deploy is reshaping the boundary, and a campaign is
+    measuring the very model we would pull out from under it. Same lock, same reasoning,
+    as `docs/synchronization.md`.
+    """
+    try:
+        fd = os.open(FLEET_LOCK, os.O_RDWR | os.O_CREAT, 0o664)
+    except OSError:
+        return False          # no /opt/cluster — nothing to serialize against
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+
+
+def activity() -> tuple[int, int] | None:
+    """(cumulative prompt tokens, requests in flight) across the live engines.
+
+    Scraped from each engine DIRECTLY, never through the model endpoint: Caddy now holds
+    requests when no upstream is healthy (`lb_try_duration`), so asking it would hang this
+    script for minutes instead of answering.
+
+    Returns None when an engine cannot be reached — unreachable is NOT idle. Something we
+    cannot see is something we must not unload; the alternative would turn a transient
+    network blip into an eviction.
+    """
+    total = inflight = 0
+    urls = engine_urls()
+    if not urls:
+        return None
+    for url in urls:
+        try:
+            with urllib.request.urlopen(f"{url.rstrip('/')}/metrics", timeout=10) as r:
+                body = r.read().decode("utf-8", "replace")
+        except Exception:
+            return None
+        for line in body.splitlines():
+            if line.startswith("vllm:prompt_tokens_total"):
+                total += int(float(line.rsplit(None, 1)[-1]))
+            elif line.startswith("vllm:num_requests_running"):
+                inflight += int(float(line.rsplit(None, 1)[-1]))
+            elif line.startswith("vllm:num_requests_waiting{"):
+                inflight += int(float(line.rsplit(None, 1)[-1]))
+    return total, inflight
+
+
+def read_state() -> dict:
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(state: dict) -> None:
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n")
+    tmp.replace(STATE)        # atomic: a torn state file would reset the idle clock
+
+
+def unload() -> int:
+    """Request `empty` and drive the reconciler — exactly what `activate` does."""
+    payload = (EMPTY + "\n").encode()
+    try:
+        fd = os.open(DESIRED, os.O_WRONLY | os.O_TRUNC)
+    except FileNotFoundError:
+        fd = os.open(DESIRED, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o664)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(payload)
+    return subprocess.run(["sudo", "-n", ACTIVATE_BIN]).returncode
+
+
+def model_server_label() -> str | None:
+    """Which Caddy `server` is the model listener (ADR-0022 part 4)?
+
+    RESOLVED, never assumed. Caddy names servers `srv0`, `srv1`, ... in config order, so a
+    hardcoded index would silently start pointing at the web UI the first time a site is
+    added above this one — and the failure would look like phantom demand, not a bug.
+    """
+    try:
+        with urllib.request.urlopen(CADDY_CONFIG, timeout=5) as r:
+            servers = json.loads(r.read())
+    except Exception:
+        return None
+    for name, cfg in (servers or {}).items():
+        for addr in cfg.get("listen", []):
+            if str(addr).endswith(":" + str(INNER_PORT)):
+                return name
+    return None
+
+
+def waiting_requests() -> int:
+    """How many callers are waiting for a model right now?
+
+    Counted on the MODEL LISTENER only. Nothing but held inference reaches that address, so
+    an in-flight request there is by construction someone waiting — no thresholds, no
+    filtering. That is the whole reason the listener exists.
+
+    The first attempt summed in-flight across ALL servers and was meaningless: the metric
+    carries {handler, server} and no host or path, so :80 lumps the model endpoint together
+    with Open WebUI's long-lived websockets, Grafana, the panel and the scrape doing the
+    reading. It read 3 with nothing waiting (2026-08-13), and the manager tried to wake on
+    every tick.
+    """
+    server = model_server_label()
+    if server is None:
+        return 0                  # cannot identify the listener -> do not guess
+    try:
+        with urllib.request.urlopen(CADDY_METRICS, timeout=5) as r:
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return 0                  # cannot see demand -> do not invent it
+    total = 0
+    needle = 'server="%s"' % server
+    for line in body.splitlines():
+        if line.startswith("caddy_http_requests_in_flight") and needle in line:
+            try:
+                total += int(float(line.rsplit(None, 1)[-1]))
+            except ValueError:
+                pass
+    return total
+
+
+def restore() -> int:
+    """Re-activate the profile that was serving when we unloaded it.
+
+    **Restore, never select.** The profile name comes from a file WE wrote when WE
+    unloaded; nothing a caller sends can influence it. So an unauthenticated request can
+    cause the cluster to resume what it was already doing, and can never choose a model,
+    start one that was not running, or reach a profile that is not allowlisted.
+    """
+    try:
+        want = LAST_PROFILE.read_text().strip()
+    except OSError:
+        return 0
+    if not want or want == EMPTY:
+        return 0
+    log(f"requests are waiting — restoring {want}")
+    payload = (want + "\n").encode()
+    try:
+        fd = os.open(DESIRED, os.O_WRONLY | os.O_TRUNC)
+    except FileNotFoundError:
+        fd = os.open(DESIRED, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o664)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(payload)
+    rc = subprocess.run(["sudo", "-n", ACTIVATE_BIN]).returncode
+    if rc == 0:
+        LAST_PROFILE.write_text("")     # consumed: do not restore twice
+    return rc
+
+
+def main() -> int:
+    if DISABLED:
+        return 0
+
+    profile = live_profile()
+    if profile in (None, EMPTY):
+        write_state({})       # nothing loaded: the idle clock is meaningless
+        # Always narrate the wake decision. "It did not wake" is one of the two bugs this
+        # program will be blamed for, and no-demand, empty-marker and fleet-busy are
+        # indistinguishable after the fact unless each is written down.
+        if not WAKE_ENABLED:
+            log("empty; wake disabled")
+            return 0
+        if fleet_busy():
+            log("empty; a deploy or campaign holds the fleet lock — not waking")
+            return 0
+        demand = waiting_requests()
+        marker = ""
+        try:
+            marker = LAST_PROFILE.read_text().strip()
+        except OSError:
+            pass
+        if demand > 0 and marker:
+            return restore()
+        log(f"empty; waiting={demand} marker={marker or 'none'} — nothing to do")
+        return 0
+
+    if fleet_busy():
+        log("a deploy or campaign holds the fleet lock — not unloading")
+        return 0
+
+    # Something IS serving, so any restore marker is stale — drop it. Without this the
+    # manager can undo a deliberate `activate empty`: it unloads X at 10:00 (marker = X),
+    # the operator later activates empty by hand to free the box for a build, and the next
+    # held request restores X against an explicit instruction. Clearing here means the
+    # marker only ever describes an unload WE performed and have not yet undone.
+    try:
+        if LAST_PROFILE.read_text().strip():
+            LAST_PROFILE.write_text("")
+    except OSError:
+        pass
+
+    now = time.time()
+    seen = activity()
+    if seen is None:
+        log("engines unreachable — not unloading (unreachable is not idle)")
+        return 0
+    tokens, inflight = seen
+
+    state = read_state()
+    why = ("requests in flight" if inflight > 0 else
+           "a different profile" if state.get("profile") != profile else
+           "tokens served" if state.get("tokens") != tokens else None)
+    if why:
+        # Say WHICH input reset it. "It never unloads" is the other bug this program will
+        # be blamed for, and a silent reset leaves no way to tell a busy cluster from a
+        # counter that moves on its own.
+        log(f"{profile} not idle ({why}: inflight={inflight} "
+            f"tokens={tokens} was={state.get('tokens')}) — clock reset")
+        write_state({"profile": profile, "tokens": tokens, "since": now})
+        return 0
+
+    idle_for = now - float(state.get("since", now))
+    if idle_for < IDLE_AFTER:
+        log(f"{profile} idle {idle_for / 60:.0f} min of {IDLE_AFTER / 60:.0f}")
+        return 0
+
+    log(f"{profile} idle {idle_for / 3600:.1f} h — unloading to {EMPTY}")
+    LAST_PROFILE.write_text(profile + "\n")   # so a later wake knows what to put back
+    rc = unload()
+    # Clear regardless: on success `empty` is live, and on failure the next run
+    # re-measures rather than retrying against a stale clock.
+    write_state({})
+    if rc != 0:
+        log(f"reconciler exited {rc} — the fleet was NOT unloaded")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

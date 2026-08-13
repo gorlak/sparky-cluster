@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import statistics
+
+from sparky import topology
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -83,6 +85,26 @@ class ScenarioResult:
     scenario: str
     results: list[RequestResult]
     wall_s: float
+    # The activation this ran against, sampled BEFORE and AFTER. A number is only
+    # meaningful if one engine produced all of it, and several things move the fleet
+    # underneath a run: scale-to-zero unloading an idle model (ADR-0022), a deploy's
+    # `fleet-state` converging the selection, a manual activate, a crashed engine coming
+    # back. `sweep` holds the fleet lock so the unloader refuses; a bare `bench` holds
+    # nothing, so it must DETECT rather than assume.
+    activation_before: tuple | None = None
+    activation_after: tuple | None = None
+
+    @property
+    def fleet_moved(self) -> bool:
+        """Did the thing being measured change identity mid-run?
+
+        Unknown counts as moved: an unreadable fingerprint is not evidence of stability,
+        and the failure this guards against is silently publishing numbers from two
+        different engines as if they were one.
+        """
+        return (self.activation_before is None
+                or self.activation_after is None
+                or self.activation_before != self.activation_after)
 
     @property
     def good(self) -> list[RequestResult]:
@@ -202,6 +224,10 @@ def run_scenario(client, served_as: str, scenario: Scenario, *, model_dir: str =
     for i in range(scenario.warmup):
         run_one(client, served_as, prompt_for(1000 + i), 16)
 
+    # Sampled around the measured window, not around the warmup: a fleet that moved
+    # during warmup is fine (the numbers had not started), one that moved during the
+    # window is not.
+    before = topology.activation_fingerprint()
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=scenario.concurrency) as pool:
         futures = [pool.submit(run_one, client, served_as, prompt_for(i), scenario.max_tokens)
@@ -211,7 +237,9 @@ def run_scenario(client, served_as: str, scenario: Scenario, *, model_dir: str =
             results.append(future.result())
             if on_progress:
                 on_progress(len(results), scenario.requests)
-    return ScenarioResult(scenario.name, results, time.monotonic() - started)
+    return ScenarioResult(scenario.name, results, time.monotonic() - started,
+                          activation_before=before,
+                          activation_after=topology.activation_fingerprint())
 
 
 def context_capacity(api_url: str, timeout: float = 8.0) -> dict:

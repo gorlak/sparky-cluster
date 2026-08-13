@@ -251,3 +251,36 @@ def test_a_missing_model_card_does_not_fabricate_a_context(monkeypatch):
     out = bench.context_capacity("http://x")
     assert out["kv_tokens"] == 540176
     assert "usable_context" not in out and "max_model_len" not in out
+
+
+# --- a measurement must know if the fleet moved under it (2026-08-13) -----
+
+def test_a_result_knows_whether_the_fleet_moved(monkeypatch):
+    """A number is only meaningful if ONE engine produced all of it.
+
+    Several things move the fleet mid-run: scale-to-zero unloading an idle model
+    (ADR-0022), a deploy's `fleet-state` converging the selection, a manual activate, an
+    engine that died and came back. `sweep` holds the fleet lock so the unloader refuses,
+    but a bare `bench` holds nothing — so it must DETECT rather than assume.
+
+    Deliberately not scale-to-zero-specific: `activated_at` changes for every cause, so one
+    comparison covers them all, including the next cause nobody has thought of.
+    """
+    same = ("qwen3.6", "2026-08-13T17:00:00+0000")
+    later = ("qwen3.6", "2026-08-13T17:20:00+0000")     # re-activated mid-run
+    other = ("minimax", "2026-08-13T17:00:00+0000")     # different model entirely
+
+    steady = bench.ScenarioResult("s", [], 1.0, activation_before=same, activation_after=same)
+    assert steady.fleet_moved is False
+
+    for before, after in ((same, later), (same, other), (same, None), (None, same)):
+        moved = bench.ScenarioResult("s", [], 1.0,
+                                     activation_before=before, activation_after=after)
+        assert moved.fleet_moved is True, f"{before} -> {after} must count as moved"
+
+
+def test_an_unknown_fingerprint_counts_as_moved():
+    """Unknown is not stable. An unreadable topology is not evidence that nothing changed,
+    and the failure being guarded against is publishing numbers from two engines as one."""
+    r = bench.ScenarioResult("s", [], 1.0, activation_before=None, activation_after=None)
+    assert r.fleet_moved is True

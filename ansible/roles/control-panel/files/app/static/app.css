@@ -82,3 +82,9 @@ th { font-weight: 600; font-size: .85rem; opacity: .75; }
 
 /* The cross-links between the two pages, so each is reachable from the other. */
 .nav { margin-top: 2.5rem; font-size: .9rem; }
+
+/* The Sparky wordmark, above the h1 on all three pages (landing, control, scoreboard).
+   Sized in `em` off the heading rather than in px so it stays proportional if the type
+   scale moves. The asset is black-on-transparent with a 2px white stroke, so it reads on
+   a light or dark background without needing two files and a <picture> element. */
+.wordmark { display: block; height: 2.4em; width: auto; margin: 0 0 .1rem -2px; }

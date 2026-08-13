@@ -11,6 +11,11 @@
     src: "{{ caddy_admin_hash_file }}"
   register: admin_hash_raw
   failed_when: false
+  # The deploy now writes /opt/cluster/ansible.log (group-readable). Ansible's non-verbose
+  # output does not print task results, so the hash does not reach it today -- verified
+  # 2026-08-13, zero hits. But one `-v` would dump this slurp's base64 content straight
+  # into that file. A secret's safety should not depend on an operator's verbosity flag.
+  no_log: true
 
 - name: Settle the /admin basic_auth hash
   ansible.builtin.set_fact:
@@ -61,13 +66,16 @@
 # repo. Reaching across roles for a `src:` is deliberate: the alternative is two copies
 # that drift, which is exactly what this replaced (this page carried the panel's OLD
 # 42rem body rule long after the panel moved on).
-- name: Install the shared stylesheet beside the landing page
+- name: Install the shared stylesheet and wordmark beside the landing page
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/roles/control-panel/files/app/static/app.css"
-    dest: "{{ caddy_dir }}/landing/app.css"
+    src: "{{ playbook_dir }}/roles/control-panel/files/app/static/{{ item }}"
+    dest: "{{ caddy_dir }}/landing/{{ item }}"
     mode: "0644"
     owner: root
     group: root
+  loop:
+    - app.css
+    - sparky.png
 
 - name: Template the Caddy compose file
   ansible.builtin.template:

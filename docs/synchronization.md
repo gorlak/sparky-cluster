@@ -7,6 +7,7 @@ Three kinds of actor change this cluster, and they must not interleave:
 | **deploy** | reshapes the boundary — re-renders engine files, pulls images, evicts weights | minutes | root, password-gated |
 | **activate** | changes which allowlisted profile serves | seconds to ~10 min (weight load) | none |
 | **campaign** | walks the boundary — `sweep`, a runbook run, `bench`, `eval` | up to a night | none |
+| **idle unloader** | drops the fleet to `empty` after a long quiet period | seconds | none |
 
 The hazard is not concurrency in the abstract. It is that **one actor reshapes what
 another is standing on**: a deploy that re-renders an engine file mid-measurement produces
@@ -88,6 +89,42 @@ unconditional *wait* would hang one just as dead. So the wait returns immediatel
 
 That skip is the whole reason the obvious one-line fix is wrong, so it has its own test
 (`test_wait_for_deploy_skips_when_this_process_holds_the_lock`).
+
+## The idle unloader (scale to zero)
+
+`vllm-idle`, a systemd timer on the head node, unloads the fleet after `idle_unload_after`
+of no traffic. It is the only actor here that acts **unattended**, so it is bounded twice:
+
+- **Its single possible action is `activate empty`** — the fail-safe target, where the
+  cluster already goes on any failure. It cannot choose a model, cannot start one, and
+  cannot be steered by a request, so the only direction it can move the system is toward
+  the safe state. A test asserts `unload()` mentions no profile at all.
+- **It holds no privilege of its own.** It runs as the `activate` identity and calls the
+  same bounded reconciler `./sparky.sh activate` calls, through the sudoers entry that
+  group already has. It is not a fourth bounded program.
+
+It refuses to unload when the fleet lock is held (a deploy is reshaping the boundary, or a
+campaign is measuring the very model it would remove), when requests are in flight, when
+the token counter moved since the last check, and — the one worth stating plainly — **when
+the engines are unreachable.** *Unreachable is not idle*: treating a network blip as
+silence would evict a model somebody is using.
+
+**Waking is implicit, but there is nothing to call.** Caddy HOLDS an inference request
+arriving while nothing serves (`lb_try_duration`), so the client shows its ordinary wait UI
+rather than an error; the manager sees that held request as demand and restores what it
+unloaded. **Restore, never select** — the profile comes from a marker the manager itself
+wrote, so a request can resume what the cluster was already doing and can never choose a
+model. There is still no endpoint: ADR-0018's "no web-API path to root" survives because
+nothing is invocable.
+
+That only works because **model-bound traffic has its own listener** (ADR-0022 part 4).
+Caddy labels metrics by *server* = a set of listen addresses, so everything on `:80` shares
+one counter with no host or path dimension — it read 3 with nothing waiting. Only the
+control plane stays on `:80` and fails fast, because Prometheus scrapes the same endpoint
+and a scraper wants the truth now, not a courteous wait.
+
+Off by default (`idle_unload_enabled`). A deploy must never start unloading a fleet by
+surprise.
 
 ## Rules of thumb
 
