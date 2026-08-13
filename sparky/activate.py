@@ -254,6 +254,56 @@ class NotLive(RuntimeError):
         self.code = code
 
 
+def wait_for_deploy(timeout: float = 1800.0, poll: float = 5.0, on_event=None) -> None:
+    """Block while a deploy holds the fleet lock, then return.
+
+    A deploy re-renders engine files and converges the selection in its LAST role
+    (`fleet-state`). An activation fired into one collides with exactly that: on
+    2026-08-12 the engine came up on one node, went `deactivating` on the other, and the
+    fleet fell to `empty`. Nothing was corrupted — the reconciler's own per-node lock
+    contained it — but a live model went down and the activation exited 143.
+
+    **Waits rather than refuses, and the discriminator is the holder's DURATION.**
+    `ansible.py` makes the opposite call for deploy-vs-campaign and explains why: a
+    campaign can run all night, so blocking there would look like a hang. A deploy is
+    minutes, so waiting costs nothing and removes the whole class of collision. See
+    `docs/synchronization.md`.
+
+    ⚠️ **Returns immediately when THIS process already holds the lock.** A campaign takes
+    `fleet.lock` for its whole run (`sweep._hold_fleet_lock`) and then activates once per
+    job through `bring_up`. flock is per open-file-description, so a second acquire from
+    the same process blocks against itself — an unconditional wait here would hang every
+    sweep forever, and an unconditional acquire would deadlock it.
+    """
+    from sparky import sweep          # deferred: sweep imports this module's callers
+    if sweep._fleet_fd is not None:
+        return                        # we ARE the holder — see the warning above
+    from sparky import ansible
+
+    def held() -> bool:
+        return ansible.campaign_holding_the_fleet()
+
+    if not held():
+        return
+    if on_event:
+        on_event("a deploy holds the fleet lock — waiting for it to finish "
+                 "(activating mid-deploy drives the fleet to empty)")
+    deadline = time.monotonic() + timeout
+    waited = 0.0
+    while time.monotonic() < deadline:
+        time.sleep(poll)
+        waited += poll
+        if not held():
+            if on_event:
+                on_event(f"deploy finished after {waited:.0f}s — continuing")
+            return
+        if on_event and waited % 60 < poll:
+            on_event(f"still waiting for the deploy ({waited:.0f}s elapsed)")
+    raise NotLive(f"a deploy has held the fleet lock for {timeout:.0f}s — refusing to "
+                  f"activate into it. Check whether a deploy is wedged; "
+                  f"`flock -n /opt/cluster/fleet.lock -c true` tells you if it is clear")
+
+
 def bring_up(profile: str, *, force: bool = False, wait: bool = True,
              smoke: bool = None, on_event=None) -> None:
     """Make `profile` live, or raise. **This is what "activate" should have meant.**
@@ -277,6 +327,8 @@ def bring_up(profile: str, *, force: bool = False, wait: bool = True,
         if on_event:
             on_event(msg)
 
+    # Never activate into a running deploy — it converges the selection underneath us.
+    wait_for_deploy(on_event=emit)
     rc = activate(profile, force=force)
     if rc != 0:
         raise NotLive(f"activate({profile}) exited {rc} — the reconciler refused or a "

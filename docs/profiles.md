@@ -52,12 +52,12 @@ we are choosing not to offer, and on this fleet it is enormous.
 | Profile | Model | decode | ctx / KV | notes |
 |---|---|---|---|---|
 | [`qwen3-vl-235b-a22b-instruct-nvfp4`](#qwen3-vl-235b-a22b-instruct-nvfp4) | Qwen3-VL-235B-A22B | 23.8 tok/s | 131k / 534k | **75.0%** MMLU-Pro subset — the accuracy leader. Vision + tools verified |
-| [`nvidia-nemotron-3-super-120b-a12b-nvfp4`](#nvidia-nemotron-3-super-120b-a12b-nvfp4) | Nemotron-3-Super-120B-A12B | *unmeasured* | 262k / ~31M est | new 2026-08-10; Puzzle's uncompressed upstream |
-| [`nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4`](#nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4) | Nemotron-3-Puzzle-75B-A9B | 32.0 tok/s | 131k / **35.2M** | the long-context model — hybrid Mamba, 8 of 88 layers attention |
+| [`nvidia-nemotron-3-super-120b-a12b-nvfp4`](#nvidia-nemotron-3-super-120b-a12b-nvfp4) | Nemotron-3-Super-120B-A12B | *decode unmeasured* | 262k / 23.5M (89.8× conc.) | new 2026-08-10; Puzzle's uncompressed upstream. Smoke-verified 2026-08-12 — KV measured, replacing the ~31M estimate |
+| [`nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4`](#nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4) | Nemotron-3-Puzzle-75B-A9B | 32.0 tok/s | 131k / **28.2M** | the long-context model — hybrid Mamba, 8 of 88 layers attention |
 | [`qwen3.6-35b-a3b-nvfp4`](#qwen36-35b-nvfp4) | Qwen3.6-35B-A3B | **100.2 tok/s** | 262k / 16.3M | the fast generalist; TPOT 9.6 ms. **Also a VL** — passes the vision gate, which the tables did not say until 2026-08-12 |
 | [`qwen3-coder-next-nvfp4`](#qwen3-coder-next-nvfp4) | Qwen3-Coder-Next | 54.0 tok/s | 262k / 5.98M | coding; also the DEF-0003 exercise (no spec-decode masking it) |
 | [`minimax-m2.7-nvfp4`](#minimax-m27-nvfp4) | MiniMax-M2.7 | 24.9 tok/s | 131k / 449k | best raw throughput (148.9 tok/s @16); reasons past the eval cap on 32% of items |
-| [`mistral-small-4-119b-2603-nvfp4`](#mistral-small-4-119b-2603-nvfp4) | Mistral-Small-4-119B | **49.0 tok/s** | 65k / 51.3 GiB (36.5× conc.) | the European option; 119B total but **~6.6B active** (128 experts, 4+1) + MLA — the shape this hardware wants |
+| [`mistral-small-4-119b-2603-nvfp4`](#mistral-small-4-119b-2603-nvfp4) | Mistral-Small-4-119B | **49.0 tok/s** | 262k / 2.35M (8.96× conc.) | the European option; 119B total but **~6.6B active** (128 experts, 4+1) + MLA — the shape this hardware wants. **Also a VL** — vision gate passed 2026-08-12 |
 | [`empty`](#empty) | — | — | — | nothing serving; the fail-safe target |
 
 **Every profile is TP=2 across both nodes.** That is not a coincidence and not a policy —
@@ -101,8 +101,13 @@ argument for a single-node profile, and no current model makes it.
 
 ### nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
 - **Model:** `NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4` (~50 GiB); 26.07.
-- **Measured:** **35.2M KV tokens** — the largest cache in the fleet by 2×, against a
-  131,072 ceiling. That is 268 full-length conversations, or 0.4% of the cache in use.
+- **Measured:** **28.2M KV tokens** (66.9 GiB, 215× concurrency) — the largest cache in
+  the fleet by 2×, against a 131,072 ceiling. That is 215 full-length conversations, or
+  0.5% of the cache in use.
+  > Was documented as 35.2M until 2026-08-12. Re-measured twice that day — 28,130,067
+  > during a busy activation sweep and 28,175,438 on a fully idle box, a 0.16% spread —
+  > so host load was never the explanation. 35.2M would need ~83.5 GiB of KV, and
+  > `gpu_memory_utilization: 0.80` yields 66.9 GiB after 23.11 GiB of weights.
 - **Why so large:** of 88 layers only 8 are attention; the rest are Mamba and MLP, and a
   Mamba layer's state is fixed rather than growing per token. Context is nearly free here.
 - **Workflow:** long documents, whole-codebase reading. Raise `max_model_len` before

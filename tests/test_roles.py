@@ -363,3 +363,59 @@ def test_no_duplicate_keys_in_any_yaml():
         except yaml.YAMLError:
             pass          # Jinja-templated YAML that does not parse standalone; not our concern
     assert not problems, "duplicate keys silently drop values:\n  " + "\n  ".join(problems)
+
+
+def test_image_reclaim_never_touches_another_users_images():
+    """`deploy --evict` must not delete images this project does not own (P0, 2026-08-12).
+
+    The reclaim exists to drop STALE VERSIONS OF OUR OWN images — 26.04 and 26.06 sat on
+    both nodes long after nothing ran them. So the keep-set (`container_images`) cannot
+    also be the candidate set, or the reclaim would delete exactly what it should keep.
+
+    The original code got the keep-set right and left the candidate set as *every image on
+    the daemon*. On a box shared with other users that is destructive: an evicting deploy
+    would `docker rmi` their images, and the plan line called them "named by no
+    `container_images` entry", which reads like one of our own stale layers.
+
+    The fix is a second, narrower axis — REPOSITORY ownership:
+
+        candidate  <=>  repo in declared_repos  AND  exact ref not in declared_images
+
+    so a third party's image cannot enter the candidate set at all. Label scoping would be
+    tighter but only works for images we BUILD; the seven we PULL carry no label of ours.
+    """
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "ansible/roles/images/tasks/main.yml").read_text()
+
+    assert "declared_repos" in text, "repository ownership scoping is gone"
+    rmi = text.split("- name: Reclaim images this node's declaration no longer names")[1]
+    assert "item.split('|')[0] in declared_repos" in rmi, \
+        "the rmi candidate set is unscoped again — it can reach another user's images"
+
+    # `docker image prune` is DAEMON-WIDE and would collect another user's orphaned build
+    # layers, so it must be filtered to images our own Dockerfile labels.
+    assert "docker image prune --force --filter label=" in text, \
+        "dangling prune is unfiltered — it reclaims other users' orphans too"
+    dockerfile = (root / "ansible/roles/images/files/vllm-26.07-xgrammar-fix/Dockerfile").read_text()
+    assert "LABEL net.flummoxed.sparky-cluster=" in dockerfile, \
+        "the derived image lost the ownership label the prune filters on"
+
+
+def test_the_evict_dry_run_cannot_silently_report_nothing():
+    """`deploy --check --evict` must actually read the image list (2026-08-12).
+
+    Ansible skips `command` tasks under `--check`, so without `check_mode: false` the read
+    was skipped, `present_images` came back skipped, and the reclaim plan had nothing to
+    report — for ANY node state. cli.py advertises this exact invocation as the way to ask
+    "what would an evicting deploy delete?", so it answered "nothing" while `--evict` would
+    have deleted plenty.
+
+    A destructive operation whose dry run returns an empty list is worse than one with no
+    dry run at all: empty reads as reassurance.
+    """
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "ansible/roles/images/tasks/main.yml").read_text()
+    read_task = text.split("- name: Read the images actually present on this node")[1]
+    read_task = read_task.split("- name:")[0]
+    assert "check_mode: false" in read_task, \
+        "the image read is skipped under --check, so the evict dry run reports nothing"

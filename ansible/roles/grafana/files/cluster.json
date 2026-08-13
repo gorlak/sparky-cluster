@@ -168,9 +168,9 @@
       ]
     },
     {
-      "id": 11,
+      "id": 7,
       "type": "timeseries",
-      "title": "TTFT p99 (s)",
+      "title": "Memory used (%)",
       "gridPos": {
         "h": 7,
         "w": 24,
@@ -183,8 +183,9 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "decimals": 2,
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10
@@ -194,9 +195,13 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(vllm:time_to_first_token_seconds_bucket[5m])))",
-          "legendFormat": "{{model_name}}",
-          "refId": "A"
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
+          "legendFormat": "{{instance}}"
         }
       ]
     },
@@ -239,87 +244,14 @@
       ]
     },
     {
-      "id": 6,
+      "id": 8,
       "type": "timeseries",
-      "title": "GPU temp (\u00b0C) / power (W)",
+      "title": "CPU utilization (%)",
       "gridPos": {
         "h": 7,
         "w": 24,
         "x": 0,
         "y": 24
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "nvidia_smi_temperature_gpu",
-          "legendFormat": "{{instance}} temp"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "nvidia_smi_power_draw_watts",
-          "legendFormat": "{{instance}} power"
-        }
-      ]
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Node memory used (%)",
-      "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 31
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10
-          }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)",
-          "legendFormat": "{{instance}}"
-        }
-      ]
-    },
-    {
-      "id": 8,
-      "type": "timeseries",
-      "title": "Node CPU utilization (%)",
-      "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 38
       },
       "datasource": {
         "type": "prometheus",
@@ -348,6 +280,51 @@
           "legendFormat": "{{instance}}"
         }
       ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Temp (\u00b0C) / power (W)",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "nvidia_smi_temperature_gpu",
+          "legendFormat": "{{instance}} die"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "node_thermal_zone_temp{zone=\"0\"}",
+          "legendFormat": "{{instance}} Tj max"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "nvidia_smi_power_draw_watts",
+          "legendFormat": "{{instance}} power"
+        }
+      ],
+      "description": "Per node: the Blackwell **die** temperature (nvidia-smi), the package **Tj max**, and GPU power.\n\n`zone 0` is not merely the hottest zone, it IS the package maximum computed in firmware: it equals max(all other zones) in 99% of samples on sparky and 100% on snoopy (361 samples, 2026-08-12). That is SPBM's `tj_max`.\n\n**Why only this one zone is plotted.** GB10's System Power Budget Manager (MediaTek SSPM firmware, via the NVDA8800 ACPI device) really does carry 8 NAMED sensors \u2014 `tj_max`, `cpu_e_clu0/1`, `cpu_p_clu0/1`, `gpu`, `soc`, `dla` \u2014 but ACPI re-exports 7 of them with the names stripped, so Linux sees only anonymous `acpitz` zones and no `coretemp`. A panel showing all 7 was tried on 2026-08-12 and removed: only z0 could be identified from behaviour. The other six sit within a few \u00b0C of each other and REORDER between nodes and sampling windows \u2014 a 'z2 = P-core' reading taken from one window was contradicted by the next, and on the same data z5 was hot on sparky and cool on snoopy. Labelling them would assert what the data does not support. (An out-of-tree driver, antheas/spark_hwmon, exposes the real names; deliberately not installed.)\n\nTj max runs up to **+15 \u00b0C above the die** under load, so the hottest silicon in the chassis is the CPU, not the GPU, and it throttles first. Field reports put GB10 shutdown near 96-98 \u00b0C against a 105 \u00b0C critical trip. \u00b0C and W share an axis: they occupy the same numeric range here."
     }
   ]
 }

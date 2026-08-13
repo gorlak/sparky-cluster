@@ -13,6 +13,7 @@ an undeployed profile, and the four-token grammar the forced-command channel acc
 from __future__ import annotations
 
 import importlib.util
+import os
 import json
 from pathlib import Path
 
@@ -568,3 +569,60 @@ def test_success_is_reported_when_the_live_profile_matches(monkeypatch):
 
     act.bring_up("wanted", on_event=seen.append)
     assert any("live and gated" in m for m in seen)
+
+
+# --- activate must not fire into a running deploy (2026-08-12) -------------
+
+def test_wait_for_deploy_returns_when_the_lock_is_free(tmp_path, monkeypatch):
+    from sparky import activate as act, ansible, sweep
+    monkeypatch.setattr(ansible, "FLEET_LOCK", tmp_path / "fleet.lock")
+    monkeypatch.setattr(sweep, "_fleet_fd", None)
+    act.wait_for_deploy(timeout=1.0, poll=0.05)      # returns, does not raise
+
+
+def test_wait_for_deploy_skips_when_this_process_holds_the_lock(tmp_path, monkeypatch):
+    """A campaign holds `fleet.lock` for its whole run and activates once per job.
+
+    flock is per open-file-description, so a second acquire from the same process blocks
+    against itself: waiting here would hang every sweep forever. This is the deadlock the
+    guard has to dodge, and it is why the naive "just take the lock" fix is wrong.
+    """
+    import fcntl
+    from sparky import activate as act, ansible, sweep
+    lock = tmp_path / "fleet.lock"
+    monkeypatch.setattr(ansible, "FLEET_LOCK", lock)
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o664)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)     # we are the campaign
+    monkeypatch.setattr(sweep, "_fleet_fd", fd)
+    try:
+        act.wait_for_deploy(timeout=1.0, poll=0.05)     # must NOT hang or raise
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_wait_for_deploy_raises_rather_than_waiting_forever(tmp_path, monkeypatch):
+    """A wedged deploy must surface, not silently stall an activation for 30 minutes."""
+    import fcntl
+    import pytest
+    from sparky import activate as act, ansible, sweep
+    lock = tmp_path / "fleet.lock"
+    monkeypatch.setattr(ansible, "FLEET_LOCK", lock)
+    monkeypatch.setattr(sweep, "_fleet_fd", None)       # someone ELSE holds it
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o664)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(act.NotLive, match="fleet lock"):
+            act.wait_for_deploy(timeout=0.2, poll=0.05)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_bring_up_consults_the_guard_before_activating():
+    """The guard is only worth having if `bring_up` actually calls it."""
+    import inspect
+    from sparky import activate as act
+    src = inspect.getsource(act.bring_up)
+    assert "wait_for_deploy" in src.split("activate(profile")[0], \
+        "bring_up must wait for a deploy BEFORE requesting the activation"

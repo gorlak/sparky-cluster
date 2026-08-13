@@ -44,6 +44,12 @@
 # from importlib.metadata, not `pkg.__version__` — xgrammar exposes no `__version__`, and
 # reaching for one cost a whole deploy cycle on 2026-08-08 when the patch itself was fine.
 FROM nvcr.io/nvidia/vllm@sha256:95c498a475142c20c989c65e5d223348c09fed83ba17ddf44f117610c0bd3268
+# Ownership mark. `docker image prune` is otherwise DAEMON-WIDE and would reclaim
+# dangling layers belonging to anyone else using this box; the images role prunes
+# with `--filter label=net.flummoxed.sparky-cluster=true` so only orphans of OUR builds
+# qualify. Pulled images cannot carry this, which is why the tagged-image reclaim
+# scopes by repository instead.
+LABEL net.flummoxed.sparky-cluster="true"
 RUN pip install --no-cache-dir --no-deps 'xgrammar>=0.2.1' \
  && python3 -c "import xgrammar; from importlib.metadata import version; \
     assert hasattr(xgrammar, 'normalize_tool_choice'), 'xgrammar still lacks normalize_tool_choice'; \

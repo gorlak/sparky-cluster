@@ -72,6 +72,13 @@
     cmd: docker images --digests --format '{{ "{{.Repository}}|{{.Tag}}|{{.Digest}}|{{.ID}}|{{.Size}}" }}'
   register: present_images
   changed_when: false
+  # Read-only, so it must ALSO run under `--check` — otherwise Ansible skips every
+  # `command` task, `present_images` comes back skipped, and the reclaim plan below has
+  # nothing to report. `deploy --check --evict` is advertised (cli.py) as the way to ask
+  # "what would an evicting deploy delete?", and without this it answered "nothing" no
+  # matter what was on the node: a DESTRUCTIVE operation whose dry run returns an empty
+  # list is worse than one with no dry run, because empty reads as reassurance.
+  check_mode: false
 
 - name: Work out which references this node still needs
   ansible.builtin.set_fact:
@@ -88,12 +95,27 @@
          + (container_images | map(attribute='build', default='') | list)
          | select | list }}
 
+# The reclaim is scoped to REPOSITORIES this project declares. Without this the keep-set
+# was `container_images` and the candidate set was *every image on the node*, so a deploy
+# --evict deleted images belonging to anyone else using the box — the log even called them
+# "named by no `container_images` entry", which reads like our own stale layer rather than
+# somebody's work. This cluster does not own the Docker daemon; it owns its own repos.
+- name: Work out which REPOSITORIES this project owns
+  ansible.builtin.set_fact:
+    declared_repos: >-
+      {{ declared_images
+         | map('regex_replace', '@.*$', '')
+         | map('regex_replace', ':[^/]*$', '')
+         | unique | list }}
+
 - name: Plan the image reclaim on this node
   ansible.builtin.debug:
     msg: >-
       {{ inventory_hostname }}: docker holds {{ present_images.stdout_lines | length }}
-      image(s); {{ reclaimable | length }} are named by no `container_images` entry for
-      this node — {{ reclaimable | map('regex_replace', '\\|.*$', '') | list }}.
+      image(s); {{ reclaimable | length }} are in a repository this project owns
+      ({{ declared_repos | join(', ') }}) but are named by no `container_images` entry
+      for this node — {{ reclaimable | map('regex_replace', '\\|.*$', '') | list }}.
+      Images in any OTHER repository belong to someone else and are never touched.
       Dangling layers from earlier builds are reclaimed separately and are always safe.
       {{ 'RECLAIMING now (evict_weights=true).' if evict_weights | bool
          else 'NOT reclaiming — this is a plan; ./sparky.sh deploy --evict applies it.' }}
@@ -101,15 +123,21 @@
     reclaimable: >-
       {{ present_images.stdout_lines
          | reject('search', '^<none>\\|<none>')
+         | select('search', '^(' ~ (declared_repos | join('|')) ~ ')\\|')
          | reject('search', '\\|' ~ (declared_images | join('$|\\|')) ~ '$')
          | list }}
 
 # Dangling first and separately: untagged layers orphaned by REBUILDS of the derived
 # image (its Dockerfile changes whenever the WAR does). Nothing can reference them by
-# name, so this is unconditionally safe and is usually where most of the space is.
-- name: Reclaim dangling image layers
+# name, so reclaiming them is safe and is usually where most of the space is.
+#
+# FILTERED BY OUR LABEL, because a bare `docker image prune` is DAEMON-WIDE: it would
+# also delete another user's orphaned build layers, which are not ours to collect. The
+# label is set in the derived image's Dockerfile, so only orphans of our own builds
+# match. Orphans predating the label are simply left alone — the safe direction.
+- name: Reclaim dangling image layers from OUR builds only
   ansible.builtin.command:
-    cmd: docker image prune --force
+    cmd: docker image prune --force --filter label=net.flummoxed.sparky-cluster=true
   register: prune_dangling
   when: evict_weights | bool
   changed_when: "'Total reclaimed space: 0B' not in prune_dangling.stdout"
@@ -132,6 +160,9 @@
     - (item.split('|')[0] ~ '@' ~ item.split('|')[2]) not in declared_images
     - (item.split('|')[0] ~ ':' ~ item.split('|')[1]) not in declared_images
     - item.split('|')[0] not in declared_images
+    # NOT OURS, NOT OUR BUSINESS. The candidate must live in a repository this project
+    # declares; anything else on the daemon belongs to another user and is left alone.
+    - item.split('|')[0] in declared_repos
   register: rmi_result
   failed_when: false
   changed_when: rmi_result.rc == 0

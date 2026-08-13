@@ -738,14 +738,35 @@ def test_the_panel_and_the_cli_show_the_same_menu_in_the_same_order(panel, tmp_p
 def test_the_dashboard_stacks_trends_above_host_noise():
     """Panel ORDER is the dashboard's argument about what matters (2026-08-12).
 
-    Serving trends first — token throughput, then TTFT — then GPU, then the host. **Node
-    CPU is last on purpose**: on this cluster it is the least diagnostic row on the page
-    (decode is memory-bandwidth-bound, so the CPUs are idle while the interesting thing
-    happens) and it was sitting above node memory for no reason.
+    Serving trends first — token throughput, then memory — then the two utilization
+    rows, then temperature. Titles carry no `Node` prefix (redundant: everything here is
+    a node) and units appear in the TITLE only, never repeated in a series name.
+
+    **`SoC thermal zones` was added and removed the same day (2026-08-12).** GB10's SPBM
+    firmware carries 8 named sensors (`tj_max`, `cpu_p_clu0/1`, `cpu_e_clu0/1`, `gpu`,
+    `soc`, `dla`) but ACPI re-exports 7 of them anonymously. Only `z0` could be pinned —
+    it equals max(others) in 99-100% of samples, so it IS `tj_max`. The other six sit
+    within a few °C and reorder between nodes and windows: a "z2 is a P-core" reading
+    from one window was contradicted by the next, and z5 was simultaneously hot on sparky
+    and cool on snoopy. Seven anonymous lines is noise, so only Tj max is plotted.
 
     `Requests running / waiting` was removed rather than moved: at a fleet-wide
     concurrency of one serving engine it read 1 or 0 and answered nothing the `Serving`
     panel does not.
+
+    **`TTFT p99` was removed too (2026-08-12), and the reason generalises.** It was
+    reported as spotty; the cause was that `histogram_quantile` over an all-zero rate
+    returns NaN, not 0, so an idle cluster drew holes. Making it plot a truthful 0 while
+    the engine is up is a two-line fix — and it proved the panel had nothing to say. This
+    cluster serves sporadic single-user traffic, so a p99 here is a percentile over about
+    three requests, which is just the maximum wearing a statistic's name.
+
+    The boundary it settles: **the dashboard shows what the cluster is DOING; the
+    scoreboard shows how WELL a model does it.** A quality-of-service percentile only
+    means something under controlled load, which is `sparky bench`'s job — and
+    `scoreboard.COLUMNS` already carries `TTFT p99` from `ttft_p99_ms`, so nothing was
+    lost by deleting the panel. Token throughput stays because it is a liveness signal
+    that pairs with GPU utilization, not a model comparison.
     """
     dashboard = json.loads((Path(__file__).resolve().parent.parent / "ansible" / "roles" /
                             "grafana" / "files" / "cluster.json").read_text())
@@ -753,11 +774,27 @@ def test_the_dashboard_stacks_trends_above_host_noise():
     assert "Requests running / waiting" not in titles
 
     rows = sorted(dashboard["panels"], key=lambda p: p["gridPos"]["y"])
-    assert rows[-1]["title"] == "Node CPU utilization (%)", "CPU belongs at the bottom"
 
     ts = [p for p in rows if p["type"] == "timeseries"]
-    assert [p["title"] for p in ts][:2] == ["Token throughput", "TTFT p99 (s)"], \
-        "the two serving trends lead the stack"
+    assert [p["title"] for p in ts] == [
+        "Token throughput", "Memory used (%)", "GPU utilization (%)",
+        "CPU utilization (%)", "Temp (°C) / power (W)"], "panel order is the argument"
+
+    # No `Node` prefix: every panel here is a node, so it carried no information.
+    assert not any(p["title"].startswith("Node") for p in dashboard["panels"])
+
+    # Units live in the title, never also in a series name — one place, not two.
+    for p in dashboard["panels"]:
+        for t in p.get("targets", []):
+            legend = t.get("legendFormat", "")
+            assert "°C" not in legend and not legend.endswith(" W"), \
+                f"{p['title']}: unit repeated in series name {legend!r}"
+
+    # Only Tj max (zone 0) is plotted — the other six ACPI zones are unidentifiable.
+    zone_exprs = [t["expr"] for p in dashboard["panels"] for t in p.get("targets", [])
+                  if "thermal_zone" in t.get("expr", "")]
+    assert zone_exprs == ['node_thermal_zone_temp{zone="0"}'], \
+        "only the firmware-computed package max is trustworthy; see the docstring"
 
     # Both serving metrics are PLOTS ONLY (2026-08-12). The big-number stats were removed:
     # a single instantaneous value for a rate is the least informative thing on the page —
@@ -765,9 +802,16 @@ def test_the_dashboard_stacks_trends_above_host_noise():
     # and the plot directly above it answers that. The only stats left are `Serving` and
     # `Runbook`, which are STATES rather than magnitudes and have no trend to show.
     assert {p["title"] for p in dashboard["panels"] if p["type"] == "stat"} == {"Serving", "Runbook"}
-    ttft = [p for p in dashboard["panels"] if p["title"] == "TTFT p99 (s)"]
-    assert [p["type"] for p in ttft] == ["timeseries"], "TTFT is a plot, not a number"
-    assert "time_to_first_token_seconds_bucket" in ttft[0]["targets"][0]["expr"]
+    # TTFT belongs to the scoreboard, not here — see the docstring. Assert it is gone from
+    # the dashboard AND still owned by the scoreboard, so this can never become a silent
+    # deletion of the metric rather than a relocation of it.
+    assert "TTFT p99 (s)" not in titles, "TTFT is a scoreboard metric, not a dashboard one"
+    assert not any("time_to_first_token" in t.get("expr", "")
+                   for p in dashboard["panels"] for t in p.get("targets", [])), \
+        "no panel should query the TTFT histogram"
+    from sparky import scoreboard
+    assert any(c[0] == "TTFT p99" for c in scoreboard.COLUMNS), \
+        "removing the panel is only correct while the scoreboard still reports TTFT p99"
 
     # ONE time axis for the whole page. `graphTooltip: 2` is shared crosshair AND tooltip,
     # so hovering any graph puts the cursor on every other and shows their values at that

@@ -122,16 +122,16 @@ decode, throughput and KV capacity for every model measured; the paired numbers 
 | Profile | Shape | decode | usable ctx / KV |
 |---|---|---|---|
 | `qwen3-vl-235b-a22b-instruct-nvfp4` | Qwen3-VL-235B — **75.0%** MMLU-Pro subset, vision + tools (`hermes`) | 23.8 tok/s | 131k / 534k |
-| `nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4` | Nemotron-3-Puzzle-75B — hybrid Mamba; **the long-context model** | 32.0 tok/s | 131k / **35.2M** |
-| `nvidia-nemotron-3-super-120b-a12b-nvfp4` | Nemotron-3-Super-120B-A12B — Puzzle's uncompressed upstream; `MIXED_PRECISION` despite the name | *new* | 262k / ~31M est |
+| `nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4` | Nemotron-3-Puzzle-75B — hybrid Mamba; **the long-context model** | 32.0 tok/s | 131k / **28.2M** |
+| `nvidia-nemotron-3-super-120b-a12b-nvfp4` | Nemotron-3-Super-120B-A12B — Puzzle's uncompressed upstream; `MIXED_PRECISION` despite the name | *decode unmeasured* | 262k / 23.5M |
 | `qwen3.6-35b-a3b-nvfp4` | Qwen3.6-35B-A3B — the fast generalist, **and vision-capable** (passes the vision gate) | **100.2 tok/s** | 262k / 16.3M |
 | `qwen3-coder-next-nvfp4` | Qwen3-Coder-Next | 54.0 tok/s | 262k / 5.98M |
 | `minimax-m2.7-nvfp4` | MiniMax-M2.7 — soaked 64 min clean; reasons past the eval's cap on 32% of items | 24.9 tok/s | 131k / 449k |
-| `mistral-small-4-119b-2603-nvfp4` | Mistral-Small-4-119B — **119B total, ~6.6B active** (128 experts, 4+1); MLA, vision. The European option | 49.0 tok/s | 65k / **36.5×** |
+| `mistral-small-4-119b-2603-nvfp4` | Mistral-Small-4-119B — **119B total, ~6.6B active** (128 experts, 4+1); MLA, vision. The European option | 49.0 tok/s | 262k / 2.35M |
 
 **Every profile is offering far less context than it holds.** The `usable ctx` column is
 `max_model_len` — a number we chose — against the KV cache actually allocated. Nemotron
-serves 131k out of 35.2M. Raising these is config, not hardware.
+serves 131k out of 28.2M. Raising these is config, not hardware.
 
 **Single-node (TP=1 on snoopy)** — one left, and it is parked. The performance case for this
 shape is gone; the only remaining argument is fleet occupancy, since TP=2 takes both nodes
@@ -478,6 +478,7 @@ changes on deploy.
 │   ├── adr/                   #   control-interface, models/, upgrades/, and ADRs
 │   ├── updating.md            #   change-pathway checklists (bump a container, add a model…)
 │   ├── defects.md             #   register of open defects, each with a clears-when
+│   ├── synchronization.md     #   who may touch the fleet and when — the locks, wait-vs-refuse
 │   └── …
 ├── benchmark/                 # legacy bench scripts (being absorbed into sparky bench)
 └── ansible/                   # THE Ansible project
