@@ -144,6 +144,10 @@
   when: inventory_hostname in groups['head']
 
 - name: Install the idle unloader's unit and timer
+  # `notify` matters: the enable task below uses `state: started`, which is a NO-OP on an
+  # already-running timer — so without a restart, a changed interval or AccuracySec would
+  # not take effect until something else happened to bounce it.
+  notify: restart the idle timer
   ansible.builtin.template:
     src: "{{ item }}.j2"
     dest: "/etc/systemd/system/{{ item }}"

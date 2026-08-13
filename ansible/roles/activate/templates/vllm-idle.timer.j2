@@ -14,11 +14,16 @@ Description=Check whether the fleet has gone quiet (scale to zero)
 # Observed 2026-08-13: the deploy at 01:59:53 stopped scale-to-zero silently. A dead
 # dead-man's switch that announces nothing is the worst failure this file can have, which
 # is why `OnActiveSec` (relative to the TIMER starting) is here — it always has an anchor.
-OnActiveSec={{ idle_check_interval }}
-OnBootSec={{ idle_check_interval }}
-OnUnitActiveSec={{ idle_check_interval }}
-# Spread the wake-ups: nothing here is time-critical and a jittered timer keeps this off
-# the same second as every other periodic job on the box.
+OnActiveSec={{ idle_check_seconds }}s
+OnBootSec={{ idle_check_seconds }}s
+OnUnitActiveSec={{ idle_check_seconds }}s
+# LOAD-BEARING. systemd's default AccuracySec is 1 MINUTE — it batches timer wake-ups to
+# save power — so every value above is a fiction without this: the file would say 5 s and
+# the timer would fire whenever it liked within the minute. It applies to OnActiveSec and
+# OnBootSec too, so the FIRST tick after a deploy is affected as much as the steady state.
+AccuracySec={{ idle_check_accuracy }}
+# Jitter is added directly to how long a held caller waits to be noticed, and there is
+# only one timer on this box to spread. Keep it at 0.
 RandomizedDelaySec={{ idle_check_jitter }}
 Persistent=false
 

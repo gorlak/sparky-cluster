@@ -43,6 +43,11 @@ diff is worse than a terse one, because it is the record everyone trusts later.
 `deploy` is password-gated, so it is the one step that is **theirs** (ADR-0018). Everything
 either side of it is **yours**, and the handover is where an agent most often stalls.
 
+**Start watching when you ASK, not when they answer.** The operator may deploy at once or
+twenty minutes later between other things; either way the watching is yours, and requiring an
+announcement makes them the messenger for something you can see for yourself. Arm the watch in
+the same turn you request the deploy.
+
 **"deploying now" / "deploy is going" is a cue to act, not to wait.** When you hear it:
 
 1. **Watch for it to finish — success OR failure — and then READ THE LOG either way.** Do
@@ -106,6 +111,31 @@ either side of it is **yours**, and the handover is where an agent most often st
 If a deploy FAILS, diagnose it and fix the cause rather than handing the error back. A
 failure whose fix is in the repo (a role that assumes an HF-layout checkpoint, a flag that
 does not survive the env-file round trip) is ordinary work — do it, then say "re-run".
+
+## Comments say what the code DOES and what it is FOR — nothing else
+
+A comment earns its place by explaining the code beside it: what it does, what it is
+designed to do, what a maintainer must not break. That is all.
+
+**Not** war stories, incident dates, or what was tried and failed. Those read as a
+distraction to someone who came to the file for a different reason entirely, and they
+assume a motive the reader does not have — a comment saying "DO NOT do X" presumes they
+arrived intending to do X.
+
+**Rejected alternatives and the evidence against them belong in an ADR**, which is exactly
+what `docs/adr/` is for ("something tried-and-failed that constrains future options" is a
+listed reason to write one — see [[documentation]]). The code stays readable; the reasoning
+stays findable by anyone asking "why not X?", which is an ADR-shaped question.
+
+Prefer, in the file:
+
+```
+# Loopback-only: this listener exists so model traffic gets its own Caddy `server` label.
+```
+
+over a paragraph explaining what a different design would have done and when it was
+measured. If the *why* needs more than a line, that is the signal it belongs in an ADR with
+a reference from the code — not that the comment should grow.
 
 ## Adversarially review your own hunks BEFORE asking for a deploy
 

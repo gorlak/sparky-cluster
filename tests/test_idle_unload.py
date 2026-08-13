@@ -352,3 +352,92 @@ def test_a_manual_empty_is_not_undone_by_the_wake(prog, monkeypatch):
     prog.main()
     assert prog.LAST_PROFILE.read_text().strip() == "", \
         "a stale marker survived while a profile was live — a later manual `empty` would be undone"
+
+
+# --- wake latency: the timer must actually tick as fast as it claims ------
+
+def _group_vars():
+    import yaml
+    root = Path(__file__).resolve().parent.parent
+    return yaml.safe_load((root / "ansible/group_vars/all.yml").read_text())
+
+
+def _timer():
+    root = Path(__file__).resolve().parent.parent
+    return (root / "ansible/roles/activate/templates/vllm-idle.timer.j2").read_text()
+
+
+def test_the_timer_pins_its_own_accuracy():
+    """THE highest-value test here, because the failure is SILENT.
+
+    systemd's default `AccuracySec` is one MINUTE — it batches timer wake-ups to save power.
+    Verified on this host before the change: `AccuracyUSec=1min`. So `OnUnitActiveSec=5s`
+    without pinning accuracy produces a unit file that says 5 s and fires whenever it likes
+    within the minute. Everything looks applied; nothing is.
+    """
+    assert "AccuracySec=" in _timer(), "without this the interval is a fiction"
+    assert _group_vars()["idle_check_accuracy"] == "1s"
+
+
+def test_all_three_anchors_share_one_interval():
+    """Speeding up only the steady state leaves a 60 s hole after every deploy — precisely
+    when the endpoint is most likely to be hit next."""
+    t = _timer()
+    for anchor in ("OnActiveSec", "OnBootSec", "OnUnitActiveSec"):
+        assert f"{anchor}={{{{ idle_check_seconds }}}}s" in t, f"{anchor} drifted off the shared value"
+
+
+def test_wake_latency_is_seconds_not_a_minute():
+    """A held caller waits this long before anything looks, on top of a ~300 s cold start."""
+    assert _group_vars()["idle_check_seconds"] <= 10
+
+
+def test_the_jitter_stays_off():
+    """Jitter is added directly to how long a held caller waits, and there is one timer on
+    this box to spread."""
+    assert _group_vars()["idle_check_jitter"] == 0
+
+
+def test_the_program_thins_by_the_interval_the_timer_uses():
+    """The thinning is sound only if the program and the timer share ONE interval. If they
+    drift, narration silently over- or under-samples."""
+    root = Path(__file__).resolve().parent.parent
+    svc = (root / "ansible/roles/activate/templates/vllm-idle.service.j2").read_text()
+    assert "IDLE_CHECK_SECONDS={{ idle_check_seconds }}" in svc
+    assert "idle_check_interval" not in _group_vars(), "a second interval variable would drift"
+
+
+def test_narration_is_thinned_but_actions_never_are(prog, monkeypatch):
+    """Actions and failures always log; observations are sampled."""
+    seen = []
+    monkeypatch.setattr(prog, "log", lambda m: seen.append(m))
+    prog.CHECK_EVERY, prog.NARRATE_EVERY = 5.0, 60.0
+    clock = [1000.0]
+    monkeypatch.setattr(prog.time, "time", lambda: clock[0])
+    for _ in range(12):                      # one minute of 5s ticks
+        prog.narrate("routine")
+        clock[0] += 5
+    assert len(seen) == 1, f"expected 1 narration per minute, got {len(seen)}"
+
+
+def test_thinning_is_a_no_op_at_the_old_cadence(prog, monkeypatch):
+    """Putting the interval back to 60 turns the thinning off — one number to move."""
+    seen = []
+    monkeypatch.setattr(prog, "log", lambda m: seen.append(m))
+    prog.CHECK_EVERY, prog.NARRATE_EVERY = 60.0, 60.0
+    clock = [1000.0]
+    monkeypatch.setattr(prog.time, "time", lambda: clock[0])
+    for _ in range(5):
+        prog.narrate("routine")
+        clock[0] += 60
+    assert len(seen) == 5
+
+
+def test_the_level_filter_does_not_swallow_the_program():
+    """`LogLevelMax` drops PID 1's per-tick chatter (34,560 lines/day at 5 s). Alone it
+    would ALSO swallow stdout and every traceback, because the unit's output is logged at
+    info — a dead-man's switch that dies without saying so. `SyslogLevel` lifts it clear."""
+    root = Path(__file__).resolve().parent.parent
+    svc = (root / "ansible/roles/activate/templates/vllm-idle.service.j2").read_text()
+    assert "LogLevelMax=" in svc and "SyslogLevel=notice" in svc, \
+        "both are required; either alone is a bug"

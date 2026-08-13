@@ -48,6 +48,8 @@ INNER_PORT = os.environ.get("MODEL_INNER_PORT", "8090")
 WAKE_ENABLED = os.environ.get("IDLE_WAKE_ENABLED", "true").lower() in ("1", "true", "yes")
 LAST_PROFILE = CLUSTER / "last-serving-profile"
 ENABLED = os.environ.get("IDLE_UNLOAD_ENABLED", "false").lower() in ("1", "true", "yes")
+CHECK_EVERY = float(os.environ.get("IDLE_CHECK_SECONDS", 60))
+NARRATE_EVERY = 60.0
 
 # `idle_unload_after: 0` means OFF, not "immediately".
 #
@@ -62,6 +64,24 @@ DISABLED = (not ENABLED) or IDLE_AFTER <= 0
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def narrate(msg: str) -> None:
+    """Steady-state narration, thinned to one line a minute whatever the tick rate.
+
+    The per-tick decision line exists because "it never woke" and "it never unloaded" are
+    the two bugs this program will be blamed for, and no-demand / empty-marker / fleet-busy
+    are indistinguishable afterwards unless each is written down. That value has to survive
+    the timer getting 12x faster, so: ACTIONS AND FAILURES ALWAYS LOG; OBSERVATIONS ARE
+    SAMPLED. One sample a minute of a state that changes on the hour is plenty.
+
+    Stateless on purpose — this is a oneshot with no memory between runs, and a "last
+    logged" timestamp on disk would be a second piece of persisted state to keep correct
+    for the sake of log volume. It also self-disables: at CHECK_EVERY >= 60 the condition
+    is always true, so putting the interval back turns the thinning off. One number to move.
+    """
+    if time.time() % NARRATE_EVERY < CHECK_EVERY:
+        log(msg)
 
 
 def live_profile() -> str | None:
@@ -240,15 +260,16 @@ def main() -> int:
 
     profile = live_profile()
     if profile in (None, EMPTY):
-        write_state({})       # nothing loaded: the idle clock is meaningless
+        if read_state():
+            write_state({})   # nothing loaded: clear the clock, but only if there is one
         # Always narrate the wake decision. "It did not wake" is one of the two bugs this
         # program will be blamed for, and no-demand, empty-marker and fleet-busy are
         # indistinguishable after the fact unless each is written down.
         if not WAKE_ENABLED:
-            log("empty; wake disabled")
+            narrate("empty; wake disabled")
             return 0
         if fleet_busy():
-            log("empty; a deploy or campaign holds the fleet lock — not waking")
+            narrate("empty; a deploy or campaign holds the fleet lock — not waking")
             return 0
         demand = waiting_requests()
         marker = ""
@@ -258,11 +279,11 @@ def main() -> int:
             pass
         if demand > 0 and marker:
             return restore()
-        log(f"empty; waiting={demand} marker={marker or 'none'} — nothing to do")
+        narrate(f"empty; waiting={demand} marker={marker or 'none'} — nothing to do")
         return 0
 
     if fleet_busy():
-        log("a deploy or campaign holds the fleet lock — not unloading")
+        narrate("a deploy or campaign holds the fleet lock — not unloading")
         return 0
 
     # Something IS serving, so any restore marker is stale — drop it. Without this the
@@ -279,7 +300,7 @@ def main() -> int:
     now = time.time()
     seen = activity()
     if seen is None:
-        log("engines unreachable — not unloading (unreachable is not idle)")
+        narrate("engines unreachable — not unloading (unreachable is not idle)")
         return 0
     tokens, inflight = seen
 
@@ -291,14 +312,14 @@ def main() -> int:
         # Say WHICH input reset it. "It never unloads" is the other bug this program will
         # be blamed for, and a silent reset leaves no way to tell a busy cluster from a
         # counter that moves on its own.
-        log(f"{profile} not idle ({why}: inflight={inflight} "
+        narrate(f"{profile} not idle ({why}: inflight={inflight} "
             f"tokens={tokens} was={state.get('tokens')}) — clock reset")
         write_state({"profile": profile, "tokens": tokens, "since": now})
         return 0
 
     idle_for = now - float(state.get("since", now))
     if idle_for < IDLE_AFTER:
-        log(f"{profile} idle {idle_for / 60:.0f} min of {IDLE_AFTER / 60:.0f}")
+        narrate(f"{profile} idle {idle_for / 60:.0f} min of {IDLE_AFTER / 60:.0f}")
         return 0
 
     log(f"{profile} idle {idle_for / 3600:.1f} h — unloading to {EMPTY}")

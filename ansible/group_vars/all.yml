@@ -189,14 +189,22 @@ idle_unload_after: 14400          # seconds of quiet before unloading (4 h). Hou
 idle_wake_enabled: true
 caddy_metrics_url: http://127.0.0.1:2019/metrics
 caddy_config_url: http://127.0.0.1:2019/config/apps/http/servers
-# How often the manager looks. This is now WAKE LATENCY as well as sleep granularity: a
-# held request waits up to this long before anything notices it, on top of the cold start.
-# Keep it short -- the check is two local HTTP gets. PRODUCTION: 1min
-idle_check_interval: 1min
-idle_check_jitter: 0              # NOT the usual 60. Jitter exists to keep periodic jobs
-                                  # off the same second, which matters on a busy host with
-                                  # many timers; here there is one, and any jitter is added
-                                  # directly to how long a caller waits to be noticed.
+# WAKE LATENCY. A caller held at a sleeping fleet waits this long before anything looks,
+# on top of the ~300 s cold start. Matched to `health_interval 5s` in the Caddyfile: the
+# manager looks exactly as often as Caddy re-evaluates upstream health, so the number is
+# justified by a constant already in the design rather than by taste. A tick costs ~20 ms.
+#
+# Was 60 s. An event-driven trigger was measured on 2026-08-13 and cannot work — see the
+# Caddyfile's "DO NOT ADD A WAKER UPSTREAM" note. Polling is what is left, so it is fast.
+idle_check_seconds: 5
+# systemd's default AccuracySec is ONE MINUTE — it batches timer wake-ups to save power.
+# Without pinning it, everything above is a fiction: the unit would say 5 s and fire when
+# it felt like within the minute. Verified on this host before the change:
+# `systemctl show vllm-idle.timer -p AccuracyUSec` -> AccuracyUSec=1min.
+idle_check_accuracy: 1s
+idle_check_jitter: 0
+# Filters PID 1's per-tick chatter. `debug` restores full narration when diagnosing.
+idle_log_level_max: notice
 # How long Caddy holds a request while no upstream is healthy.
 #
 # SIZE THIS AGAINST COLD-START-TO-SERVING, NOT WEIGHT-LOAD TIME. The first cut used 300s,

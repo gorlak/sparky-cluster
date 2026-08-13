@@ -13,11 +13,22 @@ User={{ activate_user }}
 Group={{ activate_group }}
 Environment=IDLE_UNLOAD_ENABLED={{ idle_unload_enabled | lower }}
 Environment=IDLE_AFTER_SECONDS={{ idle_unload_after }}
+Environment=IDLE_CHECK_SECONDS={{ idle_check_seconds }}
 Environment=IDLE_WAKE_ENABLED={{ idle_wake_enabled | lower }}
 Environment=CADDY_METRICS={{ caddy_metrics_url }}
 Environment=CADDY_CONFIG={{ caddy_config_url }}
 Environment=MODEL_INNER_PORT={{ model_inner_port }}
 ExecStart={{ idle_bin }}
+# At a 5 s tick, PID 1's own "Starting"/"Finished" pair is 34,560 journal lines a day and
+# no program-side rate limit can touch it. LogLevelMax filters those in the manager itself,
+# before journald; "Failed with result" (warning) still lands.
+#
+# SyslogLevel is NOT optional alongside it: the unit's stdout/stderr are logged at info by
+# default, so LogLevelMax=notice alone would silently swallow every print AND every
+# traceback — a dead-man's switch that dies without saying so, which is the exact failure
+# this unit must never have. Both, or neither.
+SyslogLevel=notice
+LogLevelMax={{ idle_log_level_max }}
 # No privilege of its own. It writes the request file and calls the same bounded
 # reconciler `./sparky.sh activate` does, through the sudoers entry the activate group
 # already holds — so this adds NO new grant.
