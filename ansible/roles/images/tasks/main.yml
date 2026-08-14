@@ -49,19 +49,11 @@
     mode: "0644"
   become: true
 
-# --- reclaim: converge the image store to the declaration ----------------------
-# Symmetric with the `model` role's weight eviction, and gated on the SAME switch
-# (`./sparky.sh deploy --evict`) so one gesture reclaims both. Without it this is a
-# plan and nothing is deleted.
-#
-# The README used to say images were left to Docker's GC because "shared base layers
-# make convergent image deletion unsafe". That reason was wrong: Docker refcounts
-# layers, so removing an image frees only what nothing else needs, and `docker rmi`
-# refuses outright while a container holds the image. What was genuinely missing was a
-# statement of which images SHOULD exist — and `container_images` is exactly that, the
-# same declaration the pulls above converge to. Retiring a container therefore left
-# tens of GiB per node parked forever: 26.04 and 26.06 sat on both nodes long after
-# nothing ran them.
+    # --- reclaim: converge the image store to the declaration ----------------------
+    # Symmetric with the `model` role's weight eviction and gated on the SAME switch
+    # (`./sparky.sh deploy --evict`), so one gesture reclaims both. Without it this is a
+    # plan and nothing is deleted. `container_images` is the statement of which images
+    # SHOULD exist; anything else in a repository we own is reclaimable.
 - name: Read the images actually present on this node
   # `--digests` is essential, not decoration. Upstream images are pulled BY DIGEST and
   # `docker pull repo@sha256:…` creates no tag, so they list as `repo:<none>` with the

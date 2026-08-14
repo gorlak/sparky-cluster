@@ -150,24 +150,8 @@ class Fleet:
                         f'are not. Write JSON args unspaced, e.g. -sc {{"method":"mtp"}}')
 
         # --- flags that MUST be on both ranks ------------------------------------
-        # Every rank builds its own VllmConfig from its own argv. A flag that changes the
-        # MODEL — how it is parsed, loaded, or executed — on only one rank makes the ranks
-        # disagree about the work to do, and TP=2 then deadlocks: each blocks on a
-        # collective the other never issues. It presents as a hang at startup, minutes
-        # from the flag that caused it, with no error naming it.
-        #
-        # This happened THREE TIMES on 2026-08-11/12 before the rule was written down:
-        #   * `--tokenizer-mode mistral` head-only  -> config-time refusal
-        #   * `--config-format mistral` without `--load-format`  -> KeyError at weight load
-        #   * `--speculative-config` head-only  -> rank 1 blocked ~12 min in
-        #     `_dummy_sampler_run -> tensor_model_parallel_all_gather` and died with
-        #     `DistBackendError … possible application crash on rank 0`, while rank 0
-        #     looped `No available shared memory broadcast block found` forever.
-        #
-        # The opposite case is legitimate and must stay allowed: API-surface flags
-        # (`--enable-auto-tool-choice`, `--tool-call-parser`, `--reasoning-parser`) belong
-        # to the API server, which runs on the head alone. So this is a NAMED LIST, not a
-        # blanket "both lists must match" — the two kinds of flag genuinely differ.
+        # See BOTH_RANK_FLAGS for why, and docs/bring-up-failures.md for what a violation
+        # looks like from the outside.
         for pl in self.placements:
             if not pl.engine.is_multinode:
                 continue
@@ -197,12 +181,17 @@ class Fleet:
 
         if problems:
             raise FleetError("\n".join(f"  - {p}" for p in problems))
-
-
-# Flags that configure the MODEL rather than the API server, so every rank needs them.
-# Keep this list SHORT and evidence-led: a flag earns a place by having desynchronised the
-# ranks, or by obviously being able to. API-surface flags must NOT be added — they are
-# head-only by design and listing them here would make every working profile fail lint.
+# Flags that MUST be on both ranks.
+#
+# Every rank builds its own VllmConfig from its own argv. A flag that changes the MODEL —
+# how it is parsed, loaded, or executed — on only one rank makes the ranks disagree about
+# the work to do, and TP=2 then deadlocks: each blocks on a collective the other never
+# issues. It presents as a hang at startup, minutes from the flag that caused it, with no
+# error naming it.
+#
+# A NAMED LIST rather than "both argv must match", because the opposite case is legitimate:
+# API-surface flags (`--enable-auto-tool-choice`, `--tool-call-parser`, `--reasoning-parser`)
+# belong to the API server, which runs on the head alone.
 BOTH_RANK_FLAGS: frozenset[str] = frozenset({
     "--tokenizer-mode",      # config-time tokenizer TYPE validation, per rank
     "--config-format",       # which config file the rank parses

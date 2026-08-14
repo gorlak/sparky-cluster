@@ -210,28 +210,23 @@ serving_topology:
       - --load-format mistral
       - --enable-auto-tool-choice
       - --tool-call-parser mistral
-      # From Mistral's OWN recipe on the draft model's card. Written UNSPACED and
-      # UNQUOTED (ADR-0018): serve flags travel through the engine env file as one
-      # single-quoted value that systemd re-splits on whitespace with no quote
-      # processing, so the JSON must carry no spaces and no outer quotes — the vendor
-      # prints it pretty across five lines and that exact string would break the round
-      # trip. `model` is the LOCAL path, not the Hub id they show: the engine has no
-      # network. The inner `max_model_len` is the vendor's 65536 and bounds how far the
-      # DRAFT looks — it is NOT the served context, which stays 262144.
-      # --- the rest of Mistral's EAGLE recipe, added 2026-08-12 after attempt 2 ---------
-      # `--attention-backend FLASH_ATTN_MLA` is THE FIX, not a tweak. vLLM auto-selected
-      # TRITON_MLA for decode, which is decode-ONLY: it asserts
-      # `max_query_len <= reorder_batch_threshold`, and spec-decode submits
-      # num_speculative_tokens+1 = 4 query tokens per sequence when the target verifies.
-      # Note prefill was ALREADY on FLASH_ATTN MLA; only decode fell back.
-      # `VLLM_ATTENTION_BACKEND` is gone from `vllm.envs` in 0.24.0, so the flag is the
-      # only interface — if it is wrong the engine refuses in seconds, which is cheap.
-      #
-      # The two scheduler numbers come from the same recipe and are NOT optional garnish:
-      # vLLM warned `max_num_scheduled_tokens is set to 2048 based on the speculative
-      # decoding settings. This may lead to suboptimal performance` because the draft's
-      # extra token slots need budget. **Adopting half a vendor recipe is its own failure
-      # mode** — that is DEF-0012's lesson (the Mistral trio) and we repeated it here.
+        # From Mistral's OWN recipe on the draft model's card. Written UNSPACED and UNQUOTED:
+        # serve flags travel through the engine env file as one single-quoted value that
+        # systemd re-splits on whitespace with no quote processing, so the JSON must carry no
+        # spaces and no outer quotes. `model` is the LOCAL path, not the Hub id — the engine
+        # has no network. The inner `max_model_len` bounds how far the DRAFT looks; it is not
+        # the served context, which stays 262144.
+        #
+        # `--attention-backend FLASH_ATTN_MLA` is REQUIRED, not a tweak: vLLM auto-selects
+        # TRITON_MLA for decode, which is decode-only and asserts
+        # `max_query_len <= reorder_batch_threshold`, while spec-decode submits
+        # num_speculative_tokens+1 query tokens per sequence at verification. Prefill was
+        # already on FLASH_ATTN MLA; only decode fell back. `VLLM_ATTENTION_BACKEND` is gone
+        # from `vllm.envs` in 0.24.0, so the flag is the only interface.
+        #
+        # The two scheduler numbers are from the same recipe and are not optional: the draft's
+        # extra token slots need budget, or vLLM caps `max_num_scheduled_tokens` at 2048 and
+        # warns of suboptimal performance. Adopt a vendor recipe whole (DEF-0012).
       - --attention-backend FLASH_ATTN_MLA
       - --max-num-batched-tokens 16384
       - --max-num-seqs 128

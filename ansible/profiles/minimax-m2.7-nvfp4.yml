@@ -1,27 +1,13 @@
 ---
-# MiniMax-M2.7, NVFP4 quant — TP=2 across both nodes. **The** MiniMax profile since
-# 2026-08-08: it began as an A/B against the AWQ-4bit sibling and replaced it outright
-# when AWQ turned out to be unable to leave container 26.04 (DEF-0004 froze a node on
-# 26.07). Same model, same topology, current container, hardware FP4 on Blackwell.
+# MiniMax-M2.7, NVFP4 quant — TP=2 across both nodes.
 #
-# Memory math (gmu 0.80 — NVFP4 weights are BIGGER than the AWQ):
-#   NVFP4 disk ~140 GiB → ~70 GiB/node at TP=2 (vs AWQ ~61 GiB/node).
-#   gmu 0.80 × 121 = 96.8 GiB vLLM budget/node − ~70 weights − ~0.65 graphs
-#     → ~26 GiB KV/rank (~AWQ profile's 29 GiB; ~1–2 long-context seqs at 128k).
-#   Outside headroom: 121 − 96.8 ≈ ~24 GiB/node free for system + dev.
-#   (Drop gmu to 0.75 for more dev room and ~20 GiB KV; raise toward 0.85 for more KV.)
+# Memory at gmu 0.80: ~140 GiB disk -> ~70 GiB/node; 96.8 GiB budget - 70 weights - ~0.65
+# graphs -> ~26 GiB KV/rank (1-2 long-context seqs at 128k), ~24 GiB/node left for system
+# and dev. Drop to 0.75 for dev room, raise to 0.85 for KV.
 #
-# NVFP4 is a ModelOpt (modelopt) checkpoint — auto-detected, so NO --quantization
-# (would double-quantize → garbage, same trap as the AWQ/FP8 checkpoints). Custom
-# modeling_minimax_m2.py handled by the template's global --trust-remote-code.
-#
-# NVFP4 is a **modelopt** checkpoint, so it does not touch the Marlin/AWQ MoE weight
-# loader that DEF-0004 tracks. That distinction stopped being academic on 2026-08-08:
-# MiniMax **AWQ** on 26.07 exhausted host RAM during weight load and hard-froze sparky
-# (fail-safe boot then held the node empty and reachable — ADR-0009's first real
-# firing). AWQ is therefore pinned to 26.04 indefinitely, and this profile — same
-# model, same TP=2 shape, a loader that sidesteps the bug — is now the way MiniMax
-# moves forward rather than an A/B curiosity.
+# NEVER pass `--quantization`: modelopt checkpoints are auto-detected and forcing it
+# double-quantizes into garbage. `modeling_minimax_m2.py` needs the global
+# `--trust-remote-code`.
 
 # ONE NAME. profile == engine == served_as == the lowercased canonical HF model
 # name, so the scoreboard, the systemd unit, the API and huggingface.co all agree.

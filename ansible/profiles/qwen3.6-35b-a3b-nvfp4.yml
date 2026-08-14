@@ -19,7 +19,7 @@
 # to spend, and spending it on KV is the entire point of the experiment.
 #
 # ANSWERED 2026-08-10 — this profile WON and its `-single` twin is retired
-# (config kept in profiles/retired/). Measured back to back on the ADR-0016
+# (config kept in docs/models/retired/). Measured back to back on the ADR-0016
 # harness: 1.34x decode (TPOT 12.9 -> 9.6 ms), +46% throughput, 3.9x KV.
 # The tuning doc asserted cross-node TP=2 "only costs decode throughput" for a
 # model this size; it was reasoned from having no NVLink and is wrong. GB10 decode

@@ -1,7 +1,20 @@
-# Retired model fact sheets — the engineering, kept; the verdicts, elsewhere
+# Retirement reports — the engineering, kept; the verdicts, elsewhere
 
-The same split `ansible/profiles/retired/` makes, for the same reason. A model leaving the
-fleet should stop being *planned for*; it should not stop being *known about*.
+A model or shape leaving the fleet should stop being *planned for*; it should not stop being
+*known about*.
+
+**A retirement report carries both the reasoning and the configuration.** The profile YAML is
+embedded here in a fenced block rather than kept as a live-looking `.yml`, because a file
+nothing parses, sitting in the directory that *is* the allowlist, invites exactly one
+question — "why isn't this running?" — and answers it only if you read to the end. The
+config was also the smaller half: the nine retired profiles were 603 comment lines against
+191 of YAML.
+
+This supersedes `docs/models/retired/`, whose README argued for keeping the files rather
+than citing a commit hash. That argument was against *losing* the config — *"recovering that
+from git log requires knowing it exists and which commit removed it. In practice nobody
+looks"* — and embedding it in the report a reader is already holding satisfies it better than
+a parallel directory did.
 
 ## Why this exists
 
@@ -14,7 +27,7 @@ made one directory over:
 > *"Recovering that from `git log` requires knowing it exists and which commit removed it.
 > In practice nobody looks, and the next person re-derives it — which for a parser name
 > costs a deploy, and for the memory math costs a bring-up."*
-> — [`ansible/profiles/retired/README.md`](../../../ansible/profiles/retired/README.md)
+> — [`docs/models/retired/README.md`](../../../docs/models/retired/README.md)
 
 That argument does not care whether the artifact is a `.yml` or a `.md`. The sheets carried
 20–39 lines each of memory math, quantization footprints and SM12.1 workarounds;

@@ -143,7 +143,7 @@ shape is gone; the only remaining argument is fleet occupancy, since TP=2 takes 
 and leaves ~24 GiB of dev headroom on sparky rather than the whole box.
 
 None are live — no current model makes the case for leaving a node free. Retired configs
-are kept in [`ansible/profiles/retired/`](ansible/profiles/retired/), and the verdicts in
+are kept in [`docs/models/retired/`](docs/models/retired/), and the verdicts in
 [`docs/models/tombstones.md`](docs/models/tombstones.md).
 
 | Profile | Shape |

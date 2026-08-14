@@ -30,7 +30,7 @@ it off). The optimization pair exists to be A/B'd (ADR-0014) — editing one pro
 destroys the control. A **bare name is the TP=2
 big-shared shape**, which since 2026-08-10 is every serving profile. A `-single`
 suffix marks the snoopy-only TP=1 shape; none remain live, and the retired ones are
-in [`../ansible/profiles/retired/`](../ansible/profiles/retired/). (`-dual` — one
+in [`../docs/models/retired/`](../docs/models/retired/). (`-dual` — one
 independent engine per node — was retired earlier: two endpoints of one model buy
 nothing without a round-robin in front.) TP=2 is no longer reserved for models too
 big for one node; it measured faster for models that fit, too. `empty` is the special "nothing serving" profile.
@@ -65,7 +65,7 @@ it is what the measurement said. Three paired TP=1/TP=2 profiles were benched ba
 back on 2026-08-10 and TP=2 won on decode (1.34–1.59×), throughput (+41–50%) **and** KV
 capacity, on a dense-MoE model, a second dense-MoE model, and a hybrid-Mamba model. The
 `-single` twins were retired the same day; their configs live in
-[`ansible/profiles/retired/`](../ansible/profiles/retired/). See
+[`models/retired/`](models/retired/). See
 [`profile-tuning.md`](profile-tuning.md), which used to assert the opposite.
 
 The remaining cost of TP=2 is **fleet occupancy**: both nodes are committed, leaving

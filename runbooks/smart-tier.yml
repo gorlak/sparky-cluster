@@ -25,7 +25,7 @@
 #     is wrong faster is not a better answer to the question the tier exists to answer.
 #   * Within 5 points, **take the faster one** — at that distance the difference is not
 #     distinguishable in use, and decode speed is.
-#   * **Dominated on every axis -> retire it** (`profiles/retired/` + a tombstone). The
+#   * **Dominated on every axis -> retire it** (`docs/models/retired/` + a tombstone). The
 #     only automatic verdict, because it is the only one needing no judgement.
 #   * **Mistral is exempt from retirement**, and only from retirement. It is the fleet's
 #     one non-Chinese supplier, and diversity is a standing requirement rather than

@@ -131,7 +131,7 @@ Deletion is the same mechanism run backwards — there is no separate `prune` co
 (ADR-0018 rejected ADR-0017 for exactly this reason):
 
 1. **Archive, don't just delete:** `git mv ansible/profiles/<name>.yml
-   ansible/profiles/retired/` and add the retirement banner (date, one-line reason, link
+   docs/models/retired/` and add the retirement banner (date, one-line reason, link
    to the tombstone). The directory is invisible to both profile loaders — they glob
    `profiles/*.yml` non-recursively — and a test asserts it can never leak into the
    allowlist. It exists because deleting the `.yml` threw away the *engineering*: the

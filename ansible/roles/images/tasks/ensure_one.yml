@@ -1,19 +1,16 @@
 ---
 # Ensure one container image is present on this node. `image` is the loop var: one
 # declaration from `container_images` — either
-#   {pull: <ref>}                          upstream, ideally <ref>@sha256:<digest>
-#   {build: <tag>, context: <dir>}         derived, built from files/<dir>/Dockerfile
-# PULL is skipped when the image is already local — safe, because the ref is a digest,
-# so "already local" means byte-identical by construction.
+#   {pull: <ref>}                    upstream, ideally <ref>@sha256:<digest>
+#   {build: <tag>, context: <dir>}   derived, built from files/<dir>/Dockerfile
 #
-# BUILD is deliberately NOT skipped that way. A derived image's tag never changes, so
-# "the tag exists" says nothing about whether it was built from the CURRENT Dockerfile.
-# Gating on presence meant an edited Dockerfile was silently ignored and the stale image
-# kept serving — on 2026-08-08 a broken xgrammar WAR survived the very deploy meant to
-# fix it, and the fix's own build-time assertion never ran, because the build never ran.
-# `docker build` is therefore ALWAYS invoked: Docker's layer cache makes an unchanged
-# context a ~1s no-op, and a changed one rebuilds, which is the entire point. The
-# Dockerfile is the source of truth, not the presence of a tag.
+# PULL is skipped when the image is already local — safe, because the ref is a digest, so
+# "already local" means byte-identical by construction.
+#
+# BUILD is ALWAYS invoked. A derived image's tag never changes, so the tag's presence says
+# nothing about whether it was built from the CURRENT Dockerfile; gating on presence would
+# silently keep serving a stale image after its Dockerfile changed. Docker's layer cache
+# makes an unchanged context a ~1s no-op. The Dockerfile is the source of truth, not the tag.
 
 - name: Is {{ image.pull | default(image.build) }} already present on this node?
   ansible.builtin.command: "docker image inspect {{ image.pull | default(image.build) }}"

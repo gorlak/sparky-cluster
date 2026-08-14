@@ -1,20 +1,12 @@
 ---
-# What proves a model directory is a MODEL and not a half-copied folder.
+# What proves a model directory is a MODEL and not a half-copied folder. ANY descriptor in
+# this list counts: HuggingFace repos ship `config.json`, Mistral-native ones ship
+# `params.json` and no `config.json` at all.
 #
-# The role used to hardcode `config.json` in three places — the installed check, the
-# staged check and the vllm-readability check. That is the HuggingFace convention, and it
-# silently assumed every checkpoint uses it. On 2026-08-11 a deploy failed with
-# "Mistral-Small-4-119B-2603-NVFP4 ... not staged" while 66 GiB of perfectly good,
-# file-by-file-verified weights sat in the inbox: `mistralai/Mistral-Small-4-119B-2603-NVFP4`
-# is **pure Mistral-native** and ships `params.json` with no `config.json` at all.
-#
-# The error was actively misleading — it told the operator to download weights that were
-# already there. Any descriptor in this list counts as proof.
-#
-# Keep this list SHORT and descriptor-only: it is a sentinel, not a validator. A
-# `*.safetensors` glob would be wrong here — it would accept a directory that has tensors
-# but no way to interpret them, which is precisely the half-staged state the check exists
-# to catch. (Genuinely partial downloads are caught separately by the `*.incomplete` scan.)
+# Keep it SHORT and descriptor-only — it is a sentinel, not a validator. A `*.safetensors`
+# glob would accept a directory with tensors but no way to interpret them, which is the
+# half-staged state this exists to catch. Partial downloads are caught by the
+# `*.incomplete` scan.
 model_descriptors:
   - config.json   # HuggingFace layout
   - params.json   # Mistral-native layout (mistral-common / consolidated-*.safetensors)

@@ -349,25 +349,15 @@ def bring_up(profile: str, *, force: bool = False, wait: bool = True,
     # WebUI attaches tools (that shipped once); measuring it would produce numbers for a
     # configuration nobody can use.
     #
-    # Imported at CALL time, not module scope: the gate lives in `cli`, and `cli` imports
-    # this module. Injecting it as a parameter would be tidier but reintroduces the bug
-    # this function exists to remove — a caller who forgets the gate gets an ungated
-    # bring-up and no complaint.
+    # Imported at call time: the gate lives in `cli`, which imports this module.
     from sparky.cli import SMOKE_REPORT, _smoke
     if _smoke(None, str(SMOKE_REPORT)) != 0:
         raise NotLive(f"{profile} came up but FAILED the smoke gate — it answers, but not "
                       f"the shapes callers send. See {SMOKE_REPORT}")
 
-    # THE GATE PROVED SOMETHING IS HEALTHY. This proves it is the thing we ASKED FOR.
-    #
-    # Every step above is about the profile as a request; the smoke gate reads the LIVE
-    # topology and probes whatever is actually serving. Nothing compared the two, so a
-    # concurrent activation — or any race that changes the selection between the request
-    # and the gate — produced a confident false success: on 2026-08-12 an `-eagle`
-    # activation printed `…-eagle: live and gated` while the smoke table beside it named
-    # the CONTROL engine, because the control had been activated underneath it. The
-    # cluster was correct; only the report lied, which is the worse failure of the two —
-    # a wrong engine that says so is a bug, a wrong engine that says "gated" is a trap.
+        # The gate proves something is HEALTHY; this proves it is the thing we ASKED FOR.
+        # The gate reads the LIVE topology, so a concurrent activation between the request
+        # and the gate would otherwise report success for whatever else came up.
     live = live_profile()
     if live != profile:
         raise NotLive(

@@ -6,8 +6,12 @@ schema fails here instead of at deploy time.
 """
 
 import json
+from pathlib import Path
 
 from sparky import topology
+
+# Profiles that exist only so a shape with no live example stays testable.
+FIXTURE_PROFILES = Path(__file__).resolve().parent / "fixtures" / "profiles"
 
 
 def test_load_current_topology_reads_given_path(tmp_path):
@@ -154,7 +158,7 @@ def test_single_node_profile_runs_on_snoopy():
     model tried — see docs/profile-tuning.md. The shape must still render correctly: the
     parked profile is the re-test path, and fleet occupancy is still a real reason to
     reach for TP=1."""
-    p = topology.one_of("single-node", include_retired=True)
+    p = topology.one_of("single-node", also=(FIXTURE_PROFILES,))
     assert len(p.engines) == 1
     e = p.engines[0]
     assert e.nodes == ("snoopy",)
@@ -185,7 +189,7 @@ def test_per_profile_vllm_image_override():
 
 
 def test_retired_profiles_are_not_in_the_allowlist():
-    """`ansible/profiles/retired/` keeps the CONFIG of models we stopped running — the
+    """`docs/models/retired/` keeps the CONFIG of models we stopped running — the
     memory math, the parser names read from chat templates, the quant findings — because
     deleting the .yml threw that away into git history where nobody looks.
 
@@ -220,10 +224,10 @@ def test_every_archetype_in_the_vocabulary_has_an_example():
     quietly lost its last profile is reported here rather than by whichever test happens
     to reference it next.
 
-    `include_retired` counts, deliberately — `single-node` has no live example since
+    The fixture directory counts, deliberately — `single-node` has no live example since
     2026-08-10, and the shape is still worth keeping renderable."""
     for name in topology.ARCHETYPES:
-        found = topology.by_archetype(name, include_retired=True)
+        found = topology.by_archetype(name, also=(FIXTURE_PROFILES,))
         assert found, f"archetype {name!r} has no example anywhere: {topology.ARCHETYPES[name]}"
 
 
@@ -240,7 +244,7 @@ def test_retired_configs_follow_the_same_naming_rule():
 
     Same rule as live profiles: the name is the lowercased HF model name, plus an optional
     `-flavour` suffix (`-single`, `-mtp3-single`) for a second way of serving the same
-    weights. Archetypes are required too, since `by_archetype(include_retired=True)` is
+    weights. Archetypes are required too, since `by_archetype(also=(FIXTURE_PROFILES,))` is
     exactly how a shape with no live example is still tested."""
     retired = topology.PROFILES_DIR / "retired"
     if not retired.is_dir():
@@ -279,7 +283,7 @@ def test_defaults_never_override_what_a_profile_states():
     """THE TRAP in this change: the retired single-node configs say `nodes: [snoopy]` and
     `tensor_parallel_size: 1`. If the default won, an archived TP=1 config would silently
     become TP=2 across both nodes — a stored config that no longer means what it says."""
-    single = topology.one_of("single-node", include_retired=True)
+    single = topology.one_of("single-node", also=(FIXTURE_PROFILES,))
     e = single.engines[0]
     assert e.nodes == ("snoopy",), f"retired single-node became {e.nodes}"
     assert e.tensor_parallel_size == 1

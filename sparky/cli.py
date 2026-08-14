@@ -520,7 +520,7 @@ def _scoreboard_table(*, include_retired: bool = False):
     # profile knows which org published the checkpoint, and that is the one string that
     # makes a scoreboard row searchable on the Hub.
     live = {p.name: p.hf_repo for p in topology.all_profiles()}
-    # Retired profiles keep their repo id (profiles/retired/), so a retired row still
+    # Retired profiles keep their repo id (docs/models/retired/), so a retired row still
     # links to the Hub — the measurement is real and its provenance is exactly as useful
     # as a live one's. `retired` is decided by absence from the LIVE set, not by whether
     # a repo was found.
@@ -540,7 +540,7 @@ def _scoreboard_table(*, include_retired: bool = False):
         # banner and a tombstone. Not merely "absent from the live set": a label matching
         # nothing at all is orphaned, not retired, and hiding it would quietly discard a
         # measurement on the strength of a filename. The retirement gesture is a `git mv`
-        # into profiles/retired/ (docs/updating.md), so absence from BOTH sets means
+        # into docs/models/retired/ (docs/updating.md), so absence from BOTH sets means
         # nobody decided anything, and the row stays.
         row.retired = row.label in archived or row.profile in archived
 

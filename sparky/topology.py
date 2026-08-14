@@ -98,18 +98,13 @@ class Engine:
 
 # --- archetypes: what a profile is an EXAMPLE OF ------------------------------
 #
-# Tests kept naming specific models — `step-3.5-flash-fp8` for "a profile on the old container",
-# `qwen3-coder-next-nvfp4-single` for "a TP=1 shape". Both are instances standing in for a
-# SHAPE, and on 2026-08-10 seven profiles were retired in one afternoon and four tests
-# broke, none of which cared about those models at all.
+# An archetype names the property a test is reaching for, so the fleet can churn underneath
+# it and the test still says what it means. `by_archetype("single-node")` reads as the
+# reason the test exists; `load_profile("qwen3-coder-next-nvfp4-single")` binds it to
+# whichever profile happens to have that shape today.
 #
-# An archetype names the property a test is actually reaching for, so the fleet can churn
-# underneath it and the test still says what it means. `by_archetype("single-node")` reads
-# as the reason it is there; `load_profile("qwen3-coder-next-nvfp4-single")` does not.
-#
-# Keep this vocabulary SMALL. An archetype per profile would be a second naming scheme
-# with no leverage — the point is that several profiles share one, and that a test binds
-# to the shared property rather than to whichever profile happens to have it today.
+# Keep this vocabulary SMALL. An archetype per profile would be a second naming scheme with
+# no leverage — the point is that several profiles share one.
 ARCHETYPES: dict[str, str] = {
     "big-shared":      "TP=2 across every node — one model sharded, the whole fleet committed",
     "single-node":     "TP=1 on one worker, leaving the other node free for dev work",
@@ -125,29 +120,21 @@ ARCHETYPES: dict[str, str] = {
 #
 # A profile's name IS the upstream repo's model name, lowercased. It is NOT composed. The
 # quant appears in most names (`…-nvfp4`, `…-awq`) purely because the VENDOR put it in the
-# repo name — `nvidia/Mistral-Medium-3.5-128B-NVFP4` really is called that. When a vendor
-# ships a quant as its base repo (`mistralai/Mistral-Medium-3.5-128B`, genuinely FP8), the
-# profile is `mistral-medium-3.5-128b`, and adding `-fp8` would invent a name that matches
-# nothing on the Hub — breaking the one property the scheme exists for.
+# repo name. When a vendor ships a quant as its base repo (`mistralai/Mistral-Medium-3.5-128B`,
+# genuinely FP8) the profile is `mistral-medium-3.5-128b`: adding `-fp8` would invent a name
+# matching nothing on the Hub, breaking the one property the scheme exists for.
 #
-# That mistake was made on 2026-08-11, by following `docs/profiles.md`, which described the
-# name as a "`<model>-<version>-<quant>` triple" — a rule for CONSTRUCTING names when the
-# enforced rule is to COPY one.
+# A suffix is for **a second way of serving the SAME weights** — something a repo name cannot
+# express, because upstream ships one checkpoint and we serve it two ways. That is the whole
+# test, and it admits exactly two kinds:
 #
-# WHAT A SUFFIX IS FOR: **a second way of serving the SAME weights** — something a repo
-# name cannot express, because upstream ships one checkpoint and we serve it two ways. That
-# is the whole test, and it admits exactly two kinds:
+#   * TOPOLOGY     — `-single`: TP=1 on one worker instead of TP=2 across both.
+#   * OPTIMIZATION — `-eagle`, `-mtp3`: speculative decoding on, against a bare-name twin with
+#     it off. The PAIR is the experiment (ADR-0014); collapsing them into one edited profile
+#     destroys the control.
 #
-#   * TOPOLOGY   — `-single`: TP=1 on one worker instead of TP=2 across both.
-#   * OPTIMIZATION — `-eagle`, `-mtp3`: speculative decoding on, against a bare-name twin
-#     with it off. These exist to be **A/B'd** (ADR-0014): the pair is the experiment, and
-#     collapsing them into one edited profile destroys the control. The retired
-#     `qwen3.6-35b-a3b-nvfp4-mtp3-single` / `…-nvfp4-single` pair is the precedent.
-#
-# The first version of this constant listed only `-single`, which would have refused
-# `-mtp3` — a name the repo had already shipped — and pushed the EAGLE experiment into
-# editing one profile in place. A quant or precision still never qualifies: it is either in
-# the upstream name already or it is not ours to add.
+# A quant or precision never qualifies: it is either in the upstream name already, or it is
+# not ours to add.
 VARIANT_SUFFIXES: tuple[str, ...] = ("-single", "-eagle", "-mtp3")
 
 
@@ -313,24 +300,22 @@ def load_current_topology(path: Path = CURRENT_TOPOLOGY) -> dict | None:
     return json.loads(path.read_text())
 
 
-def by_archetype(name: str, *, include_retired: bool = False,
+def by_archetype(name: str, *, also: tuple[Path, ...] = (),
                  profiles_dir: Path = PROFILES_DIR) -> list[Profile]:
     """Every profile that is an example of `name`. See `ARCHETYPES`.
 
-    `include_retired` also searches `profiles/retired/`, which is NOT the allowlist and
-    is invisible to `all_profiles()`. That is deliberate rather than a loophole: a shape
-    can have no live example and still need its projection tested — `single-node` has
-    none today, yet the rendering must stay correct for the day fleet occupancy makes it
-    worth reviving one. A test that silently found nothing would pass while checking
-    nothing at all.
+    `also` searches extra directories that are NOT the allowlist. A shape can have no live
+    example and still need its projection tested — `single-node` has none today, yet the
+    rendering must stay correct for the day fleet occupancy makes reviving it worth the
+    measured loss. Tests pass their fixture directory here; a test that silently found no
+    example would pass while checking nothing at all.
     """
     if name not in ARCHETYPES:
         raise KeyError(f"unknown archetype {name!r}; known: {sorted(ARCHETYPES)}")
     found = [p for p in all_profiles(profiles_dir) if name in p.archetypes]
-    if include_retired:
-        retired = profiles_dir / "retired"
-        if retired.is_dir():
-            found += [p for p in (load_profile(f) for f in sorted(retired.glob("*.yml")))
+    for extra in also:
+        if Path(extra).is_dir():
+            found += [p for p in (load_profile(f) for f in sorted(Path(extra).glob("*.yml")))
                       if name in p.archetypes]
     return found
 
@@ -346,5 +331,5 @@ def one_of(name: str, **kw) -> Profile:
     if not found:
         raise LookupError(
             f"no profile has archetype {name!r} ({ARCHETYPES[name]}). "
-            f"Either tag one, or pass include_retired=True if an archived example will do.")
+            f"Either tag one, or pass also=(<fixture dir>,) if an archived example will do.")
     return found[0]

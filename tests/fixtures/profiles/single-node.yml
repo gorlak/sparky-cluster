@@ -1,20 +1,13 @@
 ---
-# ⚰️ RETIRED 2026-08-10 — NOT IN THE ALLOWLIST. Loaders glob profiles/*.yml
-#    non-recursively, so nothing here installs, serves, or keeps weights.
-#    Why: the TP=1 shape lost: its TP=2 twin measured 1.47x decode, +41% throughput and 7.6x KV.
-#    Verdict is owned by docs/models/tombstones.md; this file keeps only the
-#    CONFIG and what was learned building it. Re-verify parsers, architecture
-#    and quant algo before reviving — all three have cost a deploy when assumed.
-#    See ansible/profiles/retired/README.md.
+# TEST FIXTURE, not a profile. `ansible/profiles/*.yml` is the allowlist; this is not there
+# and nothing deploys it.
 #
-# Profile: qwen3-coder-next-nvfp4-single — Qwen3-Coder-Next (NVFP4) on snoopy, TP=1.
-# Single-node serving runs on snoopy by design: sparky is the head (Open WebUI,
-# Caddy, control panel, metrics) and the workstation-driven dev node, so single-node
-# models serve on the resource-richer snoopy. Requires the 26.06 container (NVFP4).
+# It exists because the `single-node` archetype has no live example — TP=2 beat TP=1 on every
+# measured axis — and the TP=1 PROJECTION must still render correctly for the day fleet
+# occupancy makes reviving the shape worth it. A test that silently found no example would
+# pass while checking nothing.
 #
-# Memory math (gmu 0.55) and the "why per-node, not TP=2" rationale for the small
-# NVFP4 models: see docs/profile-tuning.md.
-
+# The retired configs themselves are in docs/models/retired/variant-shapes.md.
 profile_name: qwen3-coder-next-nvfp4-single
 hf_repo: RedHatAI/Qwen3-Coder-Next-NVFP4
 # What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
@@ -39,4 +32,3 @@ serving_topology:
       - --enable-auto-tool-choice
       - --tool-call-parser qwen3_coder
     worker_extra_args: []
-

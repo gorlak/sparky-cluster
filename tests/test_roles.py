@@ -491,3 +491,20 @@ def test_the_endpoint_always_advertises_its_stable_alias():
     # The fallback must be scoped to the model list. Synthesising a completion would be
     # the data plane lying, which is the thing this whole design refused to do.
     assert "/v1/chat/completions" not in err, "never fabricate a completion"
+
+
+def test_the_allowlist_directory_holds_only_live_profiles():
+    """`ansible/profiles/` IS the allowlist (ADR-0018), so nothing inert belongs in it.
+
+    Retired configs used to live in `ansible/profiles/retired/` — nine files that were 603
+    comment lines against 191 of YAML, parsed by nothing. They are now embedded in fenced
+    blocks in `docs/models/retired/`, where the reasoning already lived, and the one config a
+    test genuinely needs (an example of the `single-node` archetype, which has no live
+    member) is an explicit fixture under `tests/fixtures/profiles/`.
+    """
+    root = Path(__file__).resolve().parent.parent
+    assert not (root / "ansible/profiles/retired").exists(), \
+        "retired configs belong in docs/models/retired/, not in the allowlist directory"
+    fixture = root / "tests/fixtures/profiles/single-node.yml"
+    assert fixture.exists(), "the single-node archetype needs a fixture or its rendering is untested"
+    assert "TEST FIXTURE" in fixture.read_text(), "a fixture must say what it is"

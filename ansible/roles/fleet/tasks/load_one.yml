@@ -8,16 +8,14 @@
   ansible.builtin.set_fact:
     _p: "{{ lookup('file', profile_path) | from_yaml }}"
 
-# Engine defaults, so a profile states only what makes it DIFFERENT. Since 2026-08-10
-# every serving profile is TP=2 across both nodes on port 8000; repeating that in eight
-# files was ceremony, and it hardcoded hostnames into files with no business knowing
-# them — adding a third node would have been an edit to every profile.
+# Engine defaults, so a profile states only what makes it DIFFERENT, and hostnames stay out
+# of files with no business knowing them.
 #
-# `combine` with the DEFAULTS as the base is what makes them lose to anything the profile
-# states: the retired single-node configs keep `nodes: [snoopy]` and `tensor_parallel_size: 1`
-# and are unaffected. Node order is head-then-workers because `nodes[0]` is rank 0, the API
-# host and the NCCL master (ADR-0003) — the same order `topology.fleet_nodes()` derives, from
-# this same inventory, so the two readers cannot disagree about what an omitted value means.
+# `combine` uses the DEFAULTS as the base, so anything a profile states wins — the retired
+# single-node configs keep `nodes: [snoopy]` and `tensor_parallel_size: 1`. Node order is
+# head-then-workers because `nodes[0]` is rank 0, the API host and the NCCL master
+# (ADR-0003); `topology.fleet_nodes()` derives the same order from the same inventory, so
+# the two readers cannot disagree about an omitted value.
 - name: Reset the engine accumulator for {{ profile_path | basename }}
   ansible.builtin.set_fact:
     _norm: []

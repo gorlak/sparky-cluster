@@ -57,15 +57,8 @@ from pathlib import Path
 BENCHMARK_DIR = Path("/opt/cluster/benchmark")
 DEFAULT_BREADCRUMBS = BENCHMARK_DIR / "sweep-state.json"
 DEFAULT_LOCK = BENCHMARK_DIR / "sweep.lock"
-# The lock `deploy` takes (sparky/ansible.py, via `flock`). A campaign must hold it too:
-# one is reshaping the boundary while the other walks it — a deploy can re-render engine
-# files, pull an image, or evict weights underneath a measurement, and the result is a
-# number belonging to no configuration.
-#
-# It was NOT taken here until 2026-08-11, and ansible.py asserted in a comment that it
-# was. The two locks were different files: `sweep.lock` excludes other sweeps and
-# `fleet.lock` excluded nothing, because only one side ever held it. A test now pins the
-# two constants together.
+# The lock `deploy` takes (sparky/ansible.py, via `flock`). A campaign holds it too, so a
+# deploy cannot re-render engine files or evict weights mid-measurement.
 FLEET_LOCK = Path("/opt/cluster/fleet.lock")
 _fleet_fd: int | None = None
 

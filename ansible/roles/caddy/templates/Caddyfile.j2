@@ -24,22 +24,17 @@
 # boot Caddy comes up static and converges the moment the restored engine passes
 # health. Replicas of one model, if ever wanted, are the same mechanism — two
 # healthy upstreams and Caddy balances.
-# THE MODEL LISTENER (ADR-0022 part 4) — model-bound traffic gets its own front door.
+# THE MODEL LISTENER (ADR-0022) — model-bound traffic on its own front door.
 #
-# Loopback-only, and it exists for OBSERVABILITY. Caddy labels HTTP metrics by *server*,
-# and a server is a set of listen addresses, so every site sharing :80 shares one counter.
-# `caddy_http_requests_in_flight` carries {handler, server} and no host or path dimension —
-# measured 2026-08-13 with nothing waiting at all it read 3 (Open WebUI's long-lived
-# websockets, a scrape, and the request doing the reading). On a shared front door the
-# question "is anyone waiting for a model?" is unanswerable.
+# Loopback-only, and it exists for OBSERVABILITY. Caddy labels HTTP metrics by *server*, and
+# a server is a set of listen addresses, so every site sharing :80 shares one counter with no
+# host or path dimension. Only the held inference paths are routed in here, so anything in
+# flight on this listener is a caller waiting for a model — which is what the idle manager
+# counts.
 #
-# Here it is exact BY CONSTRUCTION: only the held inference paths are routed in, so
-# anything in flight on this listener IS a caller waiting for a model. The idle manager
-# reads exactly that. No thresholds, no heuristics.
-#
-# This is also where the WAITING lives (`lb_try_duration`): a request arriving while
-# nothing serves is held rather than refused, so the caller sees its ordinary wait UI and
-# then the model's real answer.
+# This is also where the WAITING lives (`lb_try_duration`): a request arriving while nothing
+# serves is held rather than refused, so the caller sees its ordinary wait UI and then the
+# model's real answer.
 :{{ model_inner_port }} {
 	bind 127.0.0.1
 	reverse_proxy {% for node in groups['all'] | sort %}{{ hostvars[node].vllm_host_ip }}:{{ vllm_api_port }} {% endfor %}{

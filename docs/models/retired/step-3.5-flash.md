@@ -215,3 +215,64 @@ headroom). May be raisable once KV cache flags are sorted out.
 | Medium: vLLM on DGX Spark SM121 guide | https://medium.com/@stablehigashi/vllm-installation-on-dgx-spark-gb10-sm-121-and-qwen-3-5-serving-guide-9eba91e448f8 |
 | Medium: Flash Attention on SM121 | https://medium.com/@rakshith.d26/flash-attention-on-sm-121-solving-pytorch-compatibility-on-blackwell-gb10-a83d9ff3cf9b |
 | NVIDIA NIM model card | https://build.nvidia.com/stepfun-ai/step-3-5-flash/modelcard |
+
+---
+
+## The retired profile configuration
+
+Kept because reviving this model costs a deploy and the config is the expensive part to
+reconstruct — the parser names, the flag combinations and the memory math were each learned
+the hard way. Nothing parses it; `ansible/profiles/*.yml` is the allowlist and this is not
+there.
+
+### `step-3.5-flash-fp8`
+
+```yaml
+---
+#    HISTORY. Its fact sheet (docs/models/retired/step-3.5-flash.md) was deleted on 2026-08-12,
+#    when Step-3.7 was retired too and the whole family left the fleet. Read it at
+#    `git show a741c9f:docs/models/retired/step-3.5-flash.md`.
+#
+#
+# Profile: step-3.5-flash-fp8 — Step-3.5-Flash-FP8, big-shared TP=2 across sparky + snoopy.
+# The stable, known-good "step" slot (26.04 default container). Its successor
+# candidate is `step-3.7-nvfp4` (Step-3.7-Flash-NVFP4 on 26.06) — A/B them by
+# deploying each in turn. Profile names are the <model>-<version>-<quant> triple.
+#
+# Apply with:  ./sparky.sh deploy step-3.5-flash-fp8
+profile_name: step-3.5-flash-fp8
+hf_repo: stepfun-ai/Step-3.5-Flash-FP8
+# What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
+# to this model's name (sparky/topology.py: ARCHETYPES).
+archetypes: [big-shared]
+
+# Serving topology — the single source of truth for what runs where. Every
+# model-dependent service (vLLM units, Open WebUI, Prometheus, the control panel)
+# is a projection of this list. See docs/serving-topology.md.
+serving_topology:
+  - name: step-3.5-flash-fp8
+    kind: vllm
+    model: Step-3.5-Flash-FP8    # dir under /opt/vllm/models
+    served_as: step-3.5-flash-fp8
+    # gmu 0.90 — step is a "fully-committed" workflow (weights alone are ~97 GiB
+    # per shard, so there's no meaningful outside headroom to give back). Use
+    # other machines for dev while step is deployed. See docs/profile-tuning.md.
+    gpu_memory_utilization: "0.90"
+    # 32k is step's *empirical* balanced value: at gmu 0.90 vLLM reported 11.7 GiB
+    # KV available, and 32k fit without complaint. Pushing higher would depend on
+    # sliding_window=512's KV-reduction kicking in inside vLLM's accounting, which
+    # we haven't measured — a real boundary unknown. Revisit with an empirical test
+    # (lower gmu probe, or kv-cache-dtype fp8 once the multi-turn bug is sorted).
+    max_model_len: 32768
+    # The API node gets the tool/reasoning parsers + auto tool choice; the
+    # headless worker only needs the compute-side flag. --kv-cache-dtype fp8 /
+    # --enable-prefix-caching are intentionally omitted (multi-turn corruption
+    # on this model — DEF-0007, docs/defects.md; re-test on 26.06 per ADR-0014).
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --enable-auto-tool-choice
+      - --tool-call-parser step3p5
+      - --reasoning-parser step3p5
+    worker_extra_args:
+      - --enable-chunked-prefill
+```
