@@ -258,7 +258,7 @@ def test_something_that_is_not_a_repo_id_is_refused():
 # Mistral publishes the same weights twice in one repo — a native `consolidated-*` set and
 # an HF `model-*` set. Fetching both doubles the transfer for nothing, and summing all the
 # `*.safetensors` reports twice the real footprint: on 2026-08-11 that arithmetic ruled
-# three candidates out of a sourcing sweep as "too big" when every one of them fit.
+# three candidates out of a sourcing suite as "too big" when every one of them fit.
 
 MISTRAL_DUAL = [                     # mistralai/Mistral-Medium-3.5-128B
     "config.json", "params.json", "tekken.json", "tokenizer.json",

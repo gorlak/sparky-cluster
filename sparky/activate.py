@@ -264,24 +264,24 @@ def wait_for_deploy(timeout: float = 1800.0, poll: float = 5.0, on_event=None) -
     contained it — but a live model went down and the activation exited 143.
 
     **Waits rather than refuses, and the discriminator is the holder's DURATION.**
-    `ansible.py` makes the opposite call for deploy-vs-campaign and explains why: a
-    campaign can run all night, so blocking there would look like a hang. A deploy is
+    `ansible.py` makes the opposite call for deploy-vs-suite and explains why: a
+    suite can run all night, so blocking there would look like a hang. A deploy is
     minutes, so waiting costs nothing and removes the whole class of collision. See
     `docs/synchronization.md`.
 
-    ⚠️ **Returns immediately when THIS process already holds the lock.** A campaign takes
-    `fleet.lock` for its whole run (`sweep._hold_fleet_lock`) and then activates once per
+    ⚠️ **Returns immediately when THIS process already holds the lock.** A suite takes
+    `fleet.lock` for its whole run (`runner._hold_fleet_lock`) and then activates once per
     job through `bring_up`. flock is per open-file-description, so a second acquire from
     the same process blocks against itself — an unconditional wait here would hang every
-    sweep forever, and an unconditional acquire would deadlock it.
+    suite forever, and an unconditional acquire would deadlock it.
     """
-    from sparky import sweep          # deferred: sweep imports this module's callers
-    if sweep._fleet_fd is not None:
+    from sparky import runner          # deferred: suite imports this module's callers
+    if runner._fleet_fd is not None:
         return                        # we ARE the holder — see the warning above
     from sparky import ansible
 
     def held() -> bool:
-        return ansible.campaign_holding_the_fleet()
+        return ansible.suite_holding_the_fleet()
 
     if not held():
         return
@@ -311,7 +311,7 @@ def bring_up(profile: str, *, force: bool = False, wait: bool = True,
     `activate()` returns `reconcile().returncode`, which means *systemd accepted the
     start* — a big model then spends ten minutes loading weights. "Activated" and
     "serving" are different moments, and every caller was expected to know that and call
-    `wait_for_ready()` itself. The CLI remembered. The sweep runner did not, so on
+    `wait_for_ready()` itself. The CLI remembered. The suite runner did not, so on
     2026-08-10 it fired three regiments at an engine still reading 75 GiB off disk: the
     tools regiment reported four ConnectErrors, and bench and quality then reported
     SUCCESS in under three seconds each, having measured nothing.

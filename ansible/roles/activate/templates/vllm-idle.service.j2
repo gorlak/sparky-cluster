@@ -2,7 +2,7 @@
 [Unit]
 Description=Unload the fleet after a long quiet period (scale to zero)
 # Design: ADR-0022 and docs/synchronization.md, IN THE REPO. No `Documentation=`
-# file:// URI: only ansible/, sparky/ and runbooks/ are published to /opt/cluster,
+# file:// URI: only ansible/, sparky/ and suites/ are published to /opt/cluster,
 # so any path under /opt/cluster/docs would dangle.
 # Not ordered against anything: it is a periodic READ that only sometimes acts, and its
 # one action (`activate empty`) is safe from any state.

@@ -51,7 +51,12 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
 # the trend store is a live file on the cluster — dropping it would discard the
 # benchmark history the whole A/B story rests on, so migrate in place.
 _MIGRATIONS = ("accuracy REAL", "items INTEGER", "unparseable INTEGER",
-               "harness TEXT", "kv_tokens INTEGER", "max_model_len INTEGER")
+               "harness TEXT", "kv_tokens INTEGER", "max_model_len INTEGER",
+               # Weighted partial credit (ADR-0024). Deliberately its own column rather
+               # than a redefinition of `accuracy`, which stays pass@1 for every scenario:
+               # a graded number and a binary one answer different questions, and
+               # overloading the binary one changes the meaning of every historical row.
+               "score REAL")
 
 _METRIC_COLS = (
     "output_toks_s", "total_toks_s", "requests_s",
@@ -61,7 +66,7 @@ _METRIC_COLS = (
 
 
 @dataclass
-class Run:
+class Row:
     """One scenario result. `ts=0` is filled with the current epoch at insert."""
 
     label: str
@@ -83,6 +88,7 @@ class Run:
     accuracy: float | None = None
     items: int | None = None
     unparseable: int | None = None
+    score: float | None = None
     harness: str | None = None
     kv_tokens: int | None = None
     max_model_len: int | None = None
@@ -112,17 +118,18 @@ class Store:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def record(self, run: Run) -> int:
+    def record(self, run: Row) -> int:
         """Insert one run; returns its row id."""
         cols = ["ts", "label", "model", "profile", "scenario", "skipped", "quality_pass",
-                "accuracy", "items", "unparseable", "harness", "kv_tokens", "max_model_len",
+                "accuracy", "items", "unparseable", "score", "harness", "kv_tokens",
+                "max_model_len",
                 *_METRIC_COLS]
         vals = [
             run.ts or int(time.time()),
             run.label, run.model, run.profile, run.scenario,
             int(run.skipped),
             None if run.quality_pass is None else int(run.quality_pass),
-            run.accuracy, run.items, run.unparseable, run.harness,
+            run.accuracy, run.items, run.unparseable, run.score, run.harness,
             run.kv_tokens, run.max_model_len,
             *(getattr(run, c) for c in _METRIC_COLS),
         ]

@@ -72,36 +72,6 @@
     mode: "0440"
     validate: "visudo -cf %s"
 
-# The grant may have been copied somewhere else on some node; a boundary you only
-# *believe* in is worth nothing, so check rather than assume.
-- name: Read back what geoff may run without a password
-  ansible.builtin.command: sudo -l -U geoff
-  changed_when: false
-  failed_when: false
-  register: geoff_sudo
-
-# The allowlist is EXHAUSTIVE on purpose: every passwordless grant geoff holds must be
-# one of the bounded programs, named here. A further one appearing — however reasonable
-# it looked at the time — is the failure this catches, because anything running as geoff
-# (an agent most of all) inherits it.
-- name: Assert the bounded programs are geoff's ONLY passwordless grants
-  ansible.builtin.assert:
-    that: _unexpected | length == 0
-    fail_msg: >-
-      geoff still has passwordless sudo beyond the bounded programs on
-      {{ inventory_hostname }}: {{ _unexpected }}.
-      Anything running as geoff — an agent included — inherits that, which defeats the
-      ADR-0018 boundary. Find and remove it:
-      sudo grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/
-    success_msg: >-
-      geoff's only passwordless grants are {{ activate_bin }} (ADR-0018),
-      {{ probe_bin }} (ADR-0019) and {{ runbook_bin }} (ADR-0021) — the boundary holds.
-  vars:
-    _bounded: "{{ [activate_bin, probe_bin, runbook_bin] | map('regex_escape') | join('|') }}"
-    _unexpected: >-
-      {{ geoff_sudo.stdout_lines | default([]) | select('search', 'NOPASSWD')
-         | reject('search', _bounded) | list }}
-
 - name: Install the reconciler
   ansible.builtin.copy:
     src: vllm-activate
@@ -118,14 +88,14 @@
     group: root
     mode: "0755"
 
-# The third trigger (ADR-0021), and the only one that is not about privilege: a runbook
+# The third trigger (ADR-0021), and the only one that is not about privilege: a suite
 # run needs nothing root, but it must not be a child of the control panel's cgroup, or a
-# routine deploy kills a three-hour campaign at the ninety-minute mark. Head-only — a
-# runbook drives the fleet from the control node.
-- name: Install the runbook trigger (ADR-0021 — detached, logged runs)
+# routine deploy kills a three-hour suite at the ninety-minute mark. Head-only — a
+# suite drives the fleet from the control node.
+- name: Install the suite trigger (ADR-0021 — detached, logged runs)
   ansible.builtin.copy:
-    src: vllm-runbook
-    dest: "{{ runbook_bin }}"
+    src: vllm-suite
+    dest: "{{ suite_bin }}"
     owner: root
     group: root
     mode: "0755"
@@ -138,6 +108,19 @@
   ansible.builtin.copy:
     src: vllm-idle
     dest: "{{ idle_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname in groups['head']
+
+# The fourth trigger (ADR-0024). Head-only, like the suite trigger: a suite runs
+# from the control node. It is the one program here that cannot validate its input —
+# the untrusted string IS the payload — so it is bounded by what it confines the payload
+# TO. Read ADR-0024's security argument before changing any property in it.
+- name: Install the sandbox trigger (ADR-0024 — executes benchmark answers)
+  ansible.builtin.copy:
+    src: vllm-sandbox
+    dest: "{{ sandbox_bin }}"
     owner: root
     group: root
     mode: "0755"
@@ -188,6 +171,16 @@
     _idle_on: "{{ (idle_unload_enabled | bool) and (idle_unload_after | int) > 0 }}"
   when: inventory_hostname in groups['head']
 
+- name: Prove the sandbox still works under its own confinement
+  # The isolation properties cannot be tested without root, so this is where they stop
+  # being an assumption. A missing bind path breaks every toolchain identically, and
+  # discovering that here costs a deploy — discovering it later costs a suite scored
+  # entirely as zeroes.
+  ansible.builtin.command: "{{ sandbox_bin }} --selftest"
+  changed_when: false
+  check_mode: false
+  when: inventory_hostname in groups['head']
+
 - name: Install this node's reconciler wiring
   ansible.builtin.template:
     src: activate.conf.j2
@@ -206,6 +199,41 @@
     validate: "visudo -cf %s"
 
 # --- the cross-node trigger: a dedicated key + a forced command --------------
+# Checked AFTER the sudoers entry above is rendered, not before. The assertion compares
+# what geoff can run against the CURRENT expected set, so running it first would test the
+# previous deploy's grants against this deploy's expectations — which is exactly what
+# happened when `vllm-runbook` was renamed to `vllm-suite`: the stale grant was still on
+# disk, the new list did not contain it, and a correct rename failed the deploy.
+# A boundary you only *believe* in is worth nothing, so check rather than assume.
+- name: Read back what geoff may run without a password
+  ansible.builtin.command: sudo -l -U geoff
+  changed_when: false
+  failed_when: false
+  register: geoff_sudo
+
+# The allowlist is EXHAUSTIVE on purpose: every passwordless grant geoff holds must be
+# one of the bounded programs, named here. A further one appearing — however reasonable
+# it looked at the time — is the failure this catches, because anything running as geoff
+# (an agent most of all) inherits it.
+- name: Assert the bounded programs are geoff's ONLY passwordless grants
+  ansible.builtin.assert:
+    that: _unexpected | length == 0
+    fail_msg: >-
+      geoff still has passwordless sudo beyond the bounded programs on
+      {{ inventory_hostname }}: {{ _unexpected }}.
+      Anything running as geoff — an agent included — inherits that, which defeats the
+      ADR-0018 boundary. Find and remove it:
+      sudo grep -rn NOPASSWD /etc/sudoers /etc/sudoers.d/
+    success_msg: >-
+      geoff's only passwordless grants are {{ activate_bin }} (ADR-0018),
+      {{ probe_bin }} (ADR-0019), {{ suite_bin }} (ADR-0021) and
+      {{ sandbox_bin }} (ADR-0024) — the boundary holds.
+  vars:
+    _bounded: "{{ [activate_bin, probe_bin, suite_bin, sandbox_bin] | map('regex_escape') | join('|') }}"
+    _unexpected: >-
+      {{ geoff_sudo.stdout_lines | default([]) | select('search', 'NOPASSWD')
+         | reject('search', _bounded) | list }}
+
 - name: Ensure the activation identity's .ssh directory exists
   ansible.builtin.file:
     path: "/home/{{ activate_user }}/.ssh"

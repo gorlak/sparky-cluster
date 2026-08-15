@@ -99,9 +99,9 @@ def engine_urls() -> list[str]:
 
 
 def fleet_busy() -> bool:
-    """Is a deploy or a measurement campaign holding the fleet lock?
+    """Is a deploy or a measurement suite holding the fleet lock?
 
-    Never unload underneath one: a deploy is reshaping the boundary, and a campaign is
+    Never unload underneath one: a deploy is reshaping the boundary, and a suite is
     measuring the very model we would pull out from under it. Same lock, same reasoning,
     as `docs/synchronization.md`.
     """
@@ -269,7 +269,7 @@ def main() -> int:
             narrate("empty; wake disabled")
             return 0
         if fleet_busy():
-            narrate("empty; a deploy or campaign holds the fleet lock — not waking")
+            narrate("empty; a deploy or suite holds the fleet lock — not waking")
             return 0
         demand = waiting_requests()
         marker = ""
@@ -283,7 +283,7 @@ def main() -> int:
         return 0
 
     if fleet_busy():
-        narrate("a deploy or campaign holds the fleet lock — not unloading")
+        narrate("a deploy or suite holds the fleet lock — not unloading")
         return 0
 
     # Something IS serving, so any restore marker is stale — drop it. Without this the

@@ -1,0 +1,12 @@
+id: reverse-words
+track: implement
+difficulty: medium
+shown_support: [problem.h]
+prompt: |
+  Implement `reverse_words` as declared in `problem.h`.
+
+  Reverse the order of space-separated words in a NUL-terminated string, IN PLACE, keeping
+  each word's own characters in order. Words are separated by exactly one space and the
+  string has no leading or trailing space. An empty string stays empty.
+
+  Return the number of words. You may not allocate: work within the buffer you were given.

@@ -574,26 +574,26 @@ def test_success_is_reported_when_the_live_profile_matches(monkeypatch):
 # --- activate must not fire into a running deploy (2026-08-12) -------------
 
 def test_wait_for_deploy_returns_when_the_lock_is_free(tmp_path, monkeypatch):
-    from sparky import activate as act, ansible, sweep
+    from sparky import activate as act, ansible, runner
     monkeypatch.setattr(ansible, "FLEET_LOCK", tmp_path / "fleet.lock")
-    monkeypatch.setattr(sweep, "_fleet_fd", None)
+    monkeypatch.setattr(runner, "_fleet_fd", None)
     act.wait_for_deploy(timeout=1.0, poll=0.05)      # returns, does not raise
 
 
 def test_wait_for_deploy_skips_when_this_process_holds_the_lock(tmp_path, monkeypatch):
-    """A campaign holds `fleet.lock` for its whole run and activates once per job.
+    """A suite holds `fleet.lock` for its whole run and activates once per job.
 
     flock is per open-file-description, so a second acquire from the same process blocks
-    against itself: waiting here would hang every sweep forever. This is the deadlock the
+    against itself: waiting here would hang every suite forever. This is the deadlock the
     guard has to dodge, and it is why the naive "just take the lock" fix is wrong.
     """
     import fcntl
-    from sparky import activate as act, ansible, sweep
+    from sparky import activate as act, ansible, runner
     lock = tmp_path / "fleet.lock"
     monkeypatch.setattr(ansible, "FLEET_LOCK", lock)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o664)
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)     # we are the campaign
-    monkeypatch.setattr(sweep, "_fleet_fd", fd)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)     # we are the suite
+    monkeypatch.setattr(runner, "_fleet_fd", fd)
     try:
         act.wait_for_deploy(timeout=1.0, poll=0.05)     # must NOT hang or raise
     finally:
@@ -605,10 +605,10 @@ def test_wait_for_deploy_raises_rather_than_waiting_forever(tmp_path, monkeypatc
     """A wedged deploy must surface, not silently stall an activation for 30 minutes."""
     import fcntl
     import pytest
-    from sparky import activate as act, ansible, sweep
+    from sparky import activate as act, ansible, runner
     lock = tmp_path / "fleet.lock"
     monkeypatch.setattr(ansible, "FLEET_LOCK", lock)
-    monkeypatch.setattr(sweep, "_fleet_fd", None)       # someone ELSE holds it
+    monkeypatch.setattr(runner, "_fleet_fd", None)       # someone ELSE holds it
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o664)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:

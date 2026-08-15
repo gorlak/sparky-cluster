@@ -1,0 +1,15 @@
+id: repair-shadowed-exception
+track: repair
+difficulty: medium
+prompt: '`to_int` should return the integer value of `text`, or `default` when `text` is not
+
+  a valid integer. It fails the test below. Fix it.
+
+  '
+failure: '>>> to_int(None)
+
+  0
+
+  expected: TypeError
+
+  '

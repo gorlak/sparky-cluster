@@ -24,22 +24,22 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ANSIBLE_DIR = REPO_ROOT / "ansible"
 LIVE = Path("/opt/cluster/ansible")            # deploy-owned runtime copy ansible runs from
 HARNESS_LIVE = Path("/opt/cluster/sparky")     # published harness source (the `harness` role installs it)
-# The runbooks that may be INSTANCED (ADR-0021). Published, not merely readable in the
+# The suites that may be INSTANCED (ADR-0021). Published, not merely readable in the
 # repo: both callers that can start a run — the CLI and the panel — name a member of this
 # set, and a caller reachable from the network must not be able to run a file that merely
-# happens to be in a git checkout. Adding a runbook is therefore a deploy.
-RUNBOOKS_LIVE = Path("/opt/cluster/runbooks")
+# happens to be in a git checkout. Adding a suite is therefore a deploy.
+SUITES_LIVE = Path("/opt/cluster/suites")
 # The worker, as geoff over his own key — for read-only things (the journal) that need
 # no privilege at all once he's in `adm`. `~/.ssh/config` scopes his key to cluster
 # hosts. The old `deploy@10.0.200.13` + deploy-key constants went with the sudo that
 # used to be needed here; nothing in the harness holds a privileged path to a node now.
 WORKER_HOST = "snoopy"
-# `deploy` and an in-flight campaign must not interleave — one is reshaping the boundary
+# `deploy` and an in-flight suite must not interleave — one is reshaping the boundary
 # while the other walks it. Both take this lock: `flock(1)` here, `fcntl.flock` in
-# sweep.py, which is the only mechanism a shell and a Python process can share.
+# suite.py, which is the only mechanism a shell and a Python process can share.
 #
 # Until 2026-08-11 this comment was a claim rather than a fact. `deploy` took it and the
-# sweep took a DIFFERENT file (`sweep.lock`), so nothing was excluded — a deploy could
+# suite took a DIFFERENT file (`runner.lock`), so nothing was excluded — a deploy could
 # re-render engine files, pull an image or evict weights in the middle of a measurement.
 # tests/test_ansible.py pins the two constants together now.
 FLEET_LOCK = Path("/opt/cluster/fleet.lock")
@@ -70,11 +70,11 @@ def _run(cmd: list[str], *, cwd: Path | None = None) -> int:
     return subprocess.run(cmd, cwd=cwd).returncode
 
 
-def campaign_holding_the_fleet() -> bool:
-    """Is a measurement campaign holding the fleet lock right now?
+def suite_holding_the_fleet() -> bool:
+    """Is a measurement suite holding the fleet lock right now?
 
     Asked BEFORE invoking the playbook so the refusal can explain itself. `flock` alone
-    would be correct and awful: a deploy would sit silent for however long the campaign
+    would be correct and awful: a deploy would sit silent for however long the suite
     has left, which for `all` is most of a night, and the operator would reasonably
     conclude it had hung.
     """
@@ -93,16 +93,16 @@ def campaign_holding_the_fleet() -> bool:
         os.close(fd)
 
 
-def _refuse_during_campaign() -> bool:
+def _refuse_while_a_suite_runs() -> bool:
     """Print why a deploy is being declined, if it is. True means: do not proceed."""
-    if not campaign_holding_the_fleet():
+    if not suite_holding_the_fleet():
         return False
-    from sparky import runbookctl
-    running = runbookctl.running()
-    print(f"REFUSING: a measurement campaign holds the fleet"
+    from sparky import suitectl
+    running = suitectl.running()
+    print(f"REFUSING: a measurement suite holds the fleet"
           f"{f' ({running})' if running else ''}.")
     print("A deploy re-renders engine files, pulls images and can evict weights — doing")
-    print("that underneath a running campaign produces numbers belonging to no")
+    print("that underneath a running suite produces numbers belonging to no")
     print("configuration, and the damage is invisible afterwards.")
     print()
     print("  ./sparky.sh run            # what is running, and how far along")
@@ -111,7 +111,7 @@ def _refuse_during_campaign() -> bool:
 
 
 def _playbook_cmd(playbook: str, extra: list[str]) -> list[str]:
-    """A playbook invocation, serialized against any in-flight campaign.
+    """A playbook invocation, serialized against any in-flight suite.
 
     `flock` stays even though the caller pre-checks: the pre-check is for the message,
     this is for the race between checking and starting.
@@ -128,7 +128,7 @@ def _playbook_cmd(playbook: str, extra: list[str]) -> list[str]:
 
 
 def publish() -> None:
-    """Mirror the repo → the deploy-owned runtime tree: ansible/, the harness, the runbooks."""
+    """Mirror the repo → the deploy-owned runtime tree: ansible/, the harness, the suites."""
     _run([
         "rsync", "-rlc", "--delete", "--no-perms", "--no-owner", "--no-group",
         "--exclude=.git", "--exclude=__pycache__", "--exclude=*.retry", "--exclude=.ansible",
@@ -140,12 +140,12 @@ def publish() -> None:
         "--exclude=__pycache__", "--exclude=.venv", "--exclude=*.egg-info",
         f"{REPO_ROOT}/sparky", f"{REPO_ROOT}/pyproject.toml", f"{REPO_ROOT}/uv.lock", f"{HARNESS_LIVE}/",
     ])
-    # `--delete`, like the ansible tree: deleting a runbook's .yml must actually retire it,
+    # `--delete`, like the ansible tree: deleting a suite's .yml must actually retire it,
     # or the installed set becomes an ever-growing record of everything ever authored.
-    RUNBOOKS_LIVE.mkdir(parents=True, exist_ok=True)
+    SUITES_LIVE.mkdir(parents=True, exist_ok=True)
     _run([
         "rsync", "-rlc", "--delete", "--no-perms", "--no-owner", "--no-group",
-        f"{REPO_ROOT}/runbooks/", f"{RUNBOOKS_LIVE}/",
+        f"{REPO_ROOT}/suites/", f"{SUITES_LIVE}/",
     ])
 
 
@@ -157,10 +157,10 @@ def deploy(*, dry_run: bool = False, evict: bool = False, tags: str | None = Non
     and otherwise falls to `empty`. `evict` turns the weight-eviction PLAN into an
     apply; without it a de-allowlisted model is only reported, never silently lost.
 
-    Refuses while a campaign holds the fleet — checked BEFORE publishing, because
-    publishing already changes what a running campaign would read next.
+    Refuses while a suite holds the fleet — checked BEFORE publishing, because
+    publishing already changes what a running suite would read next.
     """
-    if _refuse_during_campaign():
+    if _refuse_while_a_suite_runs():
         return 2
     publish()
     extra: list[str] = []
@@ -180,7 +180,7 @@ def teardown(*, include_webui: bool = False) -> int:
     marker-transactional. This is the privileged fallback for when the reconciler
     itself is broken or missing.
     """
-    if _refuse_during_campaign():
+    if _refuse_while_a_suite_runs():
         return 2
     publish()
     extra = ["--tags", "all,webui"] if include_webui else []

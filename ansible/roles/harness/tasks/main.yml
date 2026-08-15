@@ -4,7 +4,7 @@
 # `/opt/cluster/sparky` has been published for a while, and was never runnable: it is
 # source, and nothing on the box can resolve its dependencies. That was fine while every
 # harness invocation came from the repo through `uv`, as geoff. It stopped being fine the
-# moment a runbook run had to be **detached** — a systemd unit running as `activator`
+# moment a suite run had to be **detached** — a systemd unit running as `activator`
 # needs an interpreter that exists, on a path root can name.
 #
 # So this role does three things, and each is a precondition for a detached run:
@@ -13,7 +13,7 @@
 #   2. make the measurement artifacts activate-writable   — somewhere to write
 #   3. create the log directory                           — somewhere to say what happened
 #
-# Head-only: a runbook drives the fleet from the control node, and the trigger that starts
+# Head-only: a suite drives the fleet from the control node, and the trigger that starts
 # one is only invocable there.
 
 - name: Ensure python venv tooling is present
@@ -25,7 +25,7 @@
   become: true
 
 # A venv resolves the dependency set at deploy time, so a broken one is a DEPLOY failure
-# rather than something discovered three hours into a campaign. `deploy` owns it (no
+# rather than something discovered three hours into a suite. `deploy` owns it (no
 # become) — the identity that runs the harness must not be able to rewrite it, the same
 # reason the control panel's app tree is not writable by the identity that serves it.
 #
@@ -52,7 +52,7 @@
   ansible.builtin.assert:
     that: harness_entrypoint.stat.exists
     fail_msg: >-
-      {{ harness_bin }} is missing after installing {{ harness_src }}. A detached runbook
+      {{ harness_bin }} is missing after installing {{ harness_src }}. A detached suite
       run has nothing to execute (ADR-0021). Check that pyproject.toml still declares
       [project.scripts] sparky.
   when: not ansible_check_mode
@@ -106,20 +106,20 @@
   loop: [false, true]
   become: true
 
-# The breadcrumbs and the campaign lock belong INSIDE benchmark/, not beside it.
+# The breadcrumbs and the suite lock belong INSIDE benchmark/, not beside it.
 # `save_state` is atomic — write `.tmp`, rename over the target — and the sticky bit this
 # role sets on /opt/cluster forbids renaming over a file you do not own. The target was
 # geoff's, the run is `activator`, so the very first breadcrumb write of the first real
-# detached campaign died with EPERM and the run recorded nothing. benchmark/ is owned by
+# detached suite died with EPERM and the run recorded nothing. benchmark/ is owned by
 # the activation identity and is not sticky, which is what makes the rename legal.
-- name: Move campaign state into the trend-store directory
+- name: Move suite state into the trend-store directory
   ansible.builtin.command:
     cmd: "mv {{ item.src }} {{ item.dest }}"
     removes: "{{ item.src }}"
     creates: "{{ item.dest }}"
   loop:
-    - {src: /opt/cluster/sweep-state.json, dest: "{{ benchmark_dir }}/sweep-state.json"}
-    - {src: /opt/cluster/sweep.lock, dest: "{{ benchmark_dir }}/sweep.lock"}
+    - {src: /opt/cluster/breadcrumbs.json, dest: "{{ benchmark_dir }}/breadcrumbs.json"}
+    - {src: /opt/cluster/runner.lock, dest: "{{ benchmark_dir }}/runner.lock"}
   become: true
 
 # Files that already exist were created before the ACL was, so they carry the old group
@@ -134,7 +134,7 @@
     state: present
   loop:
     - "{{ benchmark_dir }}/benchmark.db"
-    - "{{ benchmark_dir }}/sweep-state.json"
+    - "{{ benchmark_dir }}/breadcrumbs.json"
     - /opt/cluster/scoreboard.json
     - /opt/cluster/last-smoke.json
   failed_when: false          # absent is the normal case on a fresh cluster
@@ -154,34 +154,34 @@
   when: not ansible_check_mode
 
 # --- somewhere to say what happened ------------------------------------------
-# Per-runbook, appended across runs. A runbook RESUMES, so its runs are episodes of one
-# campaign; reading them together is the point, and rotating per-run would break it.
-- name: Create the runbook log directory
+# Per-suite, appended across runs. A suite RESUMES, so its runs are episodes of one
+# suite; reading them together is the point, and rotating per-run would break it.
+- name: Create the suite log directory
   ansible.builtin.file:
-    path: "{{ runbook_log_dir }}"
+    path: "{{ suite_log_dir }}"
     state: directory
     owner: "{{ activate_user }}"
     group: "{{ activate_group }}"
     mode: "2775"
   become: true
 
-# `deploy` publishes {{ runbook_dir }} (sparky/ansible.py publish()). This asserts the
+# `deploy` publishes {{ suite_dir }} (sparky/ansible.py publish()). This asserts the
 # property that makes it an allowlist rather than a directory: the identity that runs
-# runbooks cannot add to it.
-- name: Read the installed runbook directory
+# suites cannot add to it.
+- name: Read the installed suite directory
   ansible.builtin.stat:
-    path: "{{ runbook_dir }}"
-  register: runbook_dir_stat
+    path: "{{ suite_dir }}"
+  register: suite_dir_stat
   changed_when: false
 
-- name: Assert the activation identity cannot write the runbook allowlist
+- name: Assert the activation identity cannot write the suite allowlist
   ansible.builtin.assert:
     that:
-      - runbook_dir_stat.stat.exists
-      - runbook_dir_stat.stat.gr_name != activate_group
-      - not runbook_dir_stat.stat.woth
+      - suite_dir_stat.stat.exists
+      - suite_dir_stat.stat.gr_name != activate_group
+      - not suite_dir_stat.stat.woth
     fail_msg: >-
-      {{ runbook_dir }} is writable by the activation identity, or missing. That list is
+      {{ suite_dir }} is writable by the activation identity, or missing. That list is
       what a network-facing caller may instance (ADR-0021); an identity that can add to
       its own allowlist does not have one.
   when: not ansible_check_mode

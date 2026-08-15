@@ -174,7 +174,7 @@ def test_gmu_string_parses_to_float():
 
 def test_per_profile_vllm_image_override():
     # The override exists so a container bump is adopted MODEL BY MODEL, which is what
-    # made the 26.07 campaign survivable when one model turned out to be a node-killer.
+    # made the 26.07 suite survivable when one model turned out to be a node-killer.
     #
     # As of 2026-08-10 the fleet is single-container: `step-3.5-flash-fp8` was the last profile
     # falling through to the group_vars default (26.04) and it was retired — outclassed on
@@ -307,7 +307,7 @@ def test_the_harness_finds_the_profiles_when_it_is_not_in_the_repo():
     in a venv where `../ansible/profiles` is nothing. Everything read from the ansible tree
     has to move together — a fallback that fixed only PROFILES_DIR would leave the
     inventory and group_vars resolving into a directory that does not exist, and the first
-    symptom would be a sweep that cannot tell which node an engine runs on.
+    symptom would be a suite that cannot tell which node an engine runs on.
     """
     import inspect
 

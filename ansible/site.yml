@@ -58,7 +58,7 @@
     - role: activate
       tags: [activate]
 
-# The harness as a deployed component (ADR-0021): the venv a detached runbook run
+# The harness as a deployed component (ADR-0021): the venv a detached suite run
 # executes, and the writable state it records into. After `activate`, because it asserts
 # properties of the identity that role creates.
 - name: The harness, installed and runnable (sparky)

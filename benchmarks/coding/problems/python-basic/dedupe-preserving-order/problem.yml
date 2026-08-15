@@ -1,0 +1,11 @@
+id: dedupe-preserving-order
+track: implement
+difficulty: easy
+prompt: 'Write a function `dedupe(items)` that returns a new list with duplicates removed,
+
+  keeping the FIRST occurrence of each element and preserving order.
+
+
+  Items may be unhashable (e.g. lists). Do not mutate the input.
+
+  '

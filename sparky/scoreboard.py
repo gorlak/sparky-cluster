@@ -12,7 +12,7 @@ that showed only accuracy would recommend the biggest model every time, which is
 for a two-node cluster where the alternative is *also* not serving anything else.
 
 Reads the trend store, taking the **latest** run per (label, scenario) — so re-running a
-model updates its row rather than adding a second one, and a sweep interrupted halfway
+model updates its row rather than adding a second one, and a suite interrupted halfway
 still renders the models it finished.
 
 Deliberately no ranking column. There is no single ordering: the right model depends on

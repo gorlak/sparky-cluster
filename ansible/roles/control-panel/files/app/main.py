@@ -48,14 +48,14 @@ ALLOWLIST_FILE = Path(os.environ.get("ALLOWLIST_FILE", "/opt/vllm/engines/allowl
 ACTIVATE_SSH_KEY = os.environ.get("ACTIVATE_SSH_KEY", "/home/activator/.ssh/id_ed25519")
 ACTIVATE_SSH_USER = os.environ.get("ACTIVATE_SSH_USER", "activator")
 RUNS_DIR = Path(os.environ.get("RUNS_DIR", "runs")).resolve()
-# The runbook trigger (ADR-0021). The panel is one of two thin callers of this fixed
+# The suite trigger (ADR-0021). The panel is one of two thin callers of this fixed
 # program — `sparky run` is the other — and neither validates the name itself: the trigger
 # checks it against the deploy-written allowlist, and a second copy of that check here
-# would be a second answer to "which runbooks exist".
-RUNBOOK_BIN = os.environ.get("RUNBOOK_BIN", "/usr/local/sbin/vllm-runbook")
-RUNBOOK_UNIT = os.environ.get("RUNBOOK_UNIT", "sparky-runbook.service")
-RUNBOOK_DIR = Path(os.environ.get("RUNBOOK_DIR", "/opt/cluster/runbooks"))
-RUNBOOK_LOG_DIR = Path(os.environ.get("RUNBOOK_LOG_DIR", "/opt/cluster/runbook-logs"))
+# would be a second answer to "which suites exist".
+SUITE_BIN = os.environ.get("SUITE_BIN", "/usr/local/sbin/vllm-suite")
+SUITE_UNIT = os.environ.get("SUITE_UNIT", "sparky-suite.service")
+SUITE_DIR = Path(os.environ.get("SUITE_DIR", "/opt/cluster/suites"))
+SUITE_LOG_DIR = Path(os.environ.get("SUITE_LOG_DIR", "/opt/cluster/suite-logs"))
 TOPOLOGY_FILE = os.environ.get("CLUSTER_TOPOLOGY", "/opt/cluster/current-topology.json")
 FLEET_FILE = os.environ.get("CLUSTER_FLEET", "/opt/cluster/fleet.json")
 SCOREBOARD_FILE = os.environ.get("SCOREBOARD_FILE", "/opt/cluster/scoreboard.json")
@@ -454,16 +454,16 @@ def start_run(name, label, cmd):
     return current_run()
 
 
-# --- runbooks (ADR-0021) ----------------------------------------------------
+# --- suites (ADR-0021) ----------------------------------------------------
 #
-# A runbook run is NOT one of the actions above. Those are children of this process, which
+# A suite run is NOT one of the actions above. Those are children of this process, which
 # is fine for something that finishes in minutes and fatal for something that runs for
 # hours: every deploy restarts this service, and a child dies with the cgroup. So the
-# panel does not run a runbook — it asks the trigger to start one as a unit of its own,
+# panel does not run a suite — it asks the trigger to start one as a unit of its own,
 # then reads the same two things anyone else would, a unit state and a log file.
 
 
-def installed_runbooks():
+def installed_suites():
     """What may be started, with what each one is FOR.
 
     Read straight from the deploy-written directory the trigger validates against, so the
@@ -476,14 +476,14 @@ def installed_runbooks():
     """
     out = []
     try:
-        paths = sorted(RUNBOOK_DIR.glob("*.yml"))
+        paths = sorted(SUITE_DIR.glob("*.yml"))
     except OSError:
         return out
     for path in paths:
         spec = {}
         try:
             spec = yaml.safe_load(path.read_text()) or {}
-        except Exception:  # noqa: BLE001 - an unreadable runbook is still a runbook
+        except Exception:  # noqa: BLE001 - an unreadable suite is still a suite
             pass
         try:
             order = int(spec.get("order", 50))
@@ -498,14 +498,14 @@ def installed_runbooks():
         })
     # Presentation order, matching `sparky run` — the two show the same menu, so they had
     # better show it in the same sequence. Alphabetical put whatever starts with 'a' in
-    # front of whatever you actually reach for; `order:` is declared per runbook so there
+    # front of whatever you actually reach for; `order:` is declared per suite so there
     # is no central list to forget when one is added.
     return sorted(out, key=lambda r: (r["order"], r["name"]))
 
 
 def _unit_fields(*properties):
     try:
-        out = subprocess.run(["systemctl", "show", RUNBOOK_UNIT,
+        out = subprocess.run(["systemctl", "show", SUITE_UNIT,
                               *[f"-p{p}" for p in properties]],
                              capture_output=True, text=True, timeout=6).stdout
     except Exception:  # noqa: BLE001 - systemd missing/slow is a status, not a crash
@@ -513,7 +513,7 @@ def _unit_fields(*properties):
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
 
-def runbook_state():
+def suite_state():
     """Everything the view needs: what is running, how the last run ended, and its log.
 
     No pid file and no run record — systemd already knows both, and a second copy is just
@@ -522,7 +522,7 @@ def runbook_state():
     """
     fields = _unit_fields("ActiveState", "Description", "ExecMainStatus")
     active = fields.get("ActiveState", "")
-    name = fields.get("Description", "").removeprefix("sparky runbook: ").strip()
+    name = fields.get("Description", "").removeprefix("sparky suite: ").strip()
     running = active in ("active", "activating", "deactivating")
     try:
         code = int(fields.get("ExecMainStatus", ""))
@@ -534,21 +534,21 @@ def runbook_state():
         status = "none"
     else:
         status = "success" if code == 0 else "failed"
-    return {"available": installed_runbooks(), "name": name, "status": status,
-            "code": code, "log": _tail(RUNBOOK_LOG_DIR / f"{name}.log") if name else ""}
+    return {"available": installed_suites(), "name": name, "status": status,
+            "code": code, "log": _tail(SUITE_LOG_DIR / f"{name}.log") if name else ""}
 
 
 def _trigger(*args, timeout=20):
     """Invoke the trigger. Its refusals are the useful part, so they are surfaced whole
     rather than collapsed into a generic 500."""
     try:
-        p = subprocess.run(["sudo", "-n", RUNBOOK_BIN, *args],
+        p = subprocess.run(["sudo", "-n", SUITE_BIN, *args],
                            capture_output=True, text=True, timeout=timeout)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(500, f"could not reach {RUNBOOK_BIN}: {e}")
+        raise HTTPException(500, f"could not reach {SUITE_BIN}: {e}")
     if p.returncode != 0:
         raise HTTPException(400, (p.stderr.strip() or p.stdout.strip()
-                                  or f"{RUNBOOK_BIN} exited {p.returncode}"))
+                                  or f"{SUITE_BIN} exited {p.returncode}"))
     return p
 
 
@@ -569,7 +569,7 @@ def index(request: Request):
     return templates.TemplateResponse(request, "index.html", _ctx(
         request, s=gather(), actions=ACTION_LIST, engines=topology_engines(),
         profile=current_profile(), profiles=available_profiles(),
-        fleet=load_fleet(), run=current_run(), rb=runbook_state()))
+        fleet=load_fleet(), run=current_run(), rb=suite_state()))
 
 
 @app.get("/status", response_class=HTMLResponse)
@@ -662,32 +662,32 @@ def run_view(request: Request):
     return templates.TemplateResponse(request, "_run.html", _ctx(request, run=run))
 
 
-@app.get("/runbooks", response_class=HTMLResponse)
-def runbooks_view(request: Request):
-    return templates.TemplateResponse(request, "_runbooks.html",
-                                      _ctx(request, rb=runbook_state()))
+@app.get("/suites", response_class=HTMLResponse)
+def suites_view(request: Request):
+    return templates.TemplateResponse(request, "_suites.html",
+                                      _ctx(request, rb=suite_state()))
 
 
-@app.post("/runbook/{name}", response_class=HTMLResponse)
-def runbook_start(request: Request, name: str):
-    """Start a runbook — detached, so it outlives this process (ADR-0021).
+@app.post("/suite/{name}", response_class=HTMLResponse)
+def suite_start(request: Request, name: str):
+    """Start a suite — detached, so it outlives this process (ADR-0021).
 
     The name goes to the trigger unexamined on purpose. It validates against the installed
     allowlist and rejects anything that is not a bare identifier, and it is the same check
     `sparky run` gets. Pre-filtering here would only mean two places to keep right.
     """
     _trigger("start", name)
-    return templates.TemplateResponse(request, "_runbooks.html",
-                                      _ctx(request, rb=runbook_state()))
+    return templates.TemplateResponse(request, "_suites.html",
+                                      _ctx(request, rb=suite_state()))
 
 
-@app.post("/runbook-stop", response_class=HTMLResponse)
-def runbook_stop(request: Request):
-    """Stop the running runbook. Safe: breadcrumbs are written after every regiment
+@app.post("/suite-stop", response_class=HTMLResponse)
+def suite_stop(request: Request):
+    """Stop the running suite. Safe: breadcrumbs are written after every regiment
     (ADR-0016), so a stopped run resumes rather than starting over."""
     _trigger("stop", timeout=200)
-    return templates.TemplateResponse(request, "_runbooks.html",
-                                      _ctx(request, rb=runbook_state()))
+    return templates.TemplateResponse(request, "_suites.html",
+                                      _ctx(request, rb=suite_state()))
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
@@ -695,10 +695,10 @@ def metrics():
     """What is serving, and what is measuring it — as Prometheus text.
 
     Grafana's top row asks two questions no exporter could answer: *which model is this?*
-    and *is a runbook driving the cluster right now?* vLLM's own metrics cannot say. Its
+    and *is a suite driving the cluster right now?* vLLM's own metrics cannot say. Its
     `model_name` label is the STABLE alias (`sparky`) that every engine advertises so chat
     survives an activation — deliberately model-agnostic, and therefore useless for
-    identifying the model. And a runbook is not an engine at all.
+    identifying the model. And a suite is not an engine at all.
 
     The panel already knows both, so it exports them rather than a new sidecar existing to
     read two files. Prometheus runs with `network_mode: host`, so it scrapes this over
@@ -734,16 +734,16 @@ def metrics():
         lines.append(f'sparky_engine_model{{profile="{profile}",'
                      f'engine="{e.get("name", "?")}",model="{e.get("model", "?")}"}} 1')
 
-    rb = runbook_state()
+    rb = suite_state()
     # `none` unless one is actually running. The unit keeps its description after it
     # exits — which is what makes the last run's exit status readable — so carrying that
     # name into the metric would leave a dashboard reading "nemotron-family" for the
     # twelve hours after nemotron-family finished.
     running = rb["status"] == "running"
     lines += [
-        "# HELP sparky_runbook_running 1 while a runbook holds the cluster (ADR-0021).",
-        "# TYPE sparky_runbook_running gauge",
-        f'sparky_runbook_running{{runbook="{rb["name"] if running else "none"}"}} '
+        "# HELP sparky_suite_running 1 while a suite holds the cluster (ADR-0021).",
+        "# TYPE sparky_suite_running gauge",
+        f'sparky_suite_running{{suite="{rb["name"] if running else "none"}"}} '
         f'{1 if running else 0}',
     ]
     return "\n".join(lines) + "\n"
@@ -764,7 +764,7 @@ def scoreboard(request: Request):
         return HTMLResponse(
             "<p style='font:15px system-ui;margin:2rem'>No scoreboard yet. "
             "Run <code>sparky scoreboard --json " + SCOREBOARD_FILE + "</code> "
-            "after a sweep.</p>", status_code=404)
+            "after a suite.</p>", status_code=404)
 
     # Project the scatter into SVG coordinates here rather than in the template: Jinja
     # arithmetic is unreadable, and the axes need min/max over the whole set.

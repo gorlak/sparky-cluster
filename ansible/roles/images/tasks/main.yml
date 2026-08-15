@@ -10,7 +10,7 @@
 # `pull:` (upstream image, ideally digest-pinned) or a `build:` (derived image,
 # built from a Dockerfile committed under this role's files/<context>/). This is the
 # codified, all-nodes replacement for the old manual "docker pull on both nodes,
-# digests must match" runbook step.
+# digests must match" suite step.
 #
 # Raw `docker` CLI (via command), not community.docker — matches how the rest of the
 # repo talks to Docker (raw `docker run` in the vllm units) and needs no docker-py

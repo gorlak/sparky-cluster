@@ -1,0 +1,26 @@
+# The declaration that makes this folder a problem set (ADR-0024 §2).
+#
+# Everything language-shaped about this set lives here or beside it. `sparky/coding.py`
+# reads these fields without interpreting them: it does not know what "python" is, only
+# that a toolchain by that key exists in the sandbox and that replies from a model are
+# fenced with these tags.
+name: python-basic
+version: v1
+
+# A key into `vllm-sandbox`'s fixed TOOLCHAINS dict — never a program, never a path. The
+# set is data (and may be a submodule from a repository we do not control); the toolchain
+# it names is deploy-written code. Adding a new one is a deploy.
+toolchain: python3-isolated
+
+# How this language's answers arrive inside a markdown reply.
+fence_tags: [python, py]
+
+# Completes "Reply with …" in the prompt. Every stated rule a model can break belongs
+# here, because the scorer will hold it to them.
+answer_form: >-
+  the complete Python function (or functions) and nothing else — no explanation, no
+  example usage, no tests. Standard library only.
+
+# What this set can measure. Correctness only: it provides no instrumented primitives, so
+# there is no efficiency axis here (ADR-0024 §8). A declared property, not a gap.
+metrics: [correctness]

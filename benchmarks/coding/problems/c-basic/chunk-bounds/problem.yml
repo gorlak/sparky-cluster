@@ -1,0 +1,17 @@
+id: chunk-bounds
+track: implement
+difficulty: medium
+shown_support: [problem.h]
+prompt: |
+  Implement `chunk_bounds` as declared in `problem.h`.
+
+  Conceptually `n_items` items are split into `n_chunks` contiguous chunks, as evenly as
+  possible, preserving order. Rather than building the chunks, report where chunk `index`
+  starts and how long it is, by writing through the two out-parameters.
+
+  When the split is uneven the EARLIER chunks take the extra item each. If there are fewer
+  items than chunks, the trailing chunks are empty — a start position is still written for
+  them, and it must be the position where that empty chunk would begin.
+
+  Return 0 on success. Return -1, writing nothing, if `n_chunks` is zero or `index` is not
+  less than `n_chunks`.

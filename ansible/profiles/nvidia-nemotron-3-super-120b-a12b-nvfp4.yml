@@ -58,7 +58,7 @@
 #
 # REVISIT WHEN the coding regiment exists: re-run both and decide on that number. If Super
 # does not win there either, it has no argument left and goes. Until then it costs 75 GiB
-# and a slot in every sweep — a price paid knowingly, not by neglect.
+# and a slot in every suite — a price paid knowingly, not by neglect.
 profile_name: nvidia-nemotron-3-super-120b-a12b-nvfp4
 hf_repo: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
 # What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than

@@ -118,7 +118,7 @@ The mechanical steps are in the README ("Adding models / profiles"); the fan-out
    [`profiles.md`](profiles.md) and the README profile table.
 5. **Defect register** → check [`defects.md`](defects.md) for anything gating this
    model/quant/arch (e.g. DEF-0004 for AWQ/Marlin MoE, DEF-0006 for Step-3.7 VL).
-6. **The `all` runbook** — add the profile to `runbooks/all.yml`. It declares
+6. **The `all` suite** — add the profile to `suites/all.yml`. It declares
    `covers: allowlist`, so `lint` **fails** until you do; that is the point, because the
    alternative is discovering the gap much later as a missing scoreboard row.
 7. **Validate**: `lint` picks up the new profile automatically and now validates the
@@ -158,30 +158,30 @@ Deletion is the same mechanism run backwards — there is no separate `prune` co
 To keep the weights but stop it being activatable — a candidate parked on an upstream
 fix — set **`blocked: true`** instead of deleting. See the README's allowlist section for the two gestures and what each costs.
 
-## Add or change a runbook
+## Add or change a suite
 
-A runbook is a named, reviewable procedure (ADR-0020) — `runbooks/<name>.yml`, started by
+A suite is a named, reviewable procedure (ADR-0020) — `suites/<name>.yml`, started by
 `./sparky.sh run <name>` or from the panel. The repo is where it is **authored**; a deploy
 is what makes it **startable** (ADR-0021), because both callers name a member of the same
 installed set and a network-facing one must not be able to run whatever is in a checkout.
 
-1. **Write `runbooks/<name>.yml`.** Jobs are `{profile, regiments}`; `defaults.regiments`
+1. **Write `suites/<name>.yml`.** Jobs are `{profile, regiments}`; `defaults.regiments`
    applies to any job that does not name its own. Steps invoke sparky commands, and only
    those in the **Operate** scope — `deploy` and `admin-password` are excluded by
    construction, and args are argv, never a shell string. [[development]] has the scope
-   table; `sparky/runbook.py` enforces both.
-2. **Put the decision rule in the file, before the numbers exist.** A runbook that
+   table; `sparky/suite.py` enforces both.
+2. **Put the decision rule in the file, before the numbers exist.** A suite that
    commandeers the cluster for hours should say what its outcomes mean, so the result is
-   read against a rule rather than rationalised after the fact. A *standing* campaign —
+   read against a rule rather than rationalised after the fact. A *standing* suite —
    one whose job list should track the allowlist rather than answer a question — declares
    **`covers: allowlist`** instead, and `lint` then fails whenever the two disagree.
-   `runbooks/all.yml` is the one that does.
-3. **`./sparky.sh lint`** validates the repo's runbooks alongside profiles — a step naming
-   a privileged command fails here rather than two hours into a campaign.
-4. **Try it in the foreground first**: `./sparky.sh sweep runbooks/<name>.yml --dry-run`
+   `suites/all.yml` is the one that does.
+3. **`./sparky.sh lint`** validates the repo's suites alongside profiles — a step naming
+   a privileged command fails here rather than two hours into a run.
+4. **Try it in the foreground first**: `./sparky.sh suite suites/<name>.yml --dry-run`
    prints the plan and runs nothing; without `--dry-run` it runs the job list from its
-   path, which is the iteration loop before the runbook is installed.
-5. **`./sparky.sh deploy`** publishes it to `/opt/cluster/runbooks/`. Until then
+   path, which is the iteration loop before the suite is installed.
+5. **`./sparky.sh deploy`** publishes it to `/opt/cluster/suites/`. Until then
    `./sparky.sh run` lists it as *not deployed* and refuses to start it.
 6. **`./sparky.sh run <name>`** starts it detached and logged; `run --stop` ends it,
    `run <name> --follow` tails it. See [[operations]].

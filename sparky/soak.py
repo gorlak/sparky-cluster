@@ -14,7 +14,7 @@ A crash would be caught by anything; a hang is invisible to everything that only
 at the end.
 
 **It reports progress as it goes.** A regiment that says nothing for 45 minutes is
-indistinguishable from a hung one — which was the exact confusion during the first sweeps,
+indistinguishable from a hung one — which was the exact confusion during the first suites,
 where the only way to tell a working soak from a dead script was to go and look at the
 GPU.
 """
@@ -81,7 +81,7 @@ def run(client, model: str, *, minutes: float = DEFAULT_MINUTES,
 
     # NOT a `with` block. Its exit calls shutdown(wait=True), which blocks on every
     # outstanding request — including the one that is stuck. A regiment built to DETECT a
-    # hang would itself hang on detecting one, holding the whole sweep, which is the worst
+    # hang would itself hang on detecting one, holding the whole suite, which is the worst
     # possible place for this bug to live. Found by a test that took 30 s instead of
     # milliseconds (2026-08-10).
     pool = ThreadPoolExecutor(max_workers=concurrency)

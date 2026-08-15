@@ -1,0 +1,15 @@
+id: repair-off-by-one
+track: repair
+difficulty: easy
+prompt: 'This function is meant to return the last `n` items of a list, in order. It fails
+
+  the test below. Fix it.
+
+  '
+failure: '>>> last_n([1, 2, 3], 5)
+
+  [2, 3]
+
+  expected: [1, 2, 3]
+
+  '

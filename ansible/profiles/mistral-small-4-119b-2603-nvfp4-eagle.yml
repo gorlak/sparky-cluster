@@ -2,7 +2,7 @@
 # Mistral-Small-4-119B-2603 (NVFP4) — TP=2 across both nodes, container 26.07.
 #
 # WHY THIS MODEL: the European slot, sourced properly. `mistral-medium-3.5-128b-nvfp4`
-# has never served (DEF-0012), and the sweep that followed
+# has never served (DEF-0012), and the suite that followed
 # (scouting-reports/2026-08-mistral-sourcing.md) found this is the only Mistral candidate
 # whose PACKAGING cannot re-create that class of failure. Newer generation than
 # Mistral-Medium-3.5, Apache-2.0 rather than `license: other`, and a third the footprint.
@@ -133,8 +133,8 @@
 # PARKED (`blocked: true` below), not deleted. The config is right and the diagnosis cost
 # three activations, so the file stays — but leaving it ACTIVATABLE was a mistake I made
 # and had to be corrected: the allowlist is not a menu nobody browses, it is what
-# `runbooks/all.yml` iterates. An activatable profile that provably cannot serve would
-# have burned an hour and quarantined on every run of the standing campaign. Parking keeps
+# `suites/all.yml` iterates. An activatable profile that provably cannot serve would
+# have burned an hour and quarantined on every run of the standing suite. Parking keeps
 # the weights and the engine files, so the re-test is still one command
 # (drop `blocked:`, deploy, activate) the day a container changes. DEF-0016.
 #

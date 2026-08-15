@@ -1,0 +1,13 @@
+id: count-down
+track: repair
+difficulty: hard
+shown_support: [problem.h]
+prompt: |
+  `sum_last` should add up the final `k` elements of an array of length `n` and return the
+  total. If `k` is larger than `n` it sums the whole array. If `n` is zero the sum is zero.
+
+  It is wrong, and the way it is wrong does not show up on the inputs you would try first.
+  Fix it.
+failure: |
+  sum_last((int[]){1,2,3}, 3, 0)  ->  hangs, or returns a huge value
+  expected: 0

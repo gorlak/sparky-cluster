@@ -1,0 +1,15 @@
+id: chunk-evenly
+track: implement
+difficulty: easy
+prompt: 'Write `chunk(items, n)` that splits a list into `n` chunks as evenly as possible,
+
+  preserving order. Return a list of `n` lists.
+
+
+  When the split is uneven the EARLIER chunks take the extra elements. If there are
+
+  fewer items than chunks, the trailing chunks are empty. Raise `ValueError` if `n`
+
+  is less than 1.
+
+  '

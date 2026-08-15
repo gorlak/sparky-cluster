@@ -1,7 +1,7 @@
 """Unit tests for the ansible invoker (ADR-0015) — command assembly, no execution.
 
 Since ADR-0018 ansible is the `deploy` engine ONLY: whole-fleet, no profile argument,
-password-gated. These assert that shape, plus the deploy/sweep mutex.
+password-gated. These assert that shape, plus the deploy/suite mutex.
 """
 
 import os
@@ -31,7 +31,7 @@ def test_playbook_cmd_takes_no_profile(monkeypatch):
 
 
 def test_playbook_cmd_takes_the_fleet_lock(monkeypatch):
-    """A deploy reshapes the boundary while a sweep walks it — they must not interleave."""
+    """A deploy reshapes the boundary while a suite walks it — they must not interleave."""
     monkeypatch.setattr(ansible.getpass, "getuser", lambda: "deploy")
     cmd = ansible._playbook_cmd("site.yml", [])
     # Position, not prefix: the command is wrapped (`env ANSIBLE_LOG_PATH=...`), so what
@@ -129,10 +129,10 @@ def test_reading_logs_needs_no_privilege(monkeypatch):
 
 
 @pytest.mark.real_lock_paths
-def test_the_campaign_and_the_deploy_take_THE_SAME_lock():
+def test_the_run_and_the_deploy_take_THE_SAME_lock():
     """They were different files until 2026-08-11, while a comment in ansible.py asserted
-    they were the same. `deploy` took `fleet.lock`; the sweep took `sweep.lock`, which
-    only ever excluded other sweeps. So nothing stopped a deploy from re-rendering engine
+    they were the same. `deploy` took `fleet.lock`; the suite took `runner.lock`, which
+    only ever excluded other suites. So nothing stopped a deploy from re-rendering engine
     files, pulling an image or evicting weights in the middle of a measurement — and the
     resulting numbers would belong to no configuration, invisibly.
 
@@ -140,26 +140,26 @@ def test_the_campaign_and_the_deploy_take_THE_SAME_lock():
     necessity: `flock(1)` in a shell on one side, `fcntl.flock` on the other. The file is
     the only thing they share, so the file is what has to match.
     """
-    from sparky import ansible, sweep
+    from sparky import ansible, runner
 
-    assert sweep.FLEET_LOCK == ansible.FLEET_LOCK
-    assert sweep.DEFAULT_LOCK != ansible.FLEET_LOCK  # still distinct roles
+    assert runner.FLEET_LOCK == ansible.FLEET_LOCK
+    assert runner.DEFAULT_LOCK != ansible.FLEET_LOCK  # still distinct roles
 
 
-def test_a_campaign_holding_the_fleet_refuses_the_deploy(tmp_path, monkeypatch, capsys):
-    """And says which campaign, and how to end it. `flock` alone would be correct and
-    awful — the deploy would sit silent for however long the campaign has left."""
+def test_a_suite_holding_the_fleet_refuses_the_deploy(tmp_path, monkeypatch, capsys):
+    """And says which suite, and how to end it. `flock` alone would be correct and
+    awful — the deploy would sit silent for however long the suite has left."""
     import fcntl
 
-    from sparky import ansible, sweep
+    from sparky import ansible, runner
 
     lock = tmp_path / "fleet.lock"
     monkeypatch.setattr(ansible, "FLEET_LOCK", lock)
-    monkeypatch.setattr(sweep, "FLEET_LOCK", lock)
-    monkeypatch.setattr(sweep, "_fleet_fd", None)
+    monkeypatch.setattr(runner, "FLEET_LOCK", lock)
+    monkeypatch.setattr(runner, "_fleet_fd", None)
 
-    assert ansible.campaign_holding_the_fleet() is False
-    sweep._hold_fleet_lock(lock)
+    assert ansible.suite_holding_the_fleet() is False
+    runner._hold_fleet_lock(lock)
     try:
         # Held in-process, so an flock from another fd in the SAME process still sees it.
         fd = os.open(lock, os.O_RDWR)
@@ -169,24 +169,24 @@ def test_a_campaign_holding_the_fleet_refuses_the_deploy(tmp_path, monkeypatch, 
         finally:
             os.close(fd)
     finally:
-        sweep.release(tmp_path / "sweep.lock")
+        runner.release(tmp_path / "runner.lock")
 
 
-def test_a_sweep_refuses_to_start_under_a_deploy(tmp_path, monkeypatch):
-    """The other direction. Starting a seven-hour campaign into a deploy that is halfway
+def test_a_run_refuses_to_start_under_a_deploy(tmp_path, monkeypatch):
+    """The other direction. Starting a seven-hour suite into a deploy that is halfway
     through re-rendering the fleet measures a moving target."""
     import fcntl
 
-    from sparky import sweep
+    from sparky import runner
 
     lock = tmp_path / "fleet.lock"
-    monkeypatch.setattr(sweep, "FLEET_LOCK", lock)
-    monkeypatch.setattr(sweep, "_fleet_fd", None)
+    monkeypatch.setattr(runner, "FLEET_LOCK", lock)
+    monkeypatch.setattr(runner, "_fleet_fd", None)
     holder = os.open(lock, os.O_RDWR | os.O_CREAT, 0o664)
     fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
-        with pytest.raises(sweep.SweepBusy) as exc:
-            sweep.acquire(tmp_path / "sweep.lock")
+        with pytest.raises(runner.SuiteBusy) as exc:
+            runner.acquire(tmp_path / "runner.lock")
         assert "deploy is in progress" in str(exc.value)
     finally:
         os.close(holder)

@@ -101,7 +101,7 @@ def test_errors_fail_the_soak_even_without_a_stall():
 
 def test_progress_is_reported_during_the_window():
     """A regiment silent for 45 minutes is indistinguishable from a hung one — which is
-    exactly how the early sweeps felt, where the only way to tell was to watch the GPU."""
+    exactly how the early suites felt, where the only way to tell was to watch the GPU."""
     seen = []
     soak.run(_Engine(), "m", minutes=5, concurrency=4,
              on_progress=seen.append, clock=_Clock(step=10.0), sleep=lambda _s: None)
@@ -119,7 +119,7 @@ def test_the_default_window_is_short_enough_to_actually_get_run():
 def test_detecting_a_stall_returns_promptly_rather_than_hanging_on_it():
     """The bug this pins: `with ThreadPoolExecutor(...)` calls shutdown(wait=True) on exit,
     which blocks on the very request that is stuck. The regiment built to detect a hang
-    would hang while reporting one — and hold the whole sweep behind it."""
+    would hang while reporting one — and hold the whole suite behind it."""
     import time as _t
     engine = _Engine(stall_after=2)
     t0 = _t.monotonic()

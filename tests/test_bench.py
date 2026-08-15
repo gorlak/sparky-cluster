@@ -260,7 +260,7 @@ def test_a_result_knows_whether_the_fleet_moved(monkeypatch):
 
     Several things move the fleet mid-run: scale-to-zero unloading an idle model
     (ADR-0022), a deploy's `fleet-state` converging the selection, a manual activate, an
-    engine that died and came back. `sweep` holds the fleet lock so the unloader refuses,
+    engine that died and came back. `suite` holds the fleet lock so the unloader refuses,
     but a bare `bench` holds nothing — so it must DETECT rather than assume.
 
     Deliberately not scale-to-zero-specific: `activated_at` changes for every cause, so one

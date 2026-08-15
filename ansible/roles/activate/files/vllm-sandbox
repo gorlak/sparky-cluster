@@ -1,0 +1,581 @@
+#!/usr/bin/env python3
+"""Execute a coding-benchmark answer under confinement (ADR-0024).
+
+The fourth bounded program, and **the first that runs caller-supplied code**. Its siblings
+are bounded by *validation* — the reconciler takes a profile name, the probe takes a key
+into a fixed dict, the suite trigger takes a name from an allowlist. None of them can be
+handed a payload. This one is handed a payload by definition: measuring whether a model
+can write code means running the code it wrote, and no amount of input validation changes
+that, because the untrusted string IS the thing under test.
+
+So it is bounded two other ways instead.
+
+**By confinement.** The answer runs as an ephemeral `DynamicUser` in an EMPTY root — a
+tmpfs with only the toolchain bound back — with no network, no home, a private /tmp,
+512 MB, 64 tasks and ten seconds. The realistic failures each have a property against their
+name: `rm -rf` meets a root it does not own, a fork bomb meets TasksMax, an infinite loop
+meets RuntimeMaxSec, and an exfiltration attempt meets PrivateNetwork.
+
+An empty root rather than a read-only one because read-only is not enough: `/opt/cluster`
+is world-readable, so a merely read-only filesystem let the code under test read the
+published problem sets — every hidden test and reference solution on the box. Escaping what
+remains requires a kernel vulnerability, and an adversary holding one does not need our
+benchmark.
+
+`--selftest` runs a known-good answer through every toolchain under exactly this
+confinement. The deploy runs it, because none of these properties can be verified without
+root and a bind path that is missing would otherwise show up as every model scoring zero.
+
+**By shape.** The job arrives on **stdin** as JSON; every path, flag and property below is
+a constant. Nothing the caller sends is ever a path, an argument or a shell word — the code
+is embedded in a generated program with `json.dumps`, so it cannot escape its own string
+literal, and the program itself is written here rather than supplied.
+
+**This file is the only place that knows what a programming language is** (ADR-0024 §2).
+A problem set names a toolchain; TOOLCHAINS below decides what that means. The set is data,
+and may come from a submodule this cluster does not control, so it supplies a KEY and never
+program text — the same shape `vllm-probe` uses for its dict of programs. Adding a language
+is therefore a deploy, which is the established price of widening a bounded program.
+
+The alternative needing no grant at all is running model output as the harness user, with
+its group-writable trend store and its sudoers entries. That is the option this exists to
+avoid.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+
+UNIT_PREFIX = "sparky-sandbox"
+PYTHON = "/usr/bin/python3"
+# Ten seconds is a lot for one small function and little enough that a hung answer costs
+# nothing. A problem that needs longer is the wrong problem (the set's own README).
+TIMEOUT_SEC = 10
+MEMORY_MAX = "512M"
+TASKS_MAX = "64"
+MAX_PAYLOAD = 256 * 1024        # an answer is a function, not a corpus
+STATIC_MAX = 4096               # default cap on an answer's own .bss/.data
+
+# What is mounted back into the otherwise-empty root (ADR-0024 §6). Derived from
+# `ldd`, `sysconfig` and `gcc -print-prog-name`, not guessed — but NOT verified under a
+# real confined unit, which needs root. `--selftest` is what proves it on a deploy.
+#
+# Everything absent from this list is absent from the answer's world, including
+# /opt/cluster — where the published problem sets, and therefore every set's hidden tests
+# and reference solutions, live in a world-readable tree.
+BIND_PATHS = [
+    "/usr/bin/python3", "/usr/lib/python3.12",
+    "/usr/bin/gcc", "/usr/bin/as", "/usr/bin/ld",
+    "/usr/libexec/gcc", "/usr/lib/gcc",
+    "/usr/lib/aarch64-linux-gnu", "/lib/aarch64-linux-gnu",
+    "/lib/ld-linux-aarch64.so.1",
+    "/usr/bin/nm", "/usr/bin/objdump",   # the admission gate reads its own output
+]
+
+# Verdicts this program can return. The harness owns the full taxonomy (ADR-0024 §7); a
+# toolchain produces only the states its stages can reach.
+V_NO_ANSWER = "no_answer"
+V_REJECTED = "rejected"
+V_COMPILE_ERROR = "compile_error"
+V_CRASHED = "crashed"
+V_TIMEOUT = "timeout"
+V_FAILED = "failed"
+V_PASSED = "passed"
+
+# The runner for `python3-isolated`. Written HERE, as a constant, so the caller supplies
+# data and never program text. Each stage reports its own verdict: a syntax error, a
+# definition that throws, a failed assertion and an unexpected exception are four different
+# findings, and collapsing them turns a harness fault into a verdict about a model.
+RUNNER_PYTHON3 = '''
+import contextlib, dis, io, json, sys, types
+CODE = {code}
+TESTS = {tests}
+ALLOWED_IMPORTS = set({allowed_imports})
+sink = io.StringIO()
+results = []
+def emit(name, w, ok, detail=""):
+    results.append({{"test": name, "weight": w, "ok": ok, "detail": str(detail)[:200]}})
+def out(verdict, detail=""):
+    # Per-test lines first, then the verdict LAST. Anything the answer printed went to
+    # `sink`, so a chatty solution cannot forge or corrupt either.
+    for row in results:
+        sys.stdout.write("\\n" + json.dumps(row))
+    sys.stdout.write("\\n" + json.dumps({{"verdict": verdict, "detail": str(detail)[:300]}}))
+    sys.stdout.flush()
+    raise SystemExit(0)
+def _weight(n):
+    def deco(fn):
+        fn.weight = n
+        return fn
+    return deco
+# Rebuilt with EMPTY globals before it is handed over. A function defined here carries this
+# module's namespace on `__globals__`, and this module holds TESTS — so injecting it as-is
+# hands the answer the hidden tests. Verified: an answer reading `weight.__globals__` scored
+# `passed` by returning what the tests wanted.
+weight = types.FunctionType(_weight.__code__, {{}}, "weight", _weight.__defaults__,
+                            _weight.__closure__)
+scope = {{"weight": weight}}
+try:
+    answer = compile(CODE, "<answer>", "exec")
+except SyntaxError as exc:
+    out("compile_error", "SyntaxError: %s" % exc)
+except BaseException as exc:
+    out("compile_error", "%s: %s" % (type(exc).__name__, exc))
+# Scope check, on the compiled object and before anything runs. This is a RULE-COMPLIANCE
+# check, not containment: `__import__`, `importlib` and gadget chains through
+# `object.__subclasses__()` all reach the same modules without emitting IMPORT_NAME. It
+# measures whether the model obeyed a stated constraint. The boundary is the confinement.
+_reach = ["__import__", "importlib", "eval", "exec", "compile", "globals", "vars"]
+_seen, _stack = set(), [answer]
+while _stack:
+    _code = _stack.pop()
+    for _ins in dis.get_instructions(_code):
+        if _ins.opname in ("IMPORT_NAME",):
+            _seen.add(str(_ins.argval).split(".")[0])
+    for _const in _code.co_consts:
+        if hasattr(_const, "co_consts"):
+            _stack.append(_const)
+    for _name in _code.co_names:
+        if _name in _reach:
+            _seen.add(_name)
+_bad = sorted(n for n in _seen if n not in ALLOWED_IMPORTS)
+if _bad:
+    out("rejected", "uses %s, which the problem does not provide" % ", ".join(_bad[:6]))
+try:
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        exec(answer, scope)
+except SystemExit:
+    raise
+except BaseException as exc:
+    out("crashed", "%s: %s" % (type(exc).__name__, exc))
+try:
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        exec(compile(TESTS, "<tests>", "exec"), scope)
+except SystemExit:
+    raise
+except AssertionError as exc:
+    out("failed", "AssertionError: %s" % exc)
+except BaseException as exc:
+    out("crashed", "%s: %s" % (type(exc).__name__, exc))
+cases = [(k, v) for k, v in sorted(scope.items())
+         if k.startswith("test_") and callable(v)]
+crashed = []
+for name, fn in cases:
+    w = getattr(fn, "weight", 1)
+    try:
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            fn()
+    except AssertionError as exc:
+        emit(name, w, False, "AssertionError: %s" % exc)
+    except BaseException as exc:
+        emit(name, w, False, "%s: %s" % (type(exc).__name__, exc))
+        crashed.append(name)
+    else:
+        emit(name, w, True)
+bad = [r for r in results if not r["ok"]]
+if crashed:
+    out("crashed", "%d of %d crashed: %s" % (len(crashed), len(results),
+                                             ", ".join(crashed[:5])))
+if bad:
+    out("failed", "%d of %d failed: %s" % (len(bad), len(results),
+                                           ", ".join(r["test"] for r in bad[:5])))
+out("passed")
+'''
+
+
+def _build_python3_isolated(code: str, tests: str, support: dict) -> str:
+    """`json.dumps` is doing real work: it is what keeps the answer inside a string
+    literal instead of becoming program text of its own."""
+    allowed = _constraint_list(support, "imports")
+    return RUNNER_PYTHON3.format(code=json.dumps(code), tests=json.dumps(tests),
+                                 allowed_imports=json.dumps(allowed))
+
+
+def _constraint_list(support: dict, key: str) -> list:
+    """What the problem says its answer may reach. Carried in `support` under a reserved
+    name so the harness stays free of language concepts — it forwards a mapping and never
+    reads it."""
+    raw = (support or {}).get("constraints." + key, "")
+    return sorted({w.strip() for w in str(raw).split(",") if w.strip()})
+
+
+# The harness translation unit for `c-freestanding`. Ours, not the problem's and not the
+# model's: it owns `main` and the reporting shape, so a problem writes only its cases and
+# an answer can neither define `main` nor forge a result.
+HARNESS_C = r'''
+extern void run_tests(void);
+extern int printf(const char *, ...);
+void report(const char *name, int weight, int ok) {
+    printf("{\"test\": \"%s\", \"weight\": %d, \"ok\": %s}\n",
+           name, weight, ok ? "true" : "false");
+}
+int main(void) { run_tests(); return 0; }
+'''
+
+# The driver for `c-freestanding`. A compiled language cannot be piped to an interpreter,
+# so the confined unit still runs the SAME argv — an isolated interpreter — and this
+# program is what it executes: it writes the sources into the unit's private /tmp, builds
+# them, links them and runs the result. Every confinement property is unchanged, and the
+# compiler is reached read-only like any other file.
+#
+# The stages are separated because they are different findings: the ANSWER failing to
+# compile is the model's, and the PROBLEM's own tests failing to compile is ours.
+RUNNER_C = '''
+import json, os, re, subprocess, sys, tempfile
+FILES = {files}
+CC = "/usr/bin/gcc"
+# `-nostdinc` with only the compiler's own include directory bound back: an unlisted
+# `#include <stdio.h>` cannot RESOLVE rather than being detected and reported. The rule the
+# set states to the model becomes a property of the environment.
+CFLAGS = ["-O1", "-std=c17", "-Wall", "-nostdinc", "-I", "."]
+GCC_INCLUDE = subprocess.run([CC, "-print-file-name=include"], capture_output=True,
+                             text=True).stdout.strip()
+if GCC_INCLUDE:
+    CFLAGS += ["-isystem", GCC_INCLUDE]
+# Per-test rows, so the weighted score has something to weigh. Populated late, from the
+# program's own report() output; `out()` emits whatever is collected at call time, so a
+# stage that ends before the program runs (a compile error) simply emits none.
+results = []
+def out(verdict, detail=""):
+    for row in results:
+        sys.stdout.write("\\n" + json.dumps(row))
+    sys.stdout.write("\\n" + json.dumps({{"verdict": verdict, "detail": str(detail)[:400]}}))
+    sys.stdout.flush()
+    raise SystemExit(0)
+def tail(text, n=3):
+    lines = [l for l in (text or "").strip().splitlines() if l.strip()]
+    return " / ".join(lines[-n:])
+work = tempfile.mkdtemp(dir="/tmp")
+for name, body in FILES.items():
+    with open(os.path.join(work, name), "w") as fh:
+        fh.write(body)
+def cc(src):
+    obj = os.path.join(work, src.rsplit(".", 1)[0] + ".o")
+    done = subprocess.run([CC] + CFLAGS + ["-c", src, "-o", obj],
+                          capture_output=True, text=True, cwd=work)
+    return obj, done
+obj_answer, built = cc("answer.c")
+if built.returncode:
+    out("compile_error", tail(built.stderr))
+
+# --- admission: analyse the object BEFORE it is linked or executed -----------------
+# A denylist cannot work — the same capability appears under different names, and in C++
+# not as a POSIX symbol at all. So the allowed set is DERIVED from what the problem
+# declared: any identifier appearing in a header it supplied, plus what the compiler may
+# emit on its own regardless of what was written.
+EMITTED = set(["memcpy", "memmove", "memset", "memcmp",
+               "__stack_chk_fail", "__stack_chk_guard"])
+declared = set()
+for name, body in FILES.items():
+    if name.endswith(".h"):
+        declared.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", body))
+undef = []
+listed = subprocess.run(["/usr/bin/nm", "-u", "--format=posix", obj_answer],
+                        capture_output=True, text=True, cwd=work)
+for line in listed.stdout.splitlines():
+    parts = line.split()
+    if parts:
+        undef.append(parts[0])
+contraband = sorted(set(undef) - declared - EMITTED)
+if contraband:
+    out("contraband", "reaches outside the interface: " + ", ".join(contraband[:6]))
+
+# Static storage, capped. An answer can otherwise dodge a problem's allocator entirely
+# with `static int buf[1<<20]` — no allocations, a perfect memory score, and it passes at
+# small sizes. The section sizes are in the object already.
+sized = subprocess.run(["/usr/bin/objdump", "-h", obj_answer],
+                       capture_output=True, text=True, cwd=work)
+for line in sized.stdout.splitlines():
+    cols = line.split()
+    if len(cols) > 3 and cols[1] in (".bss", ".data"):
+        try:
+            size = int(cols[2], 16)
+        except ValueError:
+            continue
+        if size > {static_max}:
+            out("contraband", "%s is %d bytes, over the %d the problem allows"
+                              % (cols[1], size, {static_max}))
+
+# A raw syscall carries no symbol at all, so the symbol check cannot see it.
+disasm = subprocess.run(["/usr/bin/objdump", "-d", obj_answer],
+                        capture_output=True, text=True, cwd=work)
+for line in disasm.stdout.splitlines():
+    fields = line.split("\t")
+    if len(fields) > 2 and fields[2].split()[0:1] in (["svc"], ["hvc"], ["smc"]):
+        out("contraband", "emits a raw syscall instruction")
+
+objs = [obj_answer]
+for helper in ("tests.c", "harness.c"):
+    obj, done = cc(helper)
+    if done.returncode:
+        out("no_answer", "the PROBLEM did not build: " + tail(done.stderr))
+    objs.append(obj)
+# The sources are gone before anything the answer wrote can run. `fopen("tests.c")` is
+# otherwise a working read of the hidden tests from inside the sandbox, and no mount
+# namespace can help — the tests have to be in here to run at all.
+for name in list(FILES):
+    try:
+        os.unlink(os.path.join(work, name))
+    except OSError:
+        pass
+prog = os.path.join(work, "prog")
+linked = subprocess.run([CC] + objs + ["-o", prog],
+                        capture_output=True, text=True, cwd=work)
+if linked.returncode:
+    out("link_error", tail(linked.stderr))
+try:
+    ran = subprocess.run([prog], capture_output=True, text=True, cwd=work,
+                         timeout={run_timeout})
+except subprocess.TimeoutExpired:
+    out("timeout", "the answer did not finish")
+if ran.returncode < 0:
+    out("crashed", "died on signal %d" % -ran.returncode)
+if ran.returncode:
+    out("crashed", "exit %d: %s" % (ran.returncode, tail(ran.stderr)))
+for line in ran.stdout.splitlines():
+    line = line.strip()
+    if line.startswith("{{"):
+        try:
+            results.append(json.loads(line))
+        except ValueError:
+            pass
+if not results:
+    out("no_answer", "the PROBLEM reported no tests")
+failed = [r for r in results if not r.get("ok")]
+if failed:
+    out("failed", "%d of %d failed: %s" % (len(failed), len(results),
+        ", ".join(str(r.get("test")) for r in failed[:5])))
+out("passed")
+'''
+
+
+def _build_c_freestanding(code: str, tests: str, support: dict) -> str:
+    """The answer, the problem's tests and its declared interface, laid out as sources.
+
+    The answer is always `answer.c` and the tests are always `tests.c`, composed here — a
+    problem supplies file CONTENT and never a filename, so nothing it carries can become a
+    path.
+    """
+    files = {str(k): str(v) for k, v in (support or {}).items()
+             if str(k).endswith((".h", ".c")) and "/" not in str(k)}
+    files["answer.c"] = code
+    files["tests.c"] = tests
+    files["harness.c"] = HARNESS_C
+    # A problem that hands out an allocator may raise this; the default is "enough for a
+    # few constants, not enough to hold the working set".
+    static_max = _constraint_list(support, "static_bytes")
+    return RUNNER_C.format(files=json.dumps(files), run_timeout=max(2, TIMEOUT_SEC - 3),
+                           static_max=int(static_max[0]) if static_max else STATIC_MAX)
+
+
+# The fixed dict. A job names one of these keys; it can name nothing else.
+#
+#   argv  — what the confined unit executes. `-I` is isolated mode: no site-packages, no
+#           cwd on sys.path, no PYTHON* env, so the answer gets the standard library and
+#           nothing this cluster has installed.
+#   build — turns (code, tests) into the text piped to that argv on stdin.
+TOOLCHAINS = {
+    "python3-isolated": {
+        "argv": [PYTHON, "-I", "-"],
+        "build": _build_python3_isolated,
+    },
+    "c-freestanding": {
+        "argv": [PYTHON, "-I", "-"],
+        "build": _build_c_freestanding,
+    },
+}
+
+
+def die(detail: str, verdict: str = V_NO_ANSWER, code: int = 2):
+    """Even a refusal answers in the result shape. The caller is a scoring loop, and a
+    bare non-zero exit would make every refusal look like a model that cannot code."""
+    print(json.dumps({"verdict": verdict, "detail": detail}))
+    raise SystemExit(code)
+
+
+def build_program(toolchain: str, code: str, tests: str, support: dict | None = None) -> str:
+    """The whole decision about what gets executed — pure, so the tests can read it."""
+    if toolchain not in TOOLCHAINS:
+        die(f"unknown toolchain {toolchain!r} — adding one is a deploy")
+    if not isinstance(code, str) or not isinstance(tests, str):
+        die("code and tests must both be strings")
+    if not code.strip():
+        die("empty answer")
+    if len(code) + len(tests) > MAX_PAYLOAD:
+        # A stated rule, broken by the answer: an answer is a function, not a corpus.
+        die(f"payload over {MAX_PAYLOAD} bytes", V_REJECTED)
+    return TOOLCHAINS[toolchain]["build"](code, tests, support or {})
+
+
+def sandbox_argv(toolchain: str, unit: str) -> list[str]:
+    """The confinement, as constants. Nothing here is caller-supplied — the toolchain is a
+    key into the dict above, and the program itself arrives on stdin."""
+    return [
+        "systemd-run", f"--unit={unit}", "--pipe", "--wait", "--collect", "--quiet",
+        "--property=DynamicUser=yes",        # ephemeral uid; owns nothing, persists nothing
+        "--property=PrivateNetwork=yes",     # cannot reach the endpoint, the panel, the LAN
+        # An empty root, not a locked one. `ProtectSystem=strict` made the filesystem
+        # read-only but still VISIBLE, and /opt/cluster is mode 3775 — so the published
+        # problem sets, hidden tests included, were readable by the code under test.
+        "--property=TemporaryFileSystem=/",
+        *[f"--property=BindReadOnlyPaths=-{path}" for path in BIND_PATHS],
+        "--property=ProtectHome=yes",
+        "--property=PrivateTmp=yes",
+        "--property=PrivateDevices=yes",
+        "--property=ProtectProc=invisible",
+        "--property=ProcSubset=pid",
+        "--property=NoNewPrivileges=yes",
+        "--property=RestrictSUIDSGID=yes",
+        "--property=RestrictNamespaces=yes",
+        "--property=LockPersonality=yes",
+        "--property=SystemCallArchitectures=native",
+        "--property=RestrictAddressFamilies=AF_UNIX",
+        "--property=SystemCallFilter=@system-service",
+        f"--property=MemoryMax={MEMORY_MAX}",
+        f"--property=TasksMax={TASKS_MAX}",
+        f"--property=RuntimeMaxSec={TIMEOUT_SEC}",
+        "--",
+        *TOOLCHAINS[toolchain]["argv"],
+    ]
+
+
+def read_verdict(stdout: str) -> dict:
+    """The last non-empty line is the verdict; everything before it is the answer talking.
+
+    Parsed defensively because a timeout kills the unit mid-write, and a half-written line
+    must read as "no verdict" rather than crash the scoring loop.
+    """
+    for line in reversed((stdout or "").strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                verdict = json.loads(line)
+            except ValueError:
+                continue
+            if verdict.get("verdict"):
+                return verdict
+    return {}
+
+
+def read_cases(stdout: str) -> list:
+    """The per-test rows the confined program reported, in order.
+
+    The confined program writes one JSON object per line — a row carries `test`, the final
+    line carries `verdict`. `main` forwards these rows so the caller can weigh them; without
+    this they were collected inside the unit and discarded here, and every weighted score
+    read 0. Parsed defensively for the same reason as the verdict: a killed unit may leave a
+    half-written line.
+    """
+    out = []
+    for line in (stdout or "").strip().splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if "test" in row and "verdict" not in row:
+            out.append(row)
+    return out
+
+
+SELFTEST = {
+    "python3-isolated": ("def f(x):\n    return x + 1\n", "assert f(1) == 2"),
+    "c-freestanding": (
+        '#include "problem.h"\nsize_t twice(size_t n){ return n*2; }',
+        '#include "problem.h"\nextern void report(const char*,int,int);\n'
+        'void run_tests(void){ report("d",1,twice(3)==6); }\n'),
+}
+SELFTEST_SUPPORT = {"problem.h": ("#ifndef P\n#define P\n"
+                                  "typedef __SIZE_TYPE__ size_t;\n"
+                                  "size_t twice(size_t);\n#endif\n")}
+
+
+def selftest() -> int:
+    """Run a known-good answer through every toolchain, confined exactly as a real one is.
+
+    The isolation properties cannot be tested without root, so this is what turns them from
+    an assumption into a checked fact — run by the deploy, so a missing bind path fails
+    there rather than silently scoring every model zero later.
+    """
+    bad = 0
+    for name, (code, tests) in sorted(SELFTEST.items()):
+        if name not in TOOLCHAINS:
+            continue
+        support = SELFTEST_SUPPORT if name != "python3-isolated" else {}
+        program = build_program(name, code, tests, support)
+        unit = f"{UNIT_PREFIX}-selftest-{os.getpid()}-{name.replace('_', '-')}"
+        try:
+            done = subprocess.run(sandbox_argv(name, unit), input=program,
+                                  capture_output=True, text=True, timeout=TIMEOUT_SEC + 30)
+        except subprocess.TimeoutExpired:
+            print(f"{name}: FAIL — no result within {TIMEOUT_SEC + 30}s")
+            bad += 1
+            continue
+        verdict = read_verdict(done.stdout).get("verdict")
+        if verdict == V_PASSED:
+            print(f"{name}: ok")
+        else:
+            bad += 1
+            detail = (done.stderr or "").strip().splitlines()
+            print(f"{name}: FAIL — {verdict or 'no verdict'} "
+                  f"{read_verdict(done.stdout).get('detail', '') or (detail[-1] if detail else '')}")
+    return 1 if bad else 0
+
+
+def main(argv: list[str]) -> int:
+    if argv == ["--selftest"]:
+        return selftest()
+    if argv:
+        die("takes no arguments — the job arrives on stdin as JSON")
+    try:
+        job = json.loads(sys.stdin.read() or "{}")
+    except ValueError as exc:
+        die(f"stdin is not JSON: {exc}")
+    if not isinstance(job, dict):
+        die("expected a JSON object with `toolchain`, `code` and `tests`")
+
+    toolchain = job.get("toolchain", "")
+    support = job.get("support") or {}
+    if not isinstance(support, dict):
+        die("`support` must be an object of filename -> contents")
+    program = build_program(toolchain, job.get("code", ""), job.get("tests", ""), support)
+    # A unit name per invocation so concurrent scoring does not collide; not caller-derived
+    # — the pid and a counter are ours.
+    unit = f"{UNIT_PREFIX}-{os.getpid()}-{job.get('seq', 0) if isinstance(job.get('seq'), int) else 0}"
+
+    try:
+        done = subprocess.run(sandbox_argv(toolchain, unit), input=program,
+                              capture_output=True, text=True,
+                              timeout=TIMEOUT_SEC + 20)
+    except subprocess.TimeoutExpired:
+        # systemd should have killed it first; if we are here, systemd itself is wedged.
+        subprocess.run(["systemctl", "kill", unit], capture_output=True, check=False)
+        die(f"sandbox did not return within {TIMEOUT_SEC + 20}s", V_TIMEOUT, 3)
+
+    verdict = read_verdict(done.stdout)
+    cases = read_cases(done.stdout)
+    if not verdict:
+        detail = (done.stderr or "").strip().splitlines()
+        # No verdict and a non-zero exit is the killed path: the unit was stopped before it
+        # could report. That IS a result — the answer did not finish — and it must be a
+        # failed item rather than a broken harness. Its rows are not trustworthy either.
+        verdict = {"verdict": V_TIMEOUT,
+                   "detail": (detail[-1] if detail else
+                              f"killed (over {TIMEOUT_SEC}s, {MEMORY_MAX}, or {TASKS_MAX} tasks)")}
+        cases = []
+    # Rows first, then the verdict last — the shape the caller parses (sparky/sandbox.py).
+    for row in cases:
+        print(json.dumps(row))
+    print(json.dumps(verdict))
+    return 0
+
+
+if __name__ == "__main__":
+    if os.geteuid() != 0:
+        die("must run as root (through the single-command sudoers entry)")
+    raise SystemExit(main(sys.argv[1:]))

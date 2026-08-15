@@ -1,0 +1,7 @@
+id: flatten-nested
+track: implement
+difficulty: medium
+prompt: "Write `flatten(d, sep=\".\")` that flattens a nested dict into a single-level dict\n\
+  whose keys are the paths joined by `sep`.\n\nOnly dicts recurse \u2014 lists and every other\
+  \ value are left alone. An EMPTY dict as a\nvalue is dropped entirely (it contributes no\
+  \ leaves).\n"

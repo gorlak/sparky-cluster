@@ -20,14 +20,24 @@
 
 {% if inventory_hostname in groups['head'] %}
 # The DETACHED-RUN grant (ADR-0021), and the only one here that is not about privilege.
-# A runbook run needs nothing root — it activates (already granted above) and then talks
+# A suite run needs nothing root — it activates (already granted above) and then talks
 # HTTP. What it needs is to outlive its caller: a process the control panel spawns dies
-# with the panel's cgroup, and every deploy restarts the panel, so a three-hour campaign
-# would be killed by routine maintenance. `vllm-runbook` starts it as a transient unit
-# instead, and can do nothing else: the runbook must be in the deploy-written allowlist,
+# with the panel's cgroup, and every deploy restarts the panel, so a three-hour suite
+# would be killed by routine maintenance. `vllm-suite` starts it as a transient unit
+# instead, and can do nothing else: the suite must be in the deploy-written allowlist,
 # the argument is a bare identifier, and every path — log, unit, harness — is composed
 # by the program from constants.
-%{{ activate_group }} ALL=(root) NOPASSWD: {{ runbook_bin }}
+%{{ activate_group }} ALL=(root) NOPASSWD: {{ suite_bin }}
+
+# The SANDBOX grant (ADR-0024). Unlike every entry above it, this program cannot validate
+# its input: measuring coding ability means executing the code a model wrote, so the
+# untrusted string is the payload. It is bounded by CONFINEMENT instead — the answer runs
+# as an ephemeral DynamicUser with PrivateNetwork, ProtectSystem=strict, ProtectHome, a
+# private /tmp, 512 MB, 64 tasks and ten seconds — and by SHAPE: the job arrives on stdin,
+# every property is a constant, and the answer is embedded with json.dumps so it cannot
+# become program text. The alternative needing no grant is running model output as the
+# harness user, which holds the three entries above.
+%{{ activate_group }} ALL=(root) NOPASSWD: {{ sandbox_bin }}
 {% endif %}
 
 # The cross-node trigger arrives as forced-command SSH; sshd puts the request in

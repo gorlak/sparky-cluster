@@ -4,7 +4,7 @@
 is loaded here the way the reconciler tests load `vllm-activate`: by path, as a module.
 
 **What is worth testing is when it REFUSES.** Unloading is cheap to get right and
-expensive to get wrong: pulling a model out from under a campaign wastes hours of
+expensive to get wrong: pulling a model out from under a suite wastes hours of
 measurement, and unloading on a transient network blip evicts a model nobody asked to
 lose. The happy path is one `if`.
 """
@@ -73,8 +73,8 @@ def test_disabled_by_default_does_nothing(prog, monkeypatch):
     assert prog.main() == 0
 
 
-def test_refuses_while_a_deploy_or_campaign_holds_the_fleet_lock(prog, monkeypatch):
-    """A campaign is MEASURING the model this would pull out from under it, and a deploy
+def test_refuses_while_a_deploy_or_run_holds_the_fleet_lock(prog, monkeypatch):
+    """A suite is MEASURING the model this would pull out from under it, and a deploy
     is reshaping the boundary. Same lock and same reasoning as docs/synchronization.md."""
     _topo(prog)
     _never_unloads(prog, monkeypatch)
@@ -165,7 +165,7 @@ def test_it_holds_no_privilege_of_its_own():
     privileged program and needs the scrutiny ADR-0018 gives the other three."""
     src = IDLE.read_text()
     assert "/usr/local/sbin/vllm-activate" in src
-    assert "vllm-probe" not in src and "vllm-runbook" not in src
+    assert "vllm-probe" not in src and "vllm-suite" not in src
     assert "os.geteuid" not in src, "it must not expect to run as root"
 
 
@@ -246,7 +246,7 @@ def test_the_demand_signal_never_invents_demand(prog, monkeypatch):
 
 
 def test_wake_refuses_while_the_fleet_lock_is_held(prog, monkeypatch):
-    """Same guard as unloading: never activate into a deploy or a campaign."""
+    """Same guard as unloading: never activate into a deploy or a suite."""
     prog.LAST_PROFILE = prog.CLUSTER / "last-serving-profile"
     prog.LAST_PROFILE.write_text("qwen3.6\n")
     prog.WAKE_ENABLED = True

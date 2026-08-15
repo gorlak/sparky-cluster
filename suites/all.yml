@@ -1,0 +1,58 @@
+# Measure the whole allowlist.
+#
+# The standing suite: every profile that can be activated, measured the same way, so
+# the scoreboard is a comparison rather than a pile of measurements taken on different
+# days under different containers. Run it after a container bump, after a driver change,
+# after anything that moves the numbers under everything — which is exactly the drift
+# that makes a retired profile's numbers uncomparable, and the reason the scoreboard
+# hides them.
+#
+# **This takes most of a night.** Roughly an hour per profile — a quarter of it the
+# activation, the rest the quality run — so seven profiles is around seven hours. Start
+# it and leave; it is a systemd unit, it resumes after a stop, and it holds the cluster
+# exclusively for the duration (serving is whatever it is currently measuring).
+#
+# `soak` is deliberately absent. It is 45 minutes a profile and answers a different
+# question — *does this model survive sustained load* — which is worth asking of a
+# candidate, not of the whole fleet every time.
+#
+# The job list is LITERAL, per ADR-0020: what you read is what runs, and a matrix that
+# expands at runtime is how an approved list stops matching what executes. `covers:
+# allowlist` is what keeps that honest — `lint` fails if this file and the allowlist
+# disagree, so adding a profile without adding it here is caught before a deploy rather
+# than discovered as a gap in the scoreboard.
+name: all
+# Shown beside the button in the panel and by `sparky run` — so what a
+# multi-hour run is about is legible where it is STARTED, not only
+# to whoever reads this file.
+description: >-
+  Measure every activatable profile the same way, so the scoreboard is a
+  comparison rather than a pile of numbers taken on different days.
+# Where it sits in the menu the panel and `sparky run` show.
+# First: the standing suite, and the only one whose coverage lint enforces.
+order: 10
+estimate: "~7 h"
+covers: allowlist
+defaults:
+  regiments: [tools, bench, quality]
+jobs:
+  # Cheapest first. A failure in the fast ones is a harness problem, and finding that out
+  # after four hours of Qwen3-VL is how a night gets wasted.
+  - profile: qwen3.6-35b-a3b-nvfp4
+  - profile: qwen3-coder-next-nvfp4
+  # `covers: allowlist` counts ACTIVATABLE profiles, so this list moves whenever a profile
+  # is parked or unparked — that is the mechanism keeping it honest, not a chore.
+  # 2026-08-11/12: `step-3.7-flash-nvfp4` joined when DEF-0006 cleared and left again the
+  # next day when DEF-0017 parked it (its `<think>` path emits token soup);
+  # `mistral-small-4-119b-2603-nvfp4` replaced the retired dense Mistral-Medium pair; and
+  # the `-eagle` arm was added and then removed again when DEF-0016 parked it.
+  #
+  # Ordered cheapest-first by weights-per-node, so a harness problem surfaces in minutes
+  # rather than four hours into Qwen3-VL: mistral-small-4 ~33 GiB/node, minimax ~65.
+  # ⚠️ mistral-small-4 is a compressed-tensors MoE — DEF-0004's neighbourhood. Its first
+  # activation was attended and clean (2026-08-12); it is in the suite on that basis.
+  - profile: mistral-small-4-119b-2603-nvfp4
+  - profile: minimax-m2.7-nvfp4
+  - profile: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
+  - profile: nvidia-nemotron-3-super-120b-a12b-nvfp4
+  - profile: qwen3-vl-235b-a22b-instruct-nvfp4

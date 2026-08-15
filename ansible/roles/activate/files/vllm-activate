@@ -240,7 +240,7 @@ def plan(profile, engines, node, markers, active, *, force=False, preserve=False
     drop_markers = [e for e in others if e in markers]
     # Stop anything NOT CLEANLY DEAD, not merely anything `active`.
     #
-    # This distinction cost a campaign on 2026-08-11. The stop list was
+    # This distinction cost a suite on 2026-08-11. The stop list was
     # `[e for e in others if active.get(e)]`, fed by `systemctl is-active --quiet`, which
     # is true only for `active`. Mistral's head had been failing and was sampled during
     # its 20-second `RestartSec` gap — state `activating` (sub `auto-restart`) — so it was
@@ -297,7 +297,7 @@ def is_active(engine: str) -> bool:
 def unit_state(engine: str) -> str:
     """The unit's ActiveState, not a bool.
 
-    `is-active --quiet` answers "is it serving", and the state that cost a campaign on
+    `is-active --quiet` answers "is it serving", and the state that cost a suite on
     2026-08-11 was `activating` — a failing unit inside its `RestartSec` gap. It answers
     false there, while the unit still owns its port and is seconds from taking it again.
     """

@@ -250,21 +250,24 @@ def test_the_model_mirror_excludes_huggingface_download_metadata():
     assert "--exclude=.cache/" in cmd, "mirror would abort on 0600 hf metadata"
 
 
-# --- the runbook trigger's deployment (ADR-0021) ----------------------------
+# --- the suite trigger's deployment (ADR-0021) ----------------------------
 
-def test_the_runbook_grant_is_a_single_command_entry_like_its_siblings():
+def test_the_suite_grant_is_a_single_command_entry_like_its_siblings():
     """A third bounded grant, and it has to stay the same SHAPE as the other two: one
     fixed program, no wildcards, no directory. `NOPASSWD: /usr/local/sbin/` or a command
     with arguments would turn the boundary back into a family of commands."""
     sudoers = (ROLES / "activate" / "templates" / "sudoers-activate.j2").read_text()
     grants = [line for line in sudoers.splitlines()
               if line.startswith("%") and "NOPASSWD" in line]
-    assert len(grants) == 3
+    # Four as of ADR-0024. Asserted exactly, not as a floor: a grant appearing without
+    # this number changing is precisely the review this test exists to force.
+    assert len(grants) == 4
     for grant in grants:
         program = grant.split("NOPASSWD:", 1)[1].strip()
         assert program.startswith("{{") and program.endswith("}}"), program
         assert " " not in program.strip("{} "), f"{program} takes arguments"
-    assert any("runbook_bin" in g for g in grants)
+    assert any("suite_bin" in g for g in grants)
+    assert any("sandbox_bin" in g for g in grants)
 
 
 def test_the_deploy_asserts_geoffs_grants_include_the_new_one():
@@ -273,8 +276,8 @@ def test_the_deploy_asserts_geoffs_grants_include_the_new_one():
     the next deploy fail, which is the check working; forgetting to add the program to the
     list instead would silently widen what the assertion tolerates."""
     tasks = (ROLES / "activate" / "tasks" / "main.yml").read_text()
-    bounded = tasks[tasks.index("_bounded:"):tasks.index("_bounded:") + 200]
-    for var in ("activate_bin", "probe_bin", "runbook_bin"):
+    bounded = tasks[tasks.index("_bounded:"):tasks.index("_bounded:") + 260]
+    for var in ("activate_bin", "probe_bin", "suite_bin", "sandbox_bin"):
         assert var in bounded, f"{var} missing from the exhaustive grant allowlist"
 
 
@@ -282,7 +285,7 @@ def test_the_panel_is_told_where_the_trigger_and_its_log_live():
     """The panel hardcodes nothing; every path is env. A missing one would silently fall
     back to a default that happens to be right today and wrong after any rename."""
     unit = (ROLES / "control-panel" / "templates" / "control-panel.service.j2").read_text()
-    for var in ("RUNBOOK_BIN", "RUNBOOK_UNIT", "RUNBOOK_DIR", "RUNBOOK_LOG_DIR"):
+    for var in ("SUITE_BIN", "SUITE_UNIT", "SUITE_DIR", "SUITE_LOG_DIR"):
         assert f"Environment={var}=" in unit
 
 
@@ -296,19 +299,19 @@ def test_the_harness_is_installed_where_the_trigger_looks_for_it():
                   "all.yml").read_text()
     harness_bin = [line.split(":", 1)[1].strip() for line in group_vars.splitlines()
                    if line.startswith("harness_bin:")][0]
-    trigger_path = ROLES / "activate" / "files" / "vllm-runbook"
+    trigger_path = ROLES / "activate" / "files" / "vllm-suite"
     spec = importlib.util.spec_from_loader(
-        "vllm_runbook_role",
-        importlib.machinery.SourceFileLoader("vllm_runbook_role", str(trigger_path)))
+        "vllm_suite_role",
+        importlib.machinery.SourceFileLoader("vllm_suite_role", str(trigger_path)))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert str(module.HARNESS) == harness_bin
 
 
 def test_prometheus_scrapes_the_panel_for_what_no_exporter_knows():
-    """Which profile is activated, and whether a runbook is driving the cluster. Neither
+    """Which profile is activated, and whether a suite is driving the cluster. Neither
     is discoverable from an exporter — vLLM's `model_name` label is the model-agnostic
-    stable alias, and a runbook is not an engine — so the panel exports them. Over
+    stable alias, and a suite is not an engine — so the panel exports them. Over
     loopback: the prometheus container is `network_mode: host` and the panel binds
     127.0.0.1, so the scrape never meets Caddy's basic_auth."""
     conf = (ROLES / "prometheus" / "templates" / "prometheus.yml.j2").read_text()
@@ -352,8 +355,8 @@ def test_no_duplicate_keys_in_any_yaml():
 
     root = Path(__file__).resolve().parent.parent
     files = (glob.glob(str(root / "ansible" / "**" / "*.yml"), recursive=True)
-             + glob.glob(str(root / "runbooks" / "*.yml")))
-    assert files, "expected to find ansible/runbook YAML to check"
+             + glob.glob(str(root / "suites" / "*.yml")))
+    assert files, "expected to find ansible/suite YAML to check"
     problems = []
     for f in files:
         try:

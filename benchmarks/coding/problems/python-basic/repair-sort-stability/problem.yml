@@ -1,0 +1,15 @@
+id: repair-sort-stability
+track: repair
+difficulty: hard
+prompt: '`rank` should sort records by score DESCENDING, and records with equal scores should
+
+  keep their original relative order. It fails the test below. Fix it.
+
+  '
+failure: '>>> rank([{"n": "a", "score": 2}, {"n": "b", "score": 1}])
+
+  [{''n'': ''b'', ''score'': 1}, {''n'': ''a'', ''score'': 2}]
+
+  expected: a before b
+
+  '

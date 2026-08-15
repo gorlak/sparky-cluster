@@ -30,7 +30,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from sparky import runbook, runbookctl, soak, sweep, tools, activate as act
+from sparky import coding, reference, runner, sandbox, soak, suite, suitectl, tools, activate as act
 from sparky import ansible as ops
 from sparky import bench as httpbench
 from sparky import evals, report, scoreboard, store, topology
@@ -331,7 +331,7 @@ def activate(
         console.print("[bold]activatable:[/] " + "  ".join(allowed))
         raise typer.Exit()
 
-    # One definition of "live", shared with the sweep runner. This used to be an inline
+    # One definition of "live", shared with the suite runner. This used to be an inline
     # sequence here and a different, shorter one in the runner — which is how the runner
     # ended up measuring an engine that was still loading (2026-08-10).
     try:
@@ -478,9 +478,9 @@ PANEL_SNAPSHOT = Path("/opt/cluster/scoreboard.json")
 
 
 def _restore_serving(was_serving: str | None) -> None:
-    """Put back whatever was serving before the campaign took the cluster.
+    """Put back whatever was serving before the suite took the cluster.
 
-    A measurement must not decide what serves. Left alone, a sweep promotes its LAST job
+    A measurement must not decide what serves. Left alone, a suite promotes its LAST job
     by accident — a candidate, chosen by job ordering, at whatever hour the run finished.
     That is the "restored ≠ promoted" rough edge, closed at the point it is created.
 
@@ -496,7 +496,7 @@ def _restore_serving(was_serving: str | None) -> None:
                   f"{live or 'nothing'} is what the last job left)[/]")
     try:
         act.bring_up(was_serving, on_event=lambda m: console.print(f"  [dim]{m}[/]"))
-    except Exception as exc:  # noqa: BLE001 - a failed restore must not fail the campaign
+    except Exception as exc:  # noqa: BLE001 - a failed restore must not fail the suite
         console.print(f"[yellow]could not restore {was_serving}: {exc}[/]")
         console.print(f"[yellow]{live or 'nothing'} is serving — "
                       f"`./sparky.sh activate {was_serving}` when you want it back.[/]")
@@ -508,10 +508,10 @@ def _scoreboard_table(*, include_retired: bool = False):
     **One producer, deliberately.** The panel renders a file and does no analysis, which
     is what keeps dominance and best-marking from drifting — but that only holds while
     there is one thing WRITING the file. There were two, and they disagreed: this path
-    skipped the profile attribution entirely, so every snapshot the sweep wrote had no
+    skipped the profile attribution entirely, so every snapshot the suite wrote had no
     `hf_repo` (no Hub links on the web scoreboard, silently) and `retired: False` on
     everything (so Step-3.5-Flash and the four single-node profiles never left the page).
-    Each sweep overwrote whatever a correct `scoreboard --json` had produced.
+    Each suite overwrote whatever a correct `scoreboard --json` had produced.
     """
     with store.Store() as db:
         rows = db.rows()
@@ -578,41 +578,41 @@ def _refresh_panel_snapshot() -> None:
 
 @app.command("run", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
 def run_cmd(
-    name: str = typer.Argument(None, help="Runbook name (not a path). Omit to list."),
+    name: str = typer.Argument(None, help="Suite name (not a path). Omit to list."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Tail the log after starting."),
-    stop: bool = typer.Option(False, "--stop", help="Stop the running runbook."),
+    stop: bool = typer.Option(False, "--stop", help="Stop the running suite."),
     log: bool = typer.Option(False, "--log", help="Show the log and exit; nothing starts."),
     restart: bool = typer.Option(False, "--restart",
                                  help="Discard breadcrumbs first — re-measure everything."),
 ) -> None:
-    """Start a named runbook — detached and logged (ADR-0020, ADR-0021).
+    """Start a named suite — detached and logged (ADR-0020, ADR-0021).
 
-    A runbook is to a procedure what a profile is to a model: declarative, installed by
+    A suite is to a procedure what a profile is to a model: declarative, installed by
     `deploy`, started by NAME. Taking a name rather than a path is what makes the
     allowlist mean anything — a path argument would let any YAML on the box run.
 
-    **This does not run the campaign; it starts it.** The run is a systemd unit of its
+    **This does not run the suite; it starts it.** The run is a systemd unit of its
     own, so it survives this shell, a dropped connection, and the deploy that restarts the
     panel — a measurement that takes three hours must not depend on a terminal staying
-    open. Its output appends to a per-runbook log. `--follow` tails it; Ctrl-C leaves the
+    open. Its output appends to a per-suite log. `--follow` tails it; Ctrl-C leaves the
     run going.
 
-    **Breadcrumbs are shared across runbooks**, because they are keyed on
-    `(profile, regiment)` rather than on which file asked for it — so a campaign that
+    **Breadcrumbs are shared across suites**, because they are keyed on
+    `(profile, regiment)` rather than on which file asked for it — so a suite that
     overlaps one you just ran skips the overlap instead of re-measuring it. That is
     usually what you want and occasionally not: after a container bump every number is
     stale, and `--restart` is how you say so.
 
-    Iterating on a job list that is not an installed runbook yet? That is
-    `sparky sweep <path>`, in the foreground.
+    Iterating on a job list that is not an installed suite yet? That is
+    `sparky suite <path>`, in the foreground.
     """
     if stop:
-        raise typer.Exit(runbookctl.stop())
+        raise typer.Exit(suitectl.stop())
     if not name:
-        _runbook_list()
-        raise typer.Exit(0 if runbook.available() else 1)
+        _suite_list()
+        raise typer.Exit(0 if suite.available() else 1)
     if log:
-        raise typer.Exit(runbookctl.follow(name, once=True))
+        raise typer.Exit(suitectl.follow(name, once=True))
 
     if restart:
         # Done HERE rather than as a second argument to the trigger. That program takes
@@ -620,25 +620,25 @@ def run_cmd(
         # safe to expose to a web request; adding a flag it must interpret would trade
         # that away for a gesture the caller can just perform first. Clearing the file is
         # unprivileged — the measurement artifacts are activate-writable (ADR-0021).
-        sweep.DEFAULT_BREADCRUMBS.unlink(missing_ok=True)
+        runner.DEFAULT_BREADCRUMBS.unlink(missing_ok=True)
         console.print("[dim]breadcrumbs cleared — every regiment will be re-measured, "
-                      "for every profile, not just this runbook's[/]")
+                      "for every profile, not just this suite's[/]")
 
-    code = runbookctl.start(name)
+    code = suitectl.start(name)
     if code != 0:
         raise typer.Exit(code)
-    console.print(f"[green]started[/] {name} — detached, logging to {runbookctl.log_path(name)}")
+    console.print(f"[green]started[/] {name} — detached, logging to {suitectl.log_path(name)}")
     console.print(f"[dim]follow: ./sparky.sh run {name} --follow   ·   "
                   f"stop: ./sparky.sh run --stop[/]")
     if follow:
-        raise typer.Exit(runbookctl.follow(name))
+        raise typer.Exit(suitectl.follow(name))
 
 
-def _runbook_list() -> None:
+def _suite_list() -> None:
     """What may be started, and whether anything is running."""
-    installed = runbook.describe()
+    installed = suite.describe()
     if not installed:
-        console.print("[bold]runbooks:[/] (none installed — ./sparky.sh deploy)")
+        console.print("[bold]suites:[/] (none installed — ./sparky.sh deploy)")
     for rb in installed:
         # `estimate` can be absent — an older installed copy, or a file `lint` would have
         # rejected. Show what is there rather than a stray separator around nothing.
@@ -646,20 +646,20 @@ def _runbook_list() -> None:
         console.print(f"  [bold]{rb['name']}[/]  [dim]{meta}[/]")
         if rb["description"]:
             console.print(f"    [dim]{rb['description']}[/]")
-    # Named separately rather than merged: an authored-but-not-deployed runbook is not a
+    # Named separately rather than merged: an authored-but-not-deployed suite is not a
     # thing you can start, and showing it in one list is how you learn that at the moment
     # you try. See ADR-0021 — the installed set is the allowlist.
     startable = {rb["name"] for rb in installed}
-    pending = [n for n in runbook.authored() if n not in startable]
+    pending = [n for n in suite.authored() if n not in startable]
     if pending:
         console.print(f"[yellow]not deployed:[/] {'  '.join(pending)} "
                       f"[dim](./sparky.sh deploy)[/]")
-    running = runbookctl.running()
+    running = suitectl.running()
     console.print(f"[bold]running:[/] {running}" if running else "[dim]nothing running[/]")
 
 
-@app.command("sweep", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
-def sweep_cmd(
+@app.command("suite", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+def suite_cmd(
     spec_file: str = typer.Argument(..., help="YAML job list (profile x regiments)."),
     resume: bool = typer.Option(True, "--resume/--restart",
                                 help="Continue from breadcrumbs (default), or start over."),
@@ -667,8 +667,8 @@ def sweep_cmd(
 ) -> None:
     """Run a job list end to end — the ADR-0016 outer loop.
 
-    A sweep COMMANDEERS the cluster: it activates one profile after another, so serving is
-    whatever the sweep is currently measuring. That is why it takes an exclusive lock and
+    A suite COMMANDEERS the cluster: it activates one profile after another, so serving is
+    whatever the suite is currently measuring. That is why it takes an exclusive lock and
     why the job list is explicit rather than expanded from a matrix — it is a thing you
     read and approve before it takes the fleet for two hours.
 
@@ -677,7 +677,7 @@ def sweep_cmd(
     """
     import yaml
     spec = yaml.safe_load(Path(spec_file).read_text())
-    jobs = sweep.load_jobs(spec)
+    jobs = runner.load_jobs(spec)
 
     if dry_run:
         for job in jobs:
@@ -685,7 +685,7 @@ def sweep_cmd(
         console.print(f"[dim]{len(jobs)} job(s). Nothing was run.[/]")
         raise typer.Exit()
 
-    state = sweep.load_state() if resume else sweep.SweepState()
+    state = runner.load_state() if resume else runner.Breadcrumbs()
     if resume and state.done:
         console.print(f"[dim]resuming — {len(state.done)} regiment(s) already done[/]")
 
@@ -761,24 +761,37 @@ def sweep_cmd(
             raise RuntimeError(result.summary())
         return result.summary()
 
-    regiments = {"bench": _bench, "quality": _quality, "tools": _tools, "soak": _soak}
+    def _coding(job) -> str:
+        # Every parameter passed explicitly, as `_evals` does: calling a typer command as a
+        # plain function leaves anything unpassed as an `OptionInfo`, which fails the first
+        # time it is used as the value it is declared to be.
+        # `via="local"` is not a default here, it is a rule: a suite must not depend on
+        # a third party's availability or on a credential (ADR-0025). Every parameter is
+        # passed because an unpassed one stays an `OptionInfo` and fails on first use.
+        return _measured(
+            job, lambda: coding_cmd(label=job.key, only=None, via="local", model=None,
+                                    publish_prompts=False, concurrency=4, record=True),
+            {s.scenario for s in coding.discover_sets()}, "coding")
+
+    regiments = {"bench": _bench, "quality": _quality, "tools": _tools, "soak": _soak,
+                 "coding": _coding}
 
     lock = None
     try:
-        lock = sweep.acquire()
-    except sweep.SweepBusy as exc:
+        lock = runner.acquire()
+    except runner.SuiteBusy as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(1)
-    # What was serving before we took the cluster. A campaign is a MEASUREMENT: it should
+    # What was serving before we took the cluster. A suite is a MEASUREMENT: it should
     # leave the fleet as it found it, the same way `deploy` is selection-neutral. Without
     # this, which model is live afterwards is an artifact of job ordering — the last thing
     # measured, promoted by accident, at whatever hour the run happened to finish.
     was_serving = act.live_profile()
     try:
-        state = sweep.run(jobs, activate=activate_profile, regiments=regiments,
+        state = runner.run(jobs, activate=activate_profile, regiments=regiments,
                           state=state, on_event=lambda m: console.print(m))
     finally:
-        # In the `finally`, so a campaign that CRASHES still puts the fleet back. It was
+        # In the `finally`, so a suite that CRASHES still puts the fleet back. It was
         # outside it until 2026-08-11, and the first crash proved that wrong: the run died
         # on a breadcrumb write and left its candidate serving overnight.
         #
@@ -787,11 +800,11 @@ def sweep_cmd(
         # without unwinding, so this never runs. Which is the behaviour we want — an
         # activation cannot finish inside the 180s a stopped unit has left.
         _restore_serving(was_serving)
-        sweep.release(lock)
+        runner.release(lock)
         _refresh_panel_snapshot()
 
     console.print()
-    console.print(sweep.summary(state))
+    console.print(runner.summary(state))
     if any(not o.ok for o in state.outcomes) or state.quarantined:
         raise typer.Exit(1)
 
@@ -950,12 +963,170 @@ def eval_cmd(
         record = False
     if record:
         with store.Store() as db:
-            db.record(store.Run(
+            db.record(store.Row(
                 label=label, model=engine.get("model", "?"), profile=profile,
                 scenario="quality:mmlu-pro", accuracy=result.accuracy,
                 items=len(result.items), unparseable=result.unparseable))
         console.print(f"[dim]  recorded as '{label}' (scenario quality:mmlu-pro)[/]")
         _refresh_panel_snapshot()
+
+
+@app.command("coding", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+def coding_cmd(
+    label: str = typer.Argument(None, help="Label to record under (default: the profile)."),
+    only: str = typer.Option(None, "--set", "-s", help="Score just this problem set."),
+    via: str = typer.Option("local", "--via",
+                            help="local (the serving fleet) or anthropic (a reference)."),
+    model: str = typer.Option(None, "--model",
+                              help="Reference model when --via anthropic."),
+    publish_prompts: bool = typer.Option(
+        False, "--publish-prompts",
+        help="Allow a PRIVATE set's prompts to be sent to an external service."),
+    concurrency: int = typer.Option(4, "--concurrency", "-c"),
+    record: bool = typer.Option(True, "--record/--no-record", help="Write to the trend store."),
+) -> None:
+    """Score the live model on CODE — pass@1 against hidden tests (ADR-0024).
+
+    The axis that matters most for software work and the one the fleet was ranked without.
+    Answers execute in a bounded sandbox (`vllm-sandbox`) and either satisfy the tests or
+    do not: no judge model, no reference-similarity. Correctness being decidable here is
+    the entire reason this is worth more than another multiple-choice set.
+
+    Each problem set under `benchmarks/coding/problems/` is scored and recorded
+    SEPARATELY. A set may be a submodule that was never fetched; that is reported rather
+    than treated as an error. Scores are never blended across sets — one set's number is
+    not comparable to another's, and averaging them would produce a figure whose meaning
+    changed with whichever submodules happened to be checked out.
+    """
+    external = via == "anthropic"
+    if via not in ("local", "anthropic"):
+        console.print(f"[red]unknown --via {via!r}[/] — local or anthropic")
+        raise typer.Exit(2)
+
+    if external:
+        # A reference measures the SET, not the cluster, so it needs neither a live engine
+        # nor the fleet lock — it can run while a model is serving.
+        engine = None
+        profile = reference.REFERENCE_PROFILE
+        label = label or (model or reference.DEFAULT_MODEL)
+    else:
+        current = topology.load_current_topology()
+        if not current or not current.get("engines"):
+            console.print("[yellow]Nothing serving — activate a profile first.[/]")
+            raise typer.Exit(1)
+        engine = current["engines"][0]
+        profile = current.get("profile", "?")
+        label = label or profile
+
+    if not sandbox.available():
+        # Said before a single request is sent. Without it every problem fails identically
+        # for one environmental reason, and the run would look like a model that cannot
+        # write code at all.
+        console.print(f"[red]no sandbox at {sandbox.SANDBOX_BIN}[/] — answers cannot be "
+                      f"executed, so nothing here would be a measurement. "
+                      f"Run ./sparky.sh deploy (ADR-0024).")
+        raise typer.Exit(2)
+
+    sets = [s for s in coding.discover_sets() if not only or s.name == only]
+    absent = coding.missing_sets()
+    if not sets:
+        console.print(f"[yellow]no problem sets found under {coding.SETS_ROOT}[/]"
+                      + (f" — {', '.join(absent)} present but unfetched" if absent else ""))
+        raise typer.Exit(1)
+    if absent:
+        # Named, not silent: a private set missing turns a partial run into one that looks
+        # complete, which is the failure ADR-0009 exists to prevent.
+        console.print(f"[yellow]not measured[/] — {', '.join(absent)} "
+                      f"(submodule not fetched)")
+
+    if external:
+        # A private set's PROMPTS are the asset that was kept private. Sending them to a
+        # third party is a decision, not a side effect of choosing an endpoint (ADR-0025).
+        # The hidden tests never leave either way.
+        risky = [s.name for s in sets if s.is_private]
+        if risky and not publish_prompts:
+            console.print(f"[red]refusing to send private prompts[/] — "
+                          f"{', '.join(risky)} "
+                          f"{'is' if len(risky) == 1 else 'are'} private, and --via "
+                          f"anthropic would publish {'its' if len(risky) == 1 else 'their'} "
+                          f"problem prompts to a third party.")
+            console.print("[dim]  Re-run with --publish-prompts to allow it, or with "
+                          "--set <a-public-set> to measure something else.[/]")
+            raise typer.Exit(2)
+        if risky:
+            console.print(f"[yellow]publishing prompts[/] for {', '.join(risky)} "
+                          f"— explicitly allowed")
+
+    console.print(f"[bold]coding[/] · {profile}{' (reference)' if external else ''} · "
+                  f"{len(sets)} set{'s' if len(sets) != 1 else ''} · "
+                  f"concurrency {concurrency}")
+    console.print(f"[dim]{reference.API_URL if external else engine['api_url']}"
+                  f" · {model or reference.DEFAULT_MODEL if external else engine['served_as']}[/]")
+
+    timeout = max(600.0, coding.MAX_TOKENS / 15.0 * max(1, concurrency) / 4)
+    if external:
+        try:
+            client_cm = reference.AnthropicClient(timeout=timeout)
+        except reference.MissingKey as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(2)
+        served_as = model or reference.DEFAULT_MODEL
+    else:
+        client_cm = VllmClient(engine["api_url"], timeout=timeout)
+        served_as = engine["served_as"]
+    with client_cm as client:
+        for pset in sets:
+            problems = coding.load_problems(pset)
+            console.print(f"\n[bold]{pset.name}[/] {pset.version} · {len(problems)} problems "
+                          f"· {pset.toolchain}")
+            counter = {"n": 0}
+
+            def tick(result, _total=len(problems)):
+                counter["n"] += 1
+                mark = "ok  " if result.passed else result.verdict.value
+                console.print(f"[dim]  {counter['n']}/{_total} {mark:<13} {result.problem}"
+                              f"{'' if result.passed else ' · ' + result.detail[:60]}[/]")
+
+            result = coding.run(client, served_as, execute=sandbox.execute,
+                                pset=pset, problems=problems,
+                                concurrency=concurrency, on_item=tick)
+
+            table = Table(title=f"coding: {label} · {pset.name}", title_justify="left")
+            for col in ("track", "passed", "n"):
+                table.add_column(col, overflow="fold")
+            for track, (ok, n) in sorted(result.by_track().items()):
+                table.add_row(track, f"{100 * ok / n:.0f}%", str(n))
+            console.print(table)
+            # The distribution, not just the pass rate: it ranks models even when none of
+            # them pass, which is the expected state of a hard set (ADR-0024 §7).
+            spread = " · ".join(f"{v.value} {n}" for v, n in sorted(
+                result.by_verdict().items(), key=lambda kv: kv[0].value))
+            console.print(f"  [bold]pass@1 {100 * result.accuracy:.1f}%[/] "
+                          f"({result.passed}/{len(result.items)}) · "
+                          f"weighted {100 * result.score:.1f}% · "
+                          f"{result.seconds / 60:.1f} min")
+            console.print(f"  [dim]{spread}[/]")
+
+            # Same refusal as the quality regiment, for the same reason: a run where most
+            # answers never arrived is a measurement of the harness, not of the model, and
+            # a fabricated cell on the scoreboard is worse than a missing one.
+            keep = record
+            if keep and result.no_answer > len(result.items) / 2:
+                console.print(f"[red]NOT RECORDED[/] — {result.no_answer}/"
+                              f"{len(result.items)} answers never arrived. "
+                              f"That is a broken run, not a score.")
+                keep = False
+            if keep:
+                with store.Store() as db:
+                    db.record(store.Row(
+                        label=label,
+                        model=served_as if external else engine.get("model", "?"),
+                        profile=profile,
+                        scenario=pset.scenario, accuracy=result.accuracy,
+                        items=len(result.items), unparseable=result.no_answer,
+                        score=result.score))
+                console.print(f"[dim]  recorded as '{label}' (scenario {pset.scenario})[/]")
+    _refresh_panel_snapshot()
 
 
 @app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
@@ -1136,12 +1307,12 @@ def lint() -> None:
     # of" is a property of THIS repo's allowlist, and its whole purpose is that tests can
     # bind to a shape instead of a model name (topology.ARCHETYPES).
     #
-    # Runbooks are an allowlist too (ADR-0020), so `lint` validates them alongside
+    # Suites are an allowlist too (ADR-0020), so `lint` validates them alongside
     # profiles — the REPO copies, since this is the gate a deploy passes through. A
-    # runbook that names a privileged command should fail here, at Layer 1, and not two
-    # hours into a campaign.
-    for name in runbook.authored():
-        problems = runbook.validate(name)
+    # suite that names a privileged command should fail here, at Layer 1, and not two
+    # hours into a suite.
+    for name in suite.authored():
+        problems = suite.validate(name)
         if problems:
             for problem in problems:
                 console.print(f"[red]lint FAILED[/] — {problem}")

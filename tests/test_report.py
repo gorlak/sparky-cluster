@@ -1,7 +1,7 @@
 """Unit tests for the benchmark A/B report (ADR-0012)."""
 
 from sparky.report import compare, improvement_pct
-from sparky.store import Run, Store
+from sparky.store import Row, Store
 
 
 def test_improvement_pct_is_direction_aware():
@@ -14,9 +14,9 @@ def test_improvement_pct_is_direction_aware():
 
 def test_compare_computes_deltas_and_direction(tmp_path):
     with Store(tmp_path / "b.db") as s:
-        s.record(Run(label="A", model="m", profile="p", scenario="throughput",
+        s.record(Row(label="A", model="m", profile="p", scenario="throughput",
                      output_toks_s=100, ttft_p99_ms=100, ts=1))
-        s.record(Run(label="B", model="m", profile="p", scenario="throughput",
+        s.record(Row(label="B", model="m", profile="p", scenario="throughput",
                      output_toks_s=120, ttft_p99_ms=80, ts=2))
         cmp = compare(s, "A", "B")
     deltas = {d.metric: d for d in cmp["throughput"]}
@@ -26,9 +26,9 @@ def test_compare_computes_deltas_and_direction(tmp_path):
 
 def test_compare_uses_latest_row_per_label(tmp_path):
     with Store(tmp_path / "b.db") as s:
-        s.record(Run(label="A", model="m", profile="p", scenario="latency", output_toks_s=50, ts=1))
-        s.record(Run(label="A", model="m", profile="p", scenario="latency", output_toks_s=80, ts=2))  # newer
-        s.record(Run(label="B", model="m", profile="p", scenario="latency", output_toks_s=80, ts=3))
+        s.record(Row(label="A", model="m", profile="p", scenario="latency", output_toks_s=50, ts=1))
+        s.record(Row(label="A", model="m", profile="p", scenario="latency", output_toks_s=80, ts=2))  # newer
+        s.record(Row(label="B", model="m", profile="p", scenario="latency", output_toks_s=80, ts=3))
         cmp = compare(s, "A", "B")
     d = {x.metric: x for x in cmp["latency"]}
     assert d["output_toks_s"].a == 80  # latest A, not 50
@@ -37,7 +37,7 @@ def test_compare_uses_latest_row_per_label(tmp_path):
 
 def test_compare_handles_one_sided_scenario(tmp_path):
     with Store(tmp_path / "b.db") as s:
-        s.record(Run(label="A", model="m", profile="p", scenario="latency", output_toks_s=50, ts=1))
+        s.record(Row(label="A", model="m", profile="p", scenario="latency", output_toks_s=50, ts=1))
         cmp = compare(s, "A", "B")
     d = {x.metric: x for x in cmp["latency"]}
     assert d["output_toks_s"].a == 50

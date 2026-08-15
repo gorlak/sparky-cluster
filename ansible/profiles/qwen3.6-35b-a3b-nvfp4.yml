@@ -27,6 +27,15 @@
 # the RoCE all-reduce costs. See docs/profile-tuning.md.
 # Caveat kept honest: the pair differed in TWO variables (TP and gmu 0.55->0.80),
 # so the KV multiple overstates the pure TP effect; the speed rows do not.
+#
+# gmu 0.80 -> 0.70 (2026-08-15). At 0.80, vLLM reserves ~97 of 121 GiB unified, leaving
+# ~6 GiB host-visible headroom at idle — and on GB10 the GPU allocation is charged to the
+# same pool the OS lives in. A full measurement run (the `soak` regiment, sustained
+# concurrent load) exhausted RAM + all 16 GiB swap and hard-reset BOTH TP=2 nodes; the
+# fail-safe (ADR-0009) brought them back empty and reachable. 0.70 hands ~12 GiB back to
+# the host (~18 GiB idle headroom) so the harness's own load has room. KV at 0.70 still
+# holds max_model_len many times over. The right ceiling is now a measured question, not a
+# guess — see docs/measurement.md.
 # ONE NAME. profile == engine == served_as == the lowercased canonical HF model
 # name, so the scoreboard, the systemd unit, the API and huggingface.co all agree.
 # `hf_repo` is the exact upstream id for eyeball-matching against the Hub.
@@ -44,7 +53,7 @@ serving_topology:
     kind: vllm
     model: Qwen3.6-35B-A3B-NVFP4
     served_as: qwen3.6-35b-a3b-nvfp4
-    gpu_memory_utilization: "0.80"
+    gpu_memory_utilization: "0.70"
     max_model_len: 262144
     head_extra_args:
       - --enable-chunked-prefill

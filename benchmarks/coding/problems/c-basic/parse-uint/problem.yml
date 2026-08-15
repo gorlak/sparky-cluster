@@ -1,0 +1,11 @@
+id: parse-uint
+track: implement
+difficulty: medium
+shown_support: [problem.h]
+prompt: |
+  Implement `parse_uint` as declared in `problem.h`.
+
+  Parse a NUL-terminated decimal string into an unsigned value. The whole string must be
+  digits — no sign, no whitespace, no trailing characters, and not empty. Write the value
+  through `out` and return 0 on success; return -1 and leave `*out` untouched on anything
+  malformed, including a value that would exceed 4294967295.

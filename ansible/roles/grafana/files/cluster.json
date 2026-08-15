@@ -73,8 +73,8 @@
     {
       "id": 10,
       "type": "stat",
-      "title": "Runbook",
-      "description": "The runbook currently holding the cluster (ADR-0021). While one runs, serving is whatever it is measuring \u2014 so a number on this dashboard belongs to a candidate, not to the promoted model.",
+      "title": "Suite",
+      "description": "The suite currently holding the cluster (ADR-0021). While one runs, serving is whatever it is measuring \u2014 so a number on this dashboard belongs to a candidate, not to the promoted model.",
       "gridPos": {
         "h": 3,
         "w": 8,
@@ -116,8 +116,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sparky_runbook_running",
-          "legendFormat": "{{runbook}}",
+          "expr": "sparky_suite_running",
+          "legendFormat": "{{suite}}",
           "instant": true
         }
       ]

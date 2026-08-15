@@ -28,7 +28,7 @@ Corollary: a first deploy's job is to make things **probe-able and bring-up-able
 perfect. Ship minimal flags, learn from the probe and the first activation, then fix
 everything in a single follow-up deploy.
 
-> The exception is a **defect campaign**, where one variable per activation is the whole
+> The exception is a **defect run**, where one variable per activation is the whole
 > point (see `docs/upgrades/container-*.md`). That constraint is about *activations*,
 > not profiles — it never argues for splitting a deploy.
 

@@ -18,7 +18,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # The repo when there is one, the published tree when there is not (ADR-0021). Since the
-# harness is now *installed* on the head — a venv, so a detached runbook run has an
+# harness is now *installed* on the head — a venv, so a detached suite run has an
 # interpreter — `__file__` can sit in site-packages, where `../ansible/profiles` is
 # nothing. `/opt/cluster/ansible` is the same content, published by the same deploy.
 PROFILES_DIR = next(
@@ -206,7 +206,7 @@ def activation_fingerprint(path: Path = CURRENT_TOPOLOGY) -> tuple[str, str] | N
 
     Deliberately NOT scale-to-zero-specific. `activated_at` changes for every one of those
     causes, so one comparison covers them all — and will cover the next cause nobody has
-    thought of yet. `sweep` holds the fleet lock and is therefore already safe from the
+    thought of yet. `suite` holds the fleet lock and is therefore already safe from the
     unloader; a bare `bench` or `eval` holds nothing, which is the gap this closes.
 
     Returns None when nothing is serving or the file is unreadable — an unreadable

@@ -147,9 +147,9 @@ don't treat a stale-looking file as evidence.
   a fresh quality verdict, not just liveness).
 - "What could we run?" → `./sparky.sh fleet`.
 
-## Run a long campaign
+## Run a long suite
 
-A runbook commandeers the cluster for hours — it activates one profile after another, so
+A suite commandeers the cluster for hours — it activates one profile after another, so
 serving is whatever it is currently measuring.
 
 **Starting one does not run it.** The run is a systemd unit of its own (ADR-0021), so it
@@ -171,10 +171,10 @@ is nothing to background and no TTY to hold:
 ```
 
 `--follow` tails the log; Ctrl-C detaches the reader, never the run. The log is per
-runbook and appended across runs — a runbook resumes, so its runs are episodes of one
-campaign. The panel has the same two buttons at `/admin`.
+suite and appended across runs — a suite resumes, so its runs are episodes of one
+run. The panel has the same two buttons at `/admin`.
 
-**A finished run puts back what was serving before it started.** A campaign activates one
+**A finished run puts back what was serving before it started.** A run activates one
 profile after another, so without that the live model afterwards is an artifact of job
 ordering — the last thing measured, promoted by accident at 4am. It restores after the
 last job, announces it, and a failure to restore is reported without failing the run.
@@ -188,28 +188,28 @@ last job, announces it, and a failure to restore is reported without failing the
 Breadcrumbs are written after every *regiment*, so starting it again resumes rather than
 restarts — a 45-minute soak is never repeated because the bench after it died. The
 exclusive lock expires after six hours, so a killed run does not block the next one
-forever; if you know it is dead sooner, delete `/opt/cluster/benchmark/sweep.lock`.
+forever; if you know it is dead sooner, delete `/opt/cluster/benchmark/runner.lock`.
 
 A stopped run leaves the candidate it was measuring serving — systemd kills it long before
 an activation could finish, so restoring there would be interrupted mid-transaction.
 `./sparky.sh activate <profile>` when you want yours back.
 
-Breadcrumbs are keyed on `(profile, regiment)`, **not on which runbook asked** — so a
-campaign that overlaps one you just ran skips the overlap instead of re-measuring it.
+Breadcrumbs are keyed on `(profile, regiment)`, **not on which suite asked** — so a
+run that overlaps one you just ran skips the overlap instead of re-measuring it.
 Usually what you want; after a container bump nothing is comparable any more, and that is
 what `./sparky.sh run <name> --restart` is for.
 
 **Do not start a second one.** It will refuse — the unit is fixed, and so is the lock —
-and that refusal is the point: two campaigns interleaving activations would each measure
+and that refusal is the point: two runs interleaving activations would each measure
 whatever the other last activated, and the numbers would look fine while belonging to no
 configuration.
 
-**A runbook you are still writing is not startable.** `run` names a member of the
+**A suite you are still writing is not startable.** `run` names a member of the
 deploy-installed set, so adding one is a deploy. While iterating, run the job list in the
 foreground from its path:
 
 ```bash
-./sparky.sh sweep runbooks/nemotron-family.yml
+./sparky.sh suite suites/nemotron-family.yml
 ```
 
 ## When something is wrong

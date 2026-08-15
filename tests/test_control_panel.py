@@ -33,12 +33,12 @@ def panel(tmp_path, monkeypatch):
     monkeypatch.setenv("CLUSTER_PROFILE", "empty")
     monkeypatch.setenv("NODE_ADDRS", "snoopy=10.0.200.13")
     monkeypatch.setenv("PANEL_NODE", "sparky")
-    monkeypatch.setenv("RUNBOOK_BIN", "/usr/local/sbin/vllm-runbook")
-    monkeypatch.setenv("RUNBOOK_DIR", str(tmp_path / "runbooks"))
-    monkeypatch.setenv("RUNBOOK_LOG_DIR", str(tmp_path / "runbook-logs"))
-    (tmp_path / "runbooks").mkdir()
-    (tmp_path / "runbooks" / "nightly.yml").write_text(
-        'description: Nightly sweep of the fleet.\nestimate: "~7 h"\n'
+    monkeypatch.setenv("SUITE_BIN", "/usr/local/sbin/vllm-suite")
+    monkeypatch.setenv("SUITE_DIR", str(tmp_path / "suites"))
+    monkeypatch.setenv("SUITE_LOG_DIR", str(tmp_path / "suite-logs"))
+    (tmp_path / "suites").mkdir()
+    (tmp_path / "suites" / "nightly.yml").write_text(
+        'description: Nightly suite of the fleet.\nestimate: "~7 h"\n'
         "jobs: [{profile: a}, {profile: b}]\n")
     (tmp_path / "desired-profile").write_text("p\n")
     monkeypatch.chdir(APP_FILES)  # so app/static + app/templates resolve
@@ -459,7 +459,7 @@ def test_scoreboard_renders_the_snapshot(panel, tmp_path, monkeypatch):
 
 
 def test_scoreboard_says_so_when_there_is_no_snapshot(panel, monkeypatch):
-    """A missing snapshot is a normal state (no sweep yet) — say what to run, do not 500."""
+    """A missing snapshot is a normal state (no suite yet) — say what to run, do not 500."""
     main, client = panel
     monkeypatch.setattr(main, "SCOREBOARD_FILE", "/nonexistent/scoreboard.json")
     response = client.get("/scoreboard")
@@ -504,22 +504,22 @@ def test_scoreboard_links_model_names_to_the_hub():
     assert ">retired<" in html          # and it is marked as no longer activatable
 
 
-# --- runbooks (ADR-0021) ----------------------------------------------------
+# --- suites (ADR-0021) ----------------------------------------------------
 #
-# The panel starts a runbook as a unit of its OWN rather than as a child. That is the
+# The panel starts a suite as a unit of its OWN rather than as a child. That is the
 # whole point of the feature — every deploy restarts this service, and a child dies with
-# the cgroup — so the tests are about the panel staying thin: it names a runbook, and the
+# the cgroup — so the tests are about the panel staying thin: it names a suite, and the
 # trigger decides everything else.
 
-def test_the_runbook_list_comes_from_the_installed_directory(panel):
+def test_the_suite_list_comes_from_the_installed_directory(panel):
     """The buttons must offer exactly what the trigger would accept. Scanning a repo, or
     keeping a hand-written list, is how a button appears for something that then refuses
     to start."""
     main, _ = panel
-    assert [r["name"] for r in main.installed_runbooks()] == ["nightly"]
+    assert [r["name"] for r in main.installed_suites()] == ["nightly"]
 
 
-def test_starting_a_runbook_goes_through_the_trigger_unexamined(panel, monkeypatch):
+def test_starting_a_suite_goes_through_the_trigger_unexamined(panel, monkeypatch):
     """The panel does NOT pre-validate the name. The trigger checks it against the
     installed allowlist and rejects anything that is not a bare identifier, and it is the
     same check `sparky run` gets — a second copy here would be a second thing to keep
@@ -535,9 +535,9 @@ def test_starting_a_runbook_goes_through_the_trigger_unexamined(panel, monkeypat
         return _Ok()
 
     monkeypatch.setattr(main.subprocess, "run", fake_run)
-    response = client.post("/runbook/nightly")
+    response = client.post("/suite/nightly")
     assert response.status_code == 200
-    assert calls[0] == ["sudo", "-n", "/usr/local/sbin/vllm-runbook", "start", "nightly"]
+    assert calls[0] == ["sudo", "-n", "/usr/local/sbin/vllm-suite", "start", "nightly"]
 
 
 def test_the_triggers_refusal_is_surfaced_not_swallowed(panel, monkeypatch):
@@ -547,12 +547,12 @@ def test_the_triggers_refusal_is_surfaced_not_swallowed(panel, monkeypatch):
     main, client = panel
 
     class _No:
-        returncode, stdout, stderr = 2, "", "'x' is not an installed runbook."
+        returncode, stdout, stderr = 2, "", "'x' is not an installed suite."
 
     monkeypatch.setattr(main.subprocess, "run", lambda cmd, **kw: _No())
-    response = client.post("/runbook/x")
+    response = client.post("/suite/x")
     assert response.status_code == 400
-    assert "not an installed runbook" in response.text
+    assert "not an installed suite" in response.text
 
 
 def test_stop_takes_no_name(panel, monkeypatch):
@@ -565,8 +565,8 @@ def test_stop_takes_no_name(panel, monkeypatch):
 
     monkeypatch.setattr(main.subprocess, "run",
                         lambda cmd, **kw: (calls.append(cmd), _Ok())[1])
-    assert client.post("/runbook-stop").status_code == 200
-    assert calls[0] == ["sudo", "-n", "/usr/local/sbin/vllm-runbook", "stop"]
+    assert client.post("/suite-stop").status_code == 200
+    assert calls[0] == ["sudo", "-n", "/usr/local/sbin/vllm-suite", "stop"]
 
 
 def test_run_state_is_read_from_systemd_not_from_a_pid_file(panel, monkeypatch):
@@ -577,12 +577,12 @@ def test_run_state_is_read_from_systemd_not_from_a_pid_file(panel, monkeypatch):
 
     class _Show:
         returncode = 0
-        stdout = ("ActiveState=inactive\nDescription=sparky runbook: nightly\n"
+        stdout = ("ActiveState=inactive\nDescription=sparky suite: nightly\n"
                   "ExecMainStatus=1\n")
         stderr = ""
 
     monkeypatch.setattr(main.subprocess, "run", lambda cmd, **kw: _Show())
-    state = main.runbook_state()
+    state = main.suite_state()
     assert state["name"] == "nightly"
     assert state["status"] == "failed" and state["code"] == 1
 
@@ -595,7 +595,7 @@ def test_a_missing_systemd_is_a_status_not_a_crash(panel, monkeypatch):
         raise FileNotFoundError("systemctl")
 
     monkeypatch.setattr(main.subprocess, "run", boom)
-    assert main.runbook_state()["status"] == "none"
+    assert main.suite_state()["status"] == "none"
 
 
 # --- /metrics: what is serving, and what is measuring it ---------------------
@@ -610,7 +610,7 @@ def test_metrics_names_the_profile_not_the_model(panel, monkeypatch):
     monkeypatch.setattr(main, "load_topology", lambda: {
         "profile": "qwen3.6-35b-a3b-nvfp4",
         "engines": [{"name": "qwen3.6-35b-a3b-nvfp4", "model": "Qwen3.6-35B-A3B-NVFP4"}]})
-    monkeypatch.setattr(main, "runbook_state", lambda: {"name": "", "status": "none"})
+    monkeypatch.setattr(main, "suite_state", lambda: {"name": "", "status": "none"})
     body = client.get("/metrics").text
     assert 'sparky_active_profile{profile="qwen3.6-35b-a3b-nvfp4"} 1' in body
     assert 'model="Qwen3.6-35B-A3B-NVFP4"' in body
@@ -620,7 +620,7 @@ def test_metrics_always_emits_exactly_one_profile_series(panel, monkeypatch):
     """A stat panel showing a label needs a single series, and "No data" is the wrong
     answer to "nothing is serving, on purpose" — that is the moment it is ambiguous."""
     main, client = panel
-    monkeypatch.setattr(main, "runbook_state", lambda: {"name": "", "status": "none"})
+    monkeypatch.setattr(main, "suite_state", lambda: {"name": "", "status": "none"})
     for topo in (None,
                  {"profile": "empty", "engines": []},
                  {"profile": "p", "engines": [{"name": "a", "model": "A"},
@@ -632,19 +632,19 @@ def test_metrics_always_emits_exactly_one_profile_series(panel, monkeypatch):
         assert len(series) == 1, topo
 
 
-def test_metrics_reports_no_runbook_once_one_has_finished(panel, monkeypatch):
+def test_metrics_reports_no_suite_once_one_has_finished(panel, monkeypatch):
     """The unit keeps its description after it exits — which is what leaves the last run's
     exit status readable — so carrying that name into the metric would leave the dashboard
     reading `nemotron-family` for the twelve hours after nemotron-family finished."""
     main, client = panel
     monkeypatch.setattr(main, "load_topology", lambda: None)
-    monkeypatch.setattr(main, "runbook_state",
+    monkeypatch.setattr(main, "suite_state",
                         lambda: {"name": "nemotron-family", "status": "success"})
-    assert 'sparky_runbook_running{runbook="none"} 0' in client.get("/metrics").text
+    assert 'sparky_suite_running{suite="none"} 0' in client.get("/metrics").text
 
-    monkeypatch.setattr(main, "runbook_state",
+    monkeypatch.setattr(main, "suite_state",
                         lambda: {"name": "nemotron-family", "status": "running"})
-    assert ('sparky_runbook_running{runbook="nemotron-family"} 1'
+    assert ('sparky_suite_running{suite="nemotron-family"} 1'
             in client.get("/metrics").text)
 
 
@@ -658,7 +658,7 @@ def test_metrics_does_not_probe_the_nodes(panel, monkeypatch):
         raise AssertionError("/metrics must not call gather()")
 
     monkeypatch.setattr(main, "gather", boom)
-    monkeypatch.setattr(main, "runbook_state", lambda: {"name": "", "status": "none"})
+    monkeypatch.setattr(main, "suite_state", lambda: {"name": "", "status": "none"})
     assert client.get("/metrics").status_code == 200
 
 
@@ -668,7 +668,7 @@ def test_the_dashboard_queries_metrics_the_panel_actually_exports(panel, monkeyp
     looking at is how you learn about it three weeks later."""
     main, client = panel
     monkeypatch.setattr(main, "load_topology", lambda: None)
-    monkeypatch.setattr(main, "runbook_state", lambda: {"name": "", "status": "none"})
+    monkeypatch.setattr(main, "suite_state", lambda: {"name": "", "status": "none"})
     exported = {ln.split("{")[0].split(" ")[0]
                 for ln in client.get("/metrics").text.splitlines()
                 if ln and not ln.startswith("#")}
@@ -676,7 +676,7 @@ def test_the_dashboard_queries_metrics_the_panel_actually_exports(panel, monkeyp
     dashboard = json.loads((Path(__file__).resolve().parent.parent / "ansible" / "roles" /
                             "grafana" / "files" / "cluster.json").read_text())
     top = [p for p in dashboard["panels"] if p["gridPos"]["y"] == 0]
-    assert {p["title"] for p in top} == {"Serving", "Runbook"}
+    assert {p["title"] for p in top} == {"Serving", "Suite"}
     for p in top:
         expr = p["targets"][0]["expr"]
         assert any(metric in expr for metric in exported), expr
@@ -686,52 +686,52 @@ def test_the_dashboard_queries_metrics_the_panel_actually_exports(panel, monkeyp
         assert "{{" in p["targets"][0]["legendFormat"]
 
 
-def test_a_runbook_button_carries_what_it_does_and_what_it_costs(panel, monkeypatch):
+def test_a_suite_button_carries_what_it_does_and_what_it_costs(panel, monkeypatch):
     """A bare name is a poor label for a button that commandeers the cluster for an
     evening, and whoever presses it is not reading the YAML — which is why `description`
     and `estimate` are required fields (`sparky lint`) rather than comments.
 
     Unit state is mocked: without it this reads the HOST's systemd, so the test passed or
-    failed depending on whether a real campaign happened to be running on the machine —
-    which is exactly how it failed the first time a runbook was started for real.
+    failed depending on whether a real suite happened to be running on the machine —
+    which is exactly how it failed the first time a suite was started for real.
     """
     main, client = panel
     monkeypatch.setattr(main, "_unit_fields", lambda *p: {"ActiveState": "inactive"})
-    rb = main.installed_runbooks()[0]
-    assert rb["description"] == "Nightly sweep of the fleet."
+    rb = main.installed_suites()[0]
+    assert rb["description"] == "Nightly suite of the fleet."
     assert rb["estimate"] == "~7 h"
     assert rb["jobs"] == 2
 
-    page = client.get("/runbooks").text
-    assert "Nightly sweep of the fleet." in page
+    page = client.get("/suites").text
+    assert "Nightly suite of the fleet." in page
     assert "~7 h" in page and "2 profiles" in page
 
 
-def test_a_runbook_missing_its_metadata_still_lists(panel, tmp_path):
+def test_a_suite_missing_its_metadata_still_lists(panel, tmp_path):
     """The panel's job is to show what is installed, not to audit it. A file that lint
-    would reject must not blank the whole section — that would hide every OTHER runbook
+    would reject must not blank the whole section — that would hide every OTHER suite
     because of one bad one."""
     main, _ = panel
-    (tmp_path / "runbooks" / "bare.yml").write_text("jobs: [{profile: a}]\n")
-    (tmp_path / "runbooks" / "broken.yml").write_text("{[not yaml\n")
-    names = [r["name"] for r in main.installed_runbooks()]
+    (tmp_path / "suites" / "bare.yml").write_text("jobs: [{profile: a}]\n")
+    (tmp_path / "suites" / "broken.yml").write_text("{[not yaml\n")
+    names = [r["name"] for r in main.installed_suites()]
     assert names == ["bare", "broken", "nightly"]
-    assert all(r["description"] == "" for r in main.installed_runbooks()
+    assert all(r["description"] == "" for r in main.installed_suites()
                if r["name"] in ("bare", "broken"))
 
 
 def test_the_panel_and_the_cli_show_the_same_menu_in_the_same_order(panel, tmp_path):
     """Two renderings of one list. If they sorted differently, "the third one down" would
-    mean different runbooks depending on where you were standing."""
-    from sparky import runbook
+    mean different suites depending on where you were standing."""
+    from sparky import suite
 
     main, _ = panel
-    (tmp_path / "runbooks" / "later.yml").write_text(
+    (tmp_path / "suites" / "later.yml").write_text(
         'description: d\nestimate: "~1 h"\norder: 90\njobs: [{profile: a}]\n')
-    (tmp_path / "runbooks" / "earlier.yml").write_text(
+    (tmp_path / "suites" / "earlier.yml").write_text(
         'description: d\nestimate: "~1 h"\norder: 10\njobs: [{profile: a}]\n')
-    panel_order = [r["name"] for r in main.installed_runbooks()]
-    cli_order = [r["name"] for r in runbook.describe(tmp_path / "runbooks")]
+    panel_order = [r["name"] for r in main.installed_suites()]
+    cli_order = [r["name"] for r in suite.describe(tmp_path / "suites")]
     assert panel_order == cli_order == ["earlier", "nightly", "later"]
 
 
@@ -800,8 +800,8 @@ def test_the_dashboard_stacks_trends_above_host_noise():
     # a single instantaneous value for a rate is the least informative thing on the page —
     # 40 tok/s tells you nothing without knowing whether it is climbing, flat or collapsing,
     # and the plot directly above it answers that. The only stats left are `Serving` and
-    # `Runbook`, which are STATES rather than magnitudes and have no trend to show.
-    assert {p["title"] for p in dashboard["panels"] if p["type"] == "stat"} == {"Serving", "Runbook"}
+    # `Suite`, which are STATES rather than magnitudes and have no trend to show.
+    assert {p["title"] for p in dashboard["panels"] if p["type"] == "stat"} == {"Serving", "Suite"}
     # TTFT belongs to the scoreboard, not here — see the docstring. Assert it is gone from
     # the dashboard AND still owned by the scoreboard, so this can never become a silent
     # deletion of the metric rather than a relocation of it.

@@ -1,0 +1,17 @@
+id: topo-order
+track: implement
+difficulty: hard
+prompt: 'Write `topo_order(graph)` where `graph` maps a node to the list of nodes it depends
+
+  on. Return a list of all nodes such that every node appears AFTER everything it
+
+  depends on.
+
+
+  Among nodes that are otherwise tied, order alphabetically so the result is
+
+  deterministic. Nodes that appear only as a dependency are still nodes. Raise
+
+  `ValueError` if there is a cycle.
+
+  '

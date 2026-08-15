@@ -48,7 +48,7 @@ def test_an_equal_model_is_not_dominated_by_a_tie():
 
 
 def test_models_missing_a_measurement_are_shown_not_dropped():
-    """A half-swept fleet must still render — otherwise an interrupted sweep loses the
+    """A half-swept fleet must still render — otherwise an interrupted suite loses the
     models it did finish, and the operator sees nothing."""
     table = scoreboard.build(_rows(("scored", 0.60, 500.0), ("quality-only", 0.72, None)))
     labels = [r.label for r in table]
@@ -177,10 +177,10 @@ def test_the_snapshot_carries_column_direction():
 
 def test_the_panel_snapshot_is_attributed_like_the_cli(monkeypatch, tmp_path):
     """The panel renders a FILE and does no analysis — which only holds while one thing
-    WRITES that file. Two did, and they disagreed: the sweep's refresh skipped the profile
+    WRITES that file. Two did, and they disagreed: the suite's refresh skipped the profile
     attribution entirely, so every snapshot it wrote had no `hf_repo` (no Hub links on the
     web scoreboard, silently) and `retired: False` on everything (so Step-3.5-Flash and the
-    four single-node profiles never left the page). Each sweep then overwrote whatever a
+    four single-node profiles never left the page). Each suite then overwrote whatever a
     correct `scoreboard --json` had produced.
     """
     import json

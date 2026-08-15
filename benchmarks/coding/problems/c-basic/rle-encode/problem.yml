@@ -1,0 +1,13 @@
+id: rle-encode
+track: implement
+difficulty: hard
+shown_support: [problem.h]
+prompt: |
+  Implement `rle_encode` as declared in `problem.h`.
+
+  Run-length encode `src[0..n)` into `dst`, writing pairs of (count, value) as bytes. A run
+  longer than 255 is split into several pairs. Write at most `cap` bytes.
+
+  Return the number of bytes written, or -1 if the result would not fit in `cap` — in which
+  case what `dst` holds afterwards does not matter. An empty input writes nothing and
+  returns 0.

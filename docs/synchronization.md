@@ -6,7 +6,7 @@ Three kinds of actor change this cluster, and they must not interleave:
 |---|---|---|---|
 | **deploy** | reshapes the boundary — re-renders engine files, pulls images, evicts weights | minutes | root, password-gated |
 | **activate** | changes which allowlisted profile serves | seconds to ~10 min (weight load) | none |
-| **campaign** | walks the boundary — `sweep`, a runbook run, `bench`, `eval` | up to a night | none |
+| **a suite run** | walks the boundary — `suite`, a suite run, `bench`, `eval` | up to a night | none |
 | **idle unloader** | drops the fleet to `empty` after a long quiet period | seconds | none |
 
 The hazard is not concurrency in the abstract. It is that **one actor reshapes what
@@ -20,9 +20,9 @@ Four, deliberately, because they guard different things at different scopes.
 
 | lock | held by | scope | mechanism |
 |---|---|---|---|
-| `/opt/cluster/fleet.lock` | **deploy** and **campaign** | fleet-wide | `flock(1)` from the shell (`ansible.py`), `fcntl.flock` from Python (`sweep.py`) |
+| `/opt/cluster/fleet.lock` | **deploy** and **a suite run** | fleet-wide | `flock(1)` from the shell (`ansible.py`), `fcntl.flock` from Python (`runner.py`) |
 | `/run/vllm-activate.lock` | **the reconciler** | **per node** | `fcntl.flock`, non-blocking |
-| `/opt/cluster/benchmark/sweep.lock` | **campaign** | one campaign at a time | `fcntl.flock`, `stale_after` 6 h |
+| `/opt/cluster/benchmark/runner.lock` | **a suite run** | one run at a time | `fcntl.flock`, `stale_after` 6 h |
 | `/opt/cluster/desired-profile` | — | the request itself | not a lock; a group-writable file |
 
 `fleet.lock` is the important one, and it is shared between a **shell** and a **Python
@@ -30,7 +30,7 @@ process** — which is exactly why it is an advisory `flock` and not a marker fi
 the only mechanism both can speak.
 
 > **This was a claim before it was a fact.** Until 2026-08-11 `deploy` took `fleet.lock`
-> and the sweep took `sweep.lock` — *different files* — so nothing was excluded and a
+> and the run took `runner.lock` — *different files* — so nothing was excluded and a
 > deploy could evict weights mid-measurement. `tests/test_ansible.py` now pins the two
 > constants together.
 
@@ -39,7 +39,7 @@ the only mechanism both can speak.
 Both are correct; picking the wrong one produces something that looks broken.
 
 - **Refuse, with an explanation, when the holder may run for hours.** A deploy declined
-  during a campaign says so and exits. Blocking would leave it silent for most of a night
+  during a run says so and exits. Blocking would leave it silent for most of a night
   and the operator would reasonably conclude it had hung. `ansible.py` makes this call.
 - **Wait, visibly, when the holder is bounded and short.** A deploy is minutes. An
   activation that simply waits for it costs nothing and removes a whole class of
@@ -56,14 +56,14 @@ Do **not** scan for a process. On 2026-08-12 a guard used
 `pgrep -af "ansible-playbook"` and reported a deploy in flight when there was none: the
 search string appeared in the command line of the shell running the search, so it matched
 itself. A process-name check is also wrong in the other direction — it cannot see a
-campaign holding the lock from Python, because no `ansible-playbook` is running at all.
+run holding the lock from Python, because no `ansible-playbook` is running at all.
 
 ## What is guarded today, and what is not
 
 | direction | guarded? | by what |
 |---|---|---|
-| deploy → during a campaign | ✅ | `ansible.campaign_holding_the_fleet()`, refuses with a message |
-| campaign → during a deploy | ✅ | `sweep._hold_fleet_lock()`, raises `SweepBusy` |
+| deploy → during a run | ✅ | `ansible.suite_holding_the_fleet()`, refuses with a message |
+| a run → during a deploy | ✅ | `runner._hold_fleet_lock()`, raises `SweepBusy` |
 | activation → during an activation | ✅ | the reconciler's per-node lock: *"another activation is in flight"* |
 | deploy → during an activation | ⚠️ partial | `fleet-state` fails at the **last role**; nothing is corrupted, but the deploy dies one task from the end |
 | activation → during a deploy | ✅ | `activate.wait_for_deploy()`, called by `bring_up()` — **waits** rather than refusing |
@@ -79,13 +79,13 @@ All four directions are guarded as of 2026-08-12. The last row was the gap that 
 `fleet.lock`, reports that it is waiting and why, and raises `NotLive` after 30 minutes
 rather than stalling silently on a wedged deploy.
 
-⚠️ **It must not simply take the lock, and this is the subtle part.** A campaign already
-holds `fleet.lock` for its whole run (`sweep._hold_fleet_lock`) and then activates once per
-job — `sweep.run()`'s `activate` callback is `cli.activate_profile`, which calls
+⚠️ **It must not simply take the lock, and this is the subtle part.** A run already
+holds `fleet.lock` for its whole run (`runner._hold_fleet_lock`) and then activates once per
+job — `runner.run()`'s `activate` callback is `cli.activate_profile`, which calls
 `bring_up()`. flock is per **open file description**, so a second acquire from the *same
-process* blocks against itself: an unconditional acquire would deadlock every sweep, and an
+process* blocks against itself: an unconditional acquire would deadlock every run, and an
 unconditional *wait* would hang one just as dead. So the wait returns immediately when
-`sweep._fleet_fd is not None` — i.e. when we are the holder.
+`runner._fleet_fd is not None` — i.e. when we are the holder.
 
 That skip is the whole reason the obvious one-line fix is wrong, so it has its own test
 (`test_wait_for_deploy_skips_when_this_process_holds_the_lock`).
@@ -104,7 +104,7 @@ of no traffic. It is the only actor here that acts **unattended**, so it is boun
   group already has. It is not a fourth bounded program.
 
 It refuses to unload when the fleet lock is held (a deploy is reshaping the boundary, or a
-campaign is measuring the very model it would remove), when requests are in flight, when
+run is measuring the very model it would remove), when requests are in flight, when
 the token counter moved since the last check, and — the one worth stating plainly — **when
 the engines are unreachable.** *Unreachable is not idle*: treating a network blip as
 silence would evict a model somebody is using.
@@ -141,5 +141,5 @@ surprise.
 ## See also
 
 - [ADR-0018](adr/0018-provision-select-split.md) — why provisioning and selection are separate privileges
-- [ADR-0021](adr/0021-runbook-runs-from-the-panel.md) — why a campaign is a systemd unit with its own lifetime
+- [ADR-0021](adr/0021-suite-runs-from-the-panel.md) — why a run is a systemd unit with its own lifetime
 - [`skills/development/SKILL.md`](../skills/development/SKILL.md) — the operator handover: who deploys, and how to know it finished

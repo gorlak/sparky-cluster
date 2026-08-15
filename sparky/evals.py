@@ -57,7 +57,7 @@ FOLLOWUP = "Based on your analysis above, which option is correct? Reply with on
 #
 # Constrained decoding (`guided_choice`) would guarantee a valid letter and is the
 # textbook answer — but DEF-0011 makes it 500 on the MTP profile, which is in this very
-# sweep. A regiment that crashes on one of the models it is ranking is worse than a
+# suite. A regiment that crashes on one of the models it is ranking is worse than a
 # verbose retry.
 # 2048, not 512. The retry disables thinking via `chat_template_kwargs`, which is a
 # QWEN convention — Step-3.5 (StepFun, `step3p5` parser) ignores it, keeps reasoning,

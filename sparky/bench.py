@@ -1,7 +1,7 @@
 """`bench`, rebuilt HTTP-native (ADR-0016) — throughput and latency with no privilege.
 
 The old regiment shelled `sudo docker exec <container> vllm bench serve`. That cost two
-things the sweep cannot pay, and neither was essential:
+things the suite cannot pay, and neither was essential:
 
   * **root** — ADR-0018 retired the passwordless `docker` grant, because a `docker`
     grant *is* a root grant. Bench needed root only by accident, since `vllm bench serve`
@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sparky.store import Run
+from sparky.store import Row
 
 MODELS_DIR = Path("/opt/vllm/models")
 
@@ -55,7 +55,7 @@ SCENARIOS: dict[str, Scenario] = {
     "latency": Scenario("latency", prompt_tokens=512, max_tokens=256,
                         requests=20, concurrency=1),
     # Flood it: peak tokens/s once the batcher is saturated. The number that matters when
-    # several people (or a sweep) are using the cluster at once.
+    # several people (or a suite) are using the cluster at once.
     "throughput": Scenario("throughput", prompt_tokens=512, max_tokens=256,
                            requests=64, concurrency=16),
     # Long SHARED prefix across requests. With prefix caching, TTFT collapses after the
@@ -89,7 +89,7 @@ class ScenarioResult:
     # meaningful if one engine produced all of it, and several things move the fleet
     # underneath a run: scale-to-zero unloading an idle model (ADR-0022), a deploy's
     # `fleet-state` converging the selection, a manual activate, a crashed engine coming
-    # back. `sweep` holds the fleet lock so the unloader refuses; a bare `bench` holds
+    # back. `suite` holds the fleet lock so the unloader refuses; a bare `bench` holds
     # nothing, so it must DETECT rather than assume.
     activation_before: tuple | None = None
     activation_after: tuple | None = None
@@ -306,6 +306,6 @@ def context_capacity(api_url: str, timeout: float = 8.0) -> dict:
     return out
 
 
-def to_run(result: ScenarioResult, *, label: str, model: str, profile: str) -> Run:
-    return Run(label=label, model=model, profile=profile,
+def to_run(result: ScenarioResult, *, label: str, model: str, profile: str) -> Row:
+    return Row(label=label, model=model, profile=profile,
                scenario=result.scenario, harness="http", **result.metrics())

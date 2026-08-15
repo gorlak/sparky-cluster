@@ -1,0 +1,47 @@
+# The fast tier — the models you pick when the wait matters more than the last few points.
+#
+# The fleet splits on one axis, and the two tier suites are that split made runnable:
+#
+#   fast-tier    Qwen3.6-35B-A3B, Qwen3-Coder-Next — 54-100 tok/s decode
+#   smart-tier   everything else — 24-32 tok/s, and the accuracy that buys
+#
+# Together they are the whole allowlist, which is what makes them tiers rather than two
+# selections of convenience. `all` is both of them and is the one whose coverage `lint`
+# enforces (`covers: allowlist`), so nothing goes unmeasured even if a tier is forgotten.
+#
+# The question inside THIS tier is narrower: does Qwen3-Coder-Next earn its place? It is
+# the pair where the fleet is most likely carrying something it does not need. Qwen3.6-35B
+# decodes at 100.2 tok/s against Coder-Next's 54.0 — an 85% advantage — and they are close
+# enough in size and family that "keep both" needs a reason rather than an absence of one.
+#
+# THE DECISION RULE, and note that it deliberately cannot fully answer the question:
+#
+#   * If Coder-Next is **better on some measured axis**, both stay. Different tools.
+#   * If it is **dominated** — beaten on accuracy AND speed AND context — then its only
+#     surviving claim is coding, which **this cluster cannot measure**. Every off-the-shelf
+#     set is contaminated for models this recent, and a real one needs an execution
+#     sandbox. So the pre-registered outcome is **park it (`blocked: true`), do not
+#     evict** — weights kept, not activatable, re-tested the day a coding regiment exists.
+#
+# That is the honest verdict and it is worth stating plainly: scoring a coding model on
+# MMLU-Pro and retiring it would be a confident answer to a question we did not ask. The
+# suite exists to establish dominance, not to settle the model.
+#
+# ~1.5 hours — the cheapest suite in the fleet, and the one whose result is most
+# likely to free a profile slot.
+name: fast-tier
+# Shown beside the button in the panel and by `sparky run` — so what a
+# multi-hour run is about is legible where it is STARTED, not only
+# to whoever reads this file.
+description: >-
+  Does Qwen3-Coder-Next earn its place beside Qwen3.6-35B, which decodes 85%
+  faster? Establishes dominance; parks the loser, never evicts it.
+# Where it sits in the menu the panel and `sparky run` show.
+# Then the two tiers, cheapest first — a tier is what you reach for.
+order: 20
+estimate: "~1.5 h"
+defaults:
+  regiments: [tools, bench, quality]
+jobs:
+  - profile: qwen3.6-35b-a3b-nvfp4
+  - profile: qwen3-coder-next-nvfp4

@@ -37,14 +37,14 @@
     .failsafe-banner { border: 1px solid var(--bad); background: #c6282814; border-radius: .5rem; padding: .8rem 1rem; margin: 0 0 1.2rem; }
     .failsafe-banner strong { color: var(--bad); }
     .failsafe-banner p { margin: .4rem 0 .7rem; font-size: .9rem; opacity: .85; }
-    /* One runbook per row: button, then what it costs, then what it is for. A bare name
+    /* One suite per row: button, then what it costs, then what it is for. A bare name
        is a poor label for something that takes the cluster for an evening. */
-    ul.runbooks { list-style: none; padding: 0; margin: .5rem 0 1rem; }
-    ul.runbooks li { display: grid; grid-template-columns: minmax(9rem, auto) 1fr;
+    ul.suites { list-style: none; padding: 0; margin: .5rem 0 1rem; }
+    ul.suites li { display: grid; grid-template-columns: minmax(9rem, auto) 1fr;
       gap: .2rem .8rem; align-items: center; padding: .6rem 0; border-bottom: 1px solid #8883; }
-    ul.runbooks .rb-meta { display: flex; gap: .5rem; align-items: center; }
-    ul.runbooks .blurb { grid-column: 1 / -1; margin-top: .1rem; }
-    @media (max-width: 30rem) { ul.runbooks li { grid-template-columns: 1fr; } }
+    ul.suites .rb-meta { display: flex; gap: .5rem; align-items: center; }
+    ul.suites .blurb { grid-column: 1 / -1; margin-top: .1rem; }
+    @media (max-width: 30rem) { ul.suites li { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -57,7 +57,7 @@
   {% else %}
     {% include "_actions.html" %}
   {% endif %}
-  {% include "_runbooks.html" %}
+  {% include "_suites.html" %}
   {% include "_fleet.html" %}
   {# The scoreboard linked back here but nothing linked TO it, so the measurements were
      reachable only by knowing the URL. Two views of one cluster should each name the

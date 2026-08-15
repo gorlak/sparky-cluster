@@ -1,0 +1,12 @@
+id: dedupe-in-place
+track: implement
+difficulty: medium
+shown_support: [problem.h]
+prompt: |
+  Implement `dedupe` as declared in `problem.h`.
+
+  Remove duplicate values from the array IN PLACE, keeping the FIRST occurrence of each
+  value and preserving the order of the values that remain. Return the new length.
+
+  Elements beyond the returned length are scratch — their contents do not matter. The
+  array is never null when `n` is greater than zero, and `n` may be zero.

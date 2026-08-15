@@ -279,7 +279,7 @@ casualty was not the broken model**, and the head's `init_process_group` traceba
 at the network, not at the neighbour holding the port.
 **Check.** Two, and the first is the one that would have cost nothing:
 
-1. **Before putting a profile in a runbook or campaign, grep the defect register for it.**
+1. **Before putting a profile in a suite or campaign, grep the defect register for it.**
    `grep -i <profile> docs/defects.md` — DEF-0012 said "the engine never serves, text
    included" and named the WAR in the profile as one that does not work. `updating.md`
    ends every pathway by consulting that register; this run did not, and a 🔴 row is

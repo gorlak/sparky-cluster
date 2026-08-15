@@ -28,7 +28,7 @@ vllm_image_2607: nvcr.io/nvidia/vllm@sha256:95c498a475142c20c989c65e5d223348c09f
 # in the first play — `docker pull` for upstream images, `docker build` for derived
 # ones (Dockerfiles under roles/images/files/<context>/). This is the codified,
 # all-nodes replacement for the old manual "docker pull on both nodes, digests must
-# match" runbook step: per-profile `vllm_image:` above SELECTS which of these a
+# match" suite step: per-profile `vllm_image:` above SELECTS which of these a
 # profile runs; this list GUARANTEES they (and their build bases) exist.
 #
 # Pinning: upstream `pull:` entries are pinned by digest (…@sha256:…) so a bump is a
@@ -105,11 +105,16 @@ idle_bin: /usr/local/sbin/vllm-idle
 probe_bin: /usr/local/sbin/vllm-probe
 probe_image_allowlist: /opt/vllm/images/allowlist
 # The third bounded grant (ADR-0021), and the only one that exists for LIFETIME rather
-# than privilege: a runbook run needs no root, but it must not be a child of the control
-# panel's cgroup, or the next deploy kills a three-hour campaign. Same shape again — one
+# than privilege: a suite run needs no root, but it must not be a child of the control
+# panel's cgroup, or the next deploy kills a three-hour suite. Same shape again — one
 # fixed program, one allowlisted name, everything else composed from constants.
-runbook_bin: /usr/local/sbin/vllm-runbook
-runbook_unit: sparky-runbook.service
+suite_bin: /usr/local/sbin/vllm-suite
+suite_unit: sparky-suite.service
+# The fourth grant (ADR-0024), and the first that runs CALLER-SUPPLIED code — measuring
+# whether a model can write code means executing what it wrote. Bounded by confinement
+# rather than by validation: an ephemeral DynamicUser with no network, a read-only
+# filesystem, 512 MB and ten seconds. Read that ADR before touching this one.
+sandbox_bin: /usr/local/sbin/vllm-sandbox
 activate_conf: /opt/vllm/activate.conf
 # The dedicated LOW-PRIVILEGE activation identity (the control panel service and
 # the agent). It holds the two trigger grants and nothing else — no sudo beyond
@@ -275,7 +280,7 @@ vllm_start_timeout_sec: 1200
 # had declared one since the role was built. It was GPU-verified on GB10/sm_121
 # (CUDA v13, 100% offload, co-resident with vLLM); recover it from git history if an
 # Ollama engine is ever wanted, and give it the same env-file + template-unit shape the
-# vLLM engines now have. teardown.yml still sweeps any leftover `ollama-*` unit.
+# vLLM engines now have. teardown.yml still suites any leftover `ollama-*` unit.
 
 # Metrics stack (P2) — see docs/control-interface.md. Exporters run on every node;
 # Prometheus + Grafana on the head. (GB10 reports no GPU memory via nvidia-smi —
@@ -287,7 +292,7 @@ node_exporter_port: 9100
 # eleven minors on — but this image carries a GB10 workaround (nvidia_exporter_query_fields
 # below) and `--query-field-names` no longer appears in the project's README, so the flag
 # may be renamed or gone. Bumping blind risks a crash-looping exporter, and a silently
-# absent GPU dashboard is a bad thing to introduce during a container campaign.
+# absent GPU dashboard is a bad thing to introduce during a container suite.
 # Tracked as DEF-0009; needs its own check, not a batch bump.
 nvidia_exporter_image: utkuozdemir/nvidia_gpu_exporter@sha256:cc407f77ab017101ce233a0185875ebc75d2a0911381741b20ad91f695e488c7  # :1.2.0
 nvidia_exporter_port: 9835
@@ -345,7 +350,7 @@ control_panel_dir: /opt/cluster/control-panel
 control_panel_port: 8088
 
 # The harness, INSTALLED rather than merely published (ADR-0021). `/opt/cluster/sparky`
-# is source; nothing on the box can resolve its dependencies, so a detached runbook run
+# is source; nothing on the box can resolve its dependencies, so a detached suite run
 # had nothing to execute. This venv is that interpreter — the same treatment the control
 # panel already gets, and for the same reason.
 harness_dir: /opt/cluster/harness
@@ -354,8 +359,8 @@ harness_bin: /opt/cluster/harness/bin/sparky
 # What may be INSTANCED, as opposed to what the repo declares. Published by `deploy`,
 # writable only by the `cluster` group — the activation identity must never be able to
 # add to the list of things it is allowed to run.
-runbook_dir: /opt/cluster/runbooks
-runbook_log_dir: /opt/cluster/runbook-logs
+suite_dir: /opt/cluster/suites
+suite_log_dir: /opt/cluster/suite-logs
 # The trend store (ADR-0012). Everything a regiment records lands here, and both the
 # operator and a detached run write it — hence the `activate`-group grant in the
 # `harness` role rather than the `cluster` ownership the rest of /opt/cluster carries.
@@ -395,4 +400,4 @@ landing_services:
   # what a visitor is most likely to want puts the destructive door at the bottom.
   - name: Admin
     url: "/admin"
-    blurb: "Cluster control panel — status, activate, runbooks"
+    blurb: "Cluster control panel — status, activate, suites"

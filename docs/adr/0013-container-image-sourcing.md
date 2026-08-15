@@ -11,7 +11,7 @@ canonical store, and mirrors them to every node — a fresh node or disaster-rec
 `./sparky.sh deploy` stages weights automatically (see ADR-0003, the `model` role,
 and the README deploy sequence).
 
-**Container images have no such pipeline — they are hand-managed.** The runbook
+**Container images have no such pipeline — they are hand-managed.** The suite
 says *"`docker pull <tag>` on both nodes, digests must match, then `./sparky.sh deploy`"*
 — a manual step, and the digest-match is an admonition, not something enforced.
 The gap became concrete on 2026-07-03: the 26.06 migration needed a **derived**
@@ -107,7 +107,7 @@ Design:
 ## Consequences
 
 - **Reproducibility.** DR / new-node `./sparky.sh deploy` now builds+pulls the exact
-  images automatically, exactly as it already stages weights. The runbook's manual
+  images automatically, exactly as it already stages weights. The suite's manual
   "`docker pull` on both nodes" step goes away.
 - **Derived-image WARs are codified, not hand-built.** The 26.06 `fastapi<0.137`
   patch (and any future patched image) lives as a repo Dockerfile + a declaration,

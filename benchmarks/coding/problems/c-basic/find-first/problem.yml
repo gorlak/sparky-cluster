@@ -1,0 +1,13 @@
+id: find-first
+track: repair
+difficulty: hard
+shown_support: [problem.h]
+prompt: |
+  `find_first` binary-searches a sorted array for `target` and returns the index of its
+  FIRST occurrence, or -1 if it is absent.
+
+  It returns *an* occurrence rather than the first, and it has a second defect that only
+  appears on very large arrays. Fix both.
+failure: |
+  find_first((int[]){1,2,2,2,3}, 5, 2)  ->  2
+  expected: 1

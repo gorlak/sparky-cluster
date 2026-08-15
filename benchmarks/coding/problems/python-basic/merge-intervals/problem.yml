@@ -1,0 +1,13 @@
+id: merge-intervals
+track: implement
+difficulty: medium
+prompt: 'Write `merge(intervals)` taking a list of `(start, end)` tuples with `start <= end`
+
+  and returning the merged, sorted list of non-overlapping intervals.
+
+
+  Intervals that merely TOUCH (one ends exactly where the next begins) merge into one.
+
+  The input may be unsorted and must not be mutated.
+
+  '

@@ -237,3 +237,59 @@ Write the ADR alongside the implementation and commit both together.
 
 Don't create "cleanup", "fix typo", or "update comments" commits speculatively.
 If a cleanup is needed as part of a real change, include it in that commit.
+
+## Glossary — the words we use
+
+Nomenclature drifts when nobody owns it. This is the list; when a better word turns up,
+change it **here first**, then in the code and docs that use it.
+
+**Spell the long form on first mention in a document, then use the short form.**
+
+Two stacks, and the same shape in each — a declaration, its parameterised expansions, and
+what it produces:
+
+| | declaration | expansions | produces |
+|---|---|---|---|
+| **serving stack** | `profile` | `variants` | a running **engine** |
+| **measuring stack** | `suite` | overrides at start | **results** |
+
+*A serving profile renders engines. A measuring suite renders results.*
+
+| term | means | not |
+|---|---|---|
+| **profile** | one model configured one way — a file in `ansible/profiles/`, which *is* the allowlist | a model. One model can have several profiles |
+| **core** (of a profile) | the profile's own configuration: what serves in production, and the best settings currently known for that model | "the default", which reads as arbitrary |
+| **profile variant**, then *variant* | the same model at deliberately different settings, generated from the profile's `variants:` block; separately deployable and activatable | "experiment", which names the intent rather than the artifact |
+| **suite** | a named, reviewed job list — `suites/<name>.yml`, deployed, startable by name | "runbook", which means incident-response procedure; this is a declaration, not a decision tree |
+| **results** | what a suite produced: rows in the trend store, and the scoreboard built from them | the bookkeeping of whether each step succeeded |
+| **corpus** | every prompt set, versioned and deployed as one artifact | a single set |
+| **set** | one named group of problems, with its own scoring | "benchmark", which is used for too many things |
+| **domain** | a capability ranked on its own — knowledge, coding, long context | "axis", which we use for the things a *measurement* varies |
+| **regiment** | one measurement procedure run against a live engine | the thing that schedules them |
+
+### The instance has no name, deliberately
+
+Running a suite produces **a run** — lowercase, ordinary English, not a defined term. There
+is no `campaign`, no `sweep`. *"fast-tier is running"*, *"it resumed after the brownout"*,
+*"the third run of fast-tier"* all work without promoting the word.
+
+The modules follow: `suite.py` owns suite files, `runner.py` executes one, `suitectl.py`
+starts one detached. `sparky run <name>` is the launcher; `sparky suite <path>` runs one in
+the foreground.
+
+`store.Row` is one recorded measurement — renamed from `Run` so the word stays free.
+
+### Words that mean something else here
+
+- **sweep** — searching for models ([[model-discovery]], [[version-discovery]]), and the
+  ordinary verb. Never a measurement run.
+- **test suite** — pytest. Always qualified; the measuring stack's `suite` is never bare
+  in a shared context.
+- **artifact** — avoid bare. The repo uses it for both deployed inputs and produced outputs,
+  so always qualify, or say `results` for what a run produces.
+
+### Do not explain a name that has drifted
+
+`sweep` once named the runner while the same file's prose said "campaign". That was drift,
+not a distinction, and it was renamed rather than reconciled. **Either rename it or record
+it here — never write a paragraph justifying two words for one thing.**

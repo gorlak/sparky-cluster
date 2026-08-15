@@ -1,0 +1,13 @@
+id: parse-duration
+track: implement
+difficulty: medium
+prompt: "Write `parse_duration(text)` returning the number of SECONDS in a duration string\n\
+  like \"1h30m\", \"45s\", \"2h\", \"90m\", \"1h2m3s\".\n\nUnits are h, m, s and always appear\
+  \ in that order when present. Values are\nnon-negative integers. Leading/trailing whitespace\
+  \ is allowed. Raise `ValueError`\nfor anything that does not match \u2014 empty strings,\
+  \ unknown units, out-of-order\nunits, missing numbers, or a bare number with no unit.\n"
+
+# The only problem here whose answer needs anything beyond builtins. Anything not
+# listed is `rejected` before it runs — a stated rule the harness actually enforces.
+constraints:
+  imports: [re]

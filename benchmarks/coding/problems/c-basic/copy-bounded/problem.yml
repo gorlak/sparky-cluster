@@ -1,0 +1,14 @@
+id: copy-bounded
+track: repair
+difficulty: medium
+shown_support: [problem.h]
+prompt: |
+  `copy_bounded` is meant to copy a NUL-terminated string into a fixed-size destination,
+  never writing past `cap` bytes, and always leaving `dst` NUL-terminated. It returns the
+  number of characters it copied, not counting the terminator.
+
+  It is wrong. Fix it.
+failure: |
+  char buf[4];
+  copy_bounded(buf, 4, "abcd")  ->  returned 4, buf holds "abcd" with no terminator
+  expected: returned 3, buf holds "abc"

@@ -1,0 +1,22 @@
+# A second language, on the same harness, changing nothing in it (ADR-0024 §2).
+#
+# This set began as a PROOF: if `sparky/coding.py` had needed a line changed to run it, the
+# language-neutrality claim was false. It is a ranking set now — eight problems across both
+# tracks, weighted so that the cases separating understanding from recall count for more.
+name: c-basic
+version: v1
+
+# Two translation units compiled separately and linked against the interface each problem
+# declares (ADR-0024 §5). The answer may include nothing but that interface: no stdlib, so
+# the primitives a problem hands over are the whole surface.
+toolchain: c-freestanding
+
+fence_tags: [c]
+
+answer_form: >-
+  the complete C implementation and nothing else — no explanation, no example usage, no
+  tests, and no `main`. Include ONLY the header you were given: the standard library is not
+  available. Implement every function the header declares, exactly as declared. If you
+  write several files they will be concatenated in order, so do not repeat a definition.
+
+metrics: [correctness]
