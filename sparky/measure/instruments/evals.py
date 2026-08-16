@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-SUBSET = Path(__file__).resolve().parent / "data" / "mmlu_pro_subset.jsonl"
+SUBSET = Path(__file__).resolve().parent.parent.parent / "data" / "mmlu_pro_subset.jsonl"
 LETTERS = "ABCDEFGHIJ"
 DEFAULT_LIMIT = 140
 DEFAULT_CONCURRENCY = 16

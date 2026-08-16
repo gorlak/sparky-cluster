@@ -12,7 +12,8 @@ the box at the time, and the suite reported it as a code failure.
     running the suite.
 
 The second is fixed here rather than test by test, because the hazard is a module-level
-constant that any future test would inherit by default.
+constant that any future test would inherit by default. Since ADR-0027 that constant has
+one home — `fleetlock` — so this points a single name at a temp file.
 """
 
 from __future__ import annotations
@@ -21,26 +22,19 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _never_touch_the_real_fleet_lock(request, tmp_path_factory, monkeypatch):
-    """Point the suite/deploy mutex at a temp file for every test.
+def _never_touch_the_real_fleet_lock(tmp_path_factory, monkeypatch):
+    """Point the deploy↔run mutex at a temp file for every test.
 
     Taking the real one is not merely flaky — a test run would BLOCK a deploy, and a test
     that leaves it held would block every deploy until the process exits.
-
-    `@pytest.mark.real_lock_paths` opts out, for the one test whose subject IS that the
-    two modules name the same file.
     """
-    from sparky import runner
-
-    if "real_lock_paths" in request.keywords:
-        yield
-        return
+    from sparky.foundation import fleetlock
 
     monkeypatch.setattr(
-        runner, "FLEET_LOCK", tmp_path_factory.mktemp("fleet") / "fleet.lock")
-    monkeypatch.setattr(runner, "_fleet_fd", None)
+        fleetlock, "FLEET_LOCK", tmp_path_factory.mktemp("fleet") / "fleet.lock")
+    monkeypatch.setattr(fleetlock, "_fleet_fd", None)
     yield
     # The lock is held on a module global, so a test that acquires without releasing would
     # leak the descriptor into the next one.
-    if runner._fleet_fd is not None:
-        runner.release(tmp_path_factory.mktemp("unused") / "runner.lock")
+    if fleetlock._fleet_fd is not None:
+        fleetlock.release()

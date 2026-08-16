@@ -37,12 +37,13 @@ keeping the seam explicit is what lets the whole thing be tested with no hardwar
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from sparky.foundation import fleetlock
 
 # Breadcrumbs live beside the trend store — literally, since 2026-08-11. Same lifetime,
 # same "survives a reboot" requirement, and NOT /tmp, which is precisely where the last
@@ -57,15 +58,12 @@ from pathlib import Path
 BENCHMARK_DIR = Path("/opt/cluster/benchmark")
 DEFAULT_BREADCRUMBS = BENCHMARK_DIR / "breadcrumbs.json"
 DEFAULT_LOCK = BENCHMARK_DIR / "runner.lock"
-# The lock `deploy` takes (sparky/ansible.py, via `flock`). A suite holds it too, so a
-# deploy cannot re-render engine files or evict weights mid-measurement.
-FLEET_LOCK = Path("/opt/cluster/fleet.lock")
-_fleet_fd: int | None = None
 
-
-class SuiteBusy(RuntimeError):
-    """Another suite holds the cluster. Raised rather than queued: two suites interleaving
-    activations would measure each other's models, and the failure would look like data."""
+# The deploy↔run mutex lives in `fleetlock`, taken from both sides (ADR-0027). Re-exported
+# so a suite's own callers keep raising and catching `runner.SuiteBusy` — the exception is
+# raised here (another run holds `runner.lock`) and there (a deploy holds the fleet lock),
+# and it is one thing: the cluster is taken.
+SuiteBusy = fleetlock.SuiteBusy
 
 
 @dataclass
@@ -161,56 +159,14 @@ def acquire(lock_path: Path = DEFAULT_LOCK, *, stale_after: float = 6 * 3600) ->
             raise SuiteBusy(
                 f"a suite is already running ({holder}, {age / 60:.0f} min ago). "
                 f"Wait, or remove {lock_path} if you know it is dead.")
-    _hold_fleet_lock()
+    fleetlock.hold()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(f"pid={os.getpid()} started={int(now)}\n")
     return lock_path
 
 
-def _hold_fleet_lock(path: Path | None = None) -> None:
-    """Take `deploy`'s lock for the duration, or refuse.
-
-    An advisory flock rather than a marker file, because the other holder is `flock(1)` in
-    a shell — the only mechanism both sides can speak. Non-blocking: waiting would mean a
-    suite that silently stalls for however long a deploy takes, and refusing says which
-    of the two is in progress.
-
-    Held on a module global. There is at most one suite per process by construction, and
-    the alternative — threading a file descriptor through `run()` — buys nothing.
-    """
-    global _fleet_fd
-    # Resolved at CALL time, not bound as a default argument: a default would capture the
-    # path at import and quietly ignore any later reassignment — which is how a test can
-    # point both sides at a tmp file and still watch the real one.
-    path = path or FLEET_LOCK
-    if _fleet_fd is not None:
-        return
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o664)
-    except OSError:
-        return          # no /opt/cluster (a dev checkout) — nothing to serialize against
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        os.close(fd)
-        raise SuiteBusy(
-            f"a deploy is in progress — it holds {path}. A deploy re-renders engine "
-            f"files and can evict weights, so measuring across one produces numbers that "
-            f"belong to no configuration. Wait for it to finish, then start again "
-            f"(breadcrumbs mean nothing is repeated).") from None
-    _fleet_fd = fd
-
-
 def release(lock_path: Path = DEFAULT_LOCK) -> None:
-    global _fleet_fd
-    if _fleet_fd is not None:
-        try:
-            fcntl.flock(_fleet_fd, fcntl.LOCK_UN)
-            os.close(_fleet_fd)
-        except OSError:
-            pass
-        _fleet_fd = None
+    fleetlock.release()
     try:
         lock_path.unlink()
     except FileNotFoundError:

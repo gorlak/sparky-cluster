@@ -30,7 +30,7 @@ import subprocess
 import pytest
 import yaml
 
-from sparky import coding
+from sparky.measure.instruments import coding
 
 SANDBOX_SRC = (pathlib.Path(__file__).resolve().parent.parent / "ansible" / "roles" /
                "activate" / "files" / "vllm-sandbox")

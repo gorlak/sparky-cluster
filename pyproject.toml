@@ -28,9 +28,6 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-markers = [
-    "real_lock_paths: reads the REAL /opt/cluster lock constants (see tests/conftest.py)",
-]
 filterwarnings = [
     # starlette's TestClient nudges toward a future httpx2; harmless, hide the noise.
     "ignore:Using `httpx` with `starlette.testclient` is deprecated",

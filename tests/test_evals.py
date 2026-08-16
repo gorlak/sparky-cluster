@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from sparky import evals
+from sparky.measure.instruments import evals
 
 
 # --- the committed subset ---------------------------------------------------

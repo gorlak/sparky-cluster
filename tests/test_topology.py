@@ -8,7 +8,7 @@ schema fails here instead of at deploy time.
 import json
 from pathlib import Path
 
-from sparky import topology
+from sparky.foundation import topology
 
 # Profiles that exist only so a shape with no live example stays testable.
 FIXTURE_PROFILES = Path(__file__).resolve().parent / "fixtures" / "profiles"
@@ -311,7 +311,8 @@ def test_the_harness_finds_the_profiles_when_it_is_not_in_the_repo():
     """
     import inspect
 
-    from sparky import fleet, topology
+    from sparky.foundation import topology
+    from sparky.serve import fleet
 
     source = inspect.getsource(topology)
     assert "/opt/cluster/ansible/profiles" in source, "no published-tree fallback"

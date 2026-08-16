@@ -13,19 +13,27 @@ grouping will still be right in six months.
 
 from __future__ import annotations
 
+from sparky.foundation import scope
 from sparky import cli
 
-# The scope is a claim about privilege, so the vocabulary is closed. Adding a fourth
+# The scope vocabulary is closed and owned by `sparky.scope` (ADR-0027). Adding a fourth
 # should be a deliberate act with a reason, not a typo that silently passes.
-SCOPES = {
-    "Operate — no privilege, agent-drivable, needs a live cluster",
-    "Provision — password-gated (sudo -u deploy), control node only",
-    "Develop — repo only, no cluster, no privilege",
-}
+SCOPES = scope.PANELS
 
 
 def _commands():
     return list(cli.app.registered_commands)
+
+
+def test_the_operate_allowlist_matches_the_cli():
+    """`sparky.foundation.scope.OPERATE_COMMANDS` is the reviewed allowlist a suite may invoke. It must
+    equal the CLI's actual Operate-scoped commands, or a new agent-drivable command would
+    silently be missing from — or wrongly added to — the security surface (ADR-0027)."""
+    cli_operate = {c.name or c.callback.__name__ for c in _commands()
+                   if getattr(c, "rich_help_panel", None) == scope.OPERATE}
+    assert cli_operate == set(scope.OPERATE_COMMANDS), (
+        f"CLI-only: {cli_operate - set(scope.OPERATE_COMMANDS)}; "
+        f"allowlist-only: {set(scope.OPERATE_COMMANDS) - cli_operate}")
 
 
 def test_every_command_declares_a_scope():

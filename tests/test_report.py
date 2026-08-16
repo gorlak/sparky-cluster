@@ -1,7 +1,7 @@
 """Unit tests for the benchmark A/B report (ADR-0012)."""
 
-from sparky.report import compare, improvement_pct
-from sparky.store import Row, Store
+from sparky.measure.record.report import compare, improvement_pct
+from sparky.measure.record.store import Row, Store
 
 
 def test_improvement_pct_is_direction_aware():

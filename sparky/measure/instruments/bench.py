@@ -25,13 +25,13 @@ from __future__ import annotations
 import json
 import statistics
 
-from sparky import topology
+from sparky.foundation import topology
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sparky.store import Row
+from sparky.measure.record.store import Row
 
 MODELS_DIR = Path("/opt/vllm/models")
 

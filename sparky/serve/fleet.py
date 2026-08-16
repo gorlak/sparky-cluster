@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from sparky.topology import (API_PORT, PROFILES_DIR, Engine, Profile,  # noqa: F401
+from sparky.foundation.topology import (API_PORT, PROFILES_DIR, Engine, Profile,  # noqa: F401
                              all_profiles)
 
 GROUP_VARS = PROFILES_DIR.parent / "group_vars" / "all.yml"
@@ -123,7 +123,7 @@ class Fleet:
         # fail — it silently matches nothing, and the test passes while checking nothing.
         # This is also the guard that catches YAML's `[null]` parsing as `[None]`, which
         # is how the `empty` profile lost its only tag on 2026-08-10.
-        from .topology import ARCHETYPES
+        from sparky.foundation.topology import ARCHETYPES
         for prof in self.profiles:
             unknown = [a for a in prof.archetypes if a not in ARCHETYPES]
             if unknown:

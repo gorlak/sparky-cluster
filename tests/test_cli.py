@@ -9,8 +9,8 @@ its successes. See skills/operations/SKILL.md.
 import pytest
 from typer.testing import CliRunner
 
-from sparky import activate as act
-from sparky import ansible as ops
+from sparky.serve import activate as act
+from sparky.serve import ansible as ops
 from sparky import cli
 
 runner = CliRunner()

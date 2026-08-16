@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from sparky import bench
+from sparky.measure.instruments import bench
 
 
 class _FakeClient:
@@ -171,7 +171,7 @@ def test_streaming_counts_reasoning_deltas():
         def __exit__(self, *a):
             return False
 
-    from sparky.api import VllmClient
+    from sparky.foundation.api import VllmClient
     client = VllmClient.__new__(VllmClient)
     client._client = type("C", (), {"stream": lambda *a, **k: _Ctx()})()
     deltas = list(client.stream_chat([{"role": "user", "content": "x"}], model="m"))

@@ -169,7 +169,7 @@ installed set and a network-facing one must not be able to run whatever is in a 
    applies to any job that does not name its own. Steps invoke sparky commands, and only
    those in the **Operate** scope — `deploy` and `admin-password` are excluded by
    construction, and args are argv, never a shell string. [[development]] has the scope
-   table; `sparky/suite.py` enforces both.
+   table; `sparky/measure/suite.py` enforces both.
 2. **Put the decision rule in the file, before the numbers exist.** A suite that
    commandeers the cluster for hours should say what its outcomes mean, so the result is
    read against a rule rather than rationalised after the fact. A *standing* suite —

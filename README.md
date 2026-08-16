@@ -92,8 +92,10 @@ guessing. See [ADR-0018](docs/adr/0018-provision-select-split.md).
 - `/opt/cluster/fleet.json` — what **may** run (deploy-written)
 
 > The `sparky` command is a Python package, not just a CLI — the same functions are
-> importable (`from sparky import topology, bench, report, ansible`), so the cluster
-> can be driven from a script or a notebook too. See "The harness" below.
+> importable (`from sparky.foundation import topology`, `from sparky.measure import bench,
+> report`, `from sparky.serve import ansible`), so the cluster can be driven from a script
+> or a notebook too. The package is a four-tier stack — `foundation · verify · serve ·
+> measure`, imports pointing downward and enforced (ADR-0027). See "The harness" below.
 
 ---
 
@@ -355,13 +357,22 @@ but systemd units and marker files.
 The layer boundary: **Ansible = declarative config; Python (`sparky`) = the programs
 that talk to the cluster; `sparky` itself = the operator entrypoint over both.**
 
-- **Shared library** — `topology` (profiles + `current-topology.json`), `fleet` (the
-  allowlist and what it implies per node), `activate` (the request + the reconciler
-  trigger), `api` (the vLLM client: readiness, chat, tool-shape probe), `store`
-  (SQLite trend db), `quality` (multiturn corruption heuristics), `multiturn` (the
-  quality conversation), `bench` / `report` (the `vllm bench serve` runner + A/B
-  compare), `suite` (the outer loop), `suite` / `suitectl` (named procedures and the
-  trigger that detaches one), `ansible` (the deploy invoker).
+- **Shared library, in four tiers** (imports point downward, enforced — ADR-0027):
+  - **`foundation/`** — `api` (the vLLM client: readiness, chat, tool-shape probe),
+    `topology` (profiles + `current-topology.json`), `scope` (the command scopes),
+    `fleetlock` (the deploy↔run mutex). Depends on nothing else in the package.
+  - **`verify/`** — the activation sanity checks: `text_sanity` (the multiturn
+    corruption heuristics + the conversation that applies them), `vision_sanity` (the
+    image gate), `smoke` (the gate that aggregates them). "Did serving come up right?",
+    not "how good is it?".
+  - **`serve/`** — `fleet` (the allowlist and what it implies per node), `activate` (the
+    request + the reconciler trigger, and the smoke gate it runs on the way up), `ansible`
+    (the deploy invoker). The tier that changes the cluster.
+  - **`measure/`** — sub-grouped by role (it alone carries thirteen modules):
+    **`loop/`** (`suite` naming/validation · `runner` the loop · `suitectl` the detach
+    trigger), **`instruments/`** (`bench` throughput · `evals` MMLU-Pro · `coding` with its
+    `sandbox` confinement and `reference` yardstick · `soak` · `tools`), and **`record/`**
+    (`store` the trend db · `report` A/B compare · `scoreboard`).
 - **Installed, not only published.** `deploy` puts the harness in a venv at
   `/opt/cluster/harness` (ADR-0021), because a detached suite run is a systemd unit and
   needs an interpreter that exists on a path root can name.
@@ -476,8 +487,9 @@ changes on deploy.
 ├── README.md                  # this file (imported by CLAUDE.md as agent context)
 ├── sparky.sh                  # root wrapper → uv run sparky (the operator entrypoint)
 ├── pyproject.toml · uv.lock   # the sparky package (uv-managed)
-├── sparky/                    # the harness: cli, ansible, activate, fleet, topology,
-│                              #   api, store, quality, multiturn, bench, report
+├── sparky/                    # the harness, four tiers (ADR-0027): cli + foundation/
+│                              #   (api topology scope fleetlock) · verify/ · serve/ ·
+│                              #   measure/ (loop/ instruments/ record/)
 ├── tests/                     # pytest — render + control-panel + unit tests
 ├── scripts/download.py        # model staging (uv PEP-723 script; `sparky download`)
 ├── skills/                    # agent skills (model-discovery, model-evaluation, …)

@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import pathlib
 
-from sparky import coding
-from sparky.coding import Verdict
+from sparky.measure.instruments import coding
+from sparky.measure.instruments.coding import Verdict
 
 FIXTURE_SET = coding.ProblemSet(
     name="fixture", version="v0", toolchain="fixture-toolchain",

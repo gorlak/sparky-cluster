@@ -14,7 +14,7 @@ import zlib
 
 import pytest
 
-from sparky import vision
+from sparky.verify import vision_sanity as vision
 
 
 def decode(png: bytes) -> tuple[int, int, bytes]:

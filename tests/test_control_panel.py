@@ -723,7 +723,7 @@ def test_a_suite_missing_its_metadata_still_lists(panel, tmp_path):
 def test_the_panel_and_the_cli_show_the_same_menu_in_the_same_order(panel, tmp_path):
     """Two renderings of one list. If they sorted differently, "the third one down" would
     mean different suites depending on where you were standing."""
-    from sparky import suite
+    from sparky.measure.loop import suite
 
     main, _ = panel
     (tmp_path / "suites" / "later.yml").write_text(
@@ -809,7 +809,7 @@ def test_the_dashboard_stacks_trends_above_host_noise():
     assert not any("time_to_first_token" in t.get("expr", "")
                    for p in dashboard["panels"] for t in p.get("targets", [])), \
         "no panel should query the TTFT histogram"
-    from sparky import scoreboard
+    from sparky.measure.record import scoreboard
     assert any(c[0] == "TTFT p99" for c in scoreboard.COLUMNS), \
         "removing the panel is only correct while the scoreboard still reports TTFT p99"
 

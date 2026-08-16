@@ -14,13 +14,14 @@ password: **the agent gets `activate`; humans get `deploy`.**
 from __future__ import annotations
 
 import getpass
-import os
 import subprocess
 from pathlib import Path
 
 import httpx
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from sparky.foundation import fleetlock
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent   # sparky/serve/ → repo
 ANSIBLE_DIR = REPO_ROOT / "ansible"
 LIVE = Path("/opt/cluster/ansible")            # deploy-owned runtime copy ansible runs from
 HARNESS_LIVE = Path("/opt/cluster/sparky")     # published harness source (the `harness` role installs it)
@@ -34,15 +35,12 @@ SUITES_LIVE = Path("/opt/cluster/suites")
 # hosts. The old `deploy@10.0.200.13` + deploy-key constants went with the sudo that
 # used to be needed here; nothing in the harness holds a privileged path to a node now.
 WORKER_HOST = "snoopy"
-# `deploy` and an in-flight suite must not interleave — one is reshaping the boundary
-# while the other walks it. Both take this lock: `flock(1)` here, `fcntl.flock` in
-# suite.py, which is the only mechanism a shell and a Python process can share.
+# `deploy` and an in-flight run must not interleave — one is reshaping the boundary while
+# the other walks it. Both take the fleet lock, which now has one home in `fleetlock`:
+# `flock(1)` here (see _playbook_cmd), `fleetlock.hold()` in the runner. Until it was
+# consolidated the two sides named the constant separately and had drifted apart once,
+# silently excluding nothing (ADR-0027).
 #
-# Until 2026-08-11 this comment was a claim rather than a fact. `deploy` took it and the
-# suite took a DIFFERENT file (`runner.lock`), so nothing was excluded — a deploy could
-# re-render engine files, pull an image or evict weights in the middle of a measurement.
-# tests/test_ansible.py pins the two constants together now.
-FLEET_LOCK = Path("/opt/cluster/fleet.lock")
 # Written ONLY by the deploy identity (see _playbook_cmd) so ownership stays stable.
 DEPLOY_LOG = Path("/opt/cluster/ansible.log")
 # The control panel is the ONLY live-status surface, and it needs no sudo: it queries
@@ -70,37 +68,11 @@ def _run(cmd: list[str], *, cwd: Path | None = None) -> int:
     return subprocess.run(cmd, cwd=cwd).returncode
 
 
-def suite_holding_the_fleet() -> bool:
-    """Is a measurement suite holding the fleet lock right now?
-
-    Asked BEFORE invoking the playbook so the refusal can explain itself. `flock` alone
-    would be correct and awful: a deploy would sit silent for however long the suite
-    has left, which for `all` is most of a night, and the operator would reasonably
-    conclude it had hung.
-    """
-    import fcntl
-    try:
-        fd = os.open(FLEET_LOCK, os.O_RDWR | os.O_CREAT, 0o664)
-    except OSError:
-        return False
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return False
-    except OSError:
-        return True
-    finally:
-        os.close(fd)
-
-
 def _refuse_while_a_suite_runs() -> bool:
     """Print why a deploy is being declined, if it is. True means: do not proceed."""
-    if not suite_holding_the_fleet():
+    if not fleetlock.held():
         return False
-    from sparky import suitectl
-    running = suitectl.running()
-    print(f"REFUSING: a measurement suite holds the fleet"
-          f"{f' ({running})' if running else ''}.")
+    print("REFUSING: a measurement run holds the fleet.")
     print("A deploy re-renders engine files, pulls images and can evict weights — doing")
     print("that underneath a running suite produces numbers belonging to no")
     print("configuration, and the damage is invisible afterwards.")
@@ -124,7 +96,7 @@ def _playbook_cmd(playbook: str, extra: list[str]) -> list[str]:
     # `sparky lint` broke every deploy this way on 2026-08-13. Scoped here, only `deploy`
     # ever writes it, so it is always deploy-owned; geoff reads it via the cluster group.
     return [*_as_deploy(), "env", f"ANSIBLE_LOG_PATH={DEPLOY_LOG}",
-            "flock", str(FLEET_LOCK), "ansible-playbook", playbook, *extra]
+            "flock", str(fleetlock.FLEET_LOCK), "ansible-playbook", playbook, *extra]
 
 
 def publish() -> None:
@@ -221,7 +193,7 @@ def lint() -> int:
     the allowlist itself (unique engine names fleet-wide, the one front port, flags
     that survive the env-file round trip).
     """
-    from sparky.fleet import FleetError, load_fleet
+    from sparky.serve.fleet import FleetError, load_fleet
 
     for playbook in ("site.yml", "teardown.yml"):
         rc = subprocess.run(

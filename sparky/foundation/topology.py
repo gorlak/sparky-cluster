@@ -16,7 +16,7 @@ from pathlib import Path
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent   # sparky/foundation/ → repo
 # The repo when there is one, the published tree when there is not (ADR-0021). Since the
 # harness is now *installed* on the head — a venv, so a detached suite run has an
 # interpreter — `__file__` can sit in site-packages, where `../ansible/profiles` is

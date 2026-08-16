@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from sparky import runner
+from sparky.measure.loop import runner
 
 
 def _jobs(*specs):

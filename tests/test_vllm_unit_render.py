@@ -22,8 +22,8 @@ from pathlib import Path
 import jinja2
 import yaml
 
-from sparky.fleet import load_fleet
-from sparky.topology import PROFILES_DIR
+from sparky.serve.fleet import load_fleet
+from sparky.foundation.topology import PROFILES_DIR
 
 ROLE = Path(__file__).resolve().parent.parent / "ansible/roles/vllm/templates"
 UNIT_SRC = (ROLE / "vllm@.service.j2").read_text()

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from sparky import ansible
+from sparky.serve import ansible
 
 
 def test_as_deploy_prefix(monkeypatch):
@@ -32,12 +32,14 @@ def test_playbook_cmd_takes_no_profile(monkeypatch):
 
 def test_playbook_cmd_takes_the_fleet_lock(monkeypatch):
     """A deploy reshapes the boundary while a suite walks it — they must not interleave."""
+    from sparky.foundation import fleetlock
+
     monkeypatch.setattr(ansible.getpass, "getuser", lambda: "deploy")
     cmd = ansible._playbook_cmd("site.yml", [])
     # Position, not prefix: the command is wrapped (`env ANSIBLE_LOG_PATH=...`), so what
     # matters is that flock still guards the playbook — not that it comes first.
     i = cmd.index("flock")
-    assert cmd[i + 1] == str(ansible.FLEET_LOCK)
+    assert cmd[i + 1] == str(fleetlock.FLEET_LOCK)
     assert cmd[i + 2] == "ansible-playbook", "flock must wrap the playbook, not something else"
 
 
@@ -128,48 +130,25 @@ def test_reading_logs_needs_no_privilege(monkeypatch):
     assert all("sudo" not in c for cmd in cmds for c in cmd)
 
 
-@pytest.mark.real_lock_paths
-def test_the_run_and_the_deploy_take_THE_SAME_lock():
-    """They were different files until 2026-08-11, while a comment in ansible.py asserted
-    they were the same. `deploy` took `fleet.lock`; the suite took `runner.lock`, which
-    only ever excluded other suites. So nothing stopped a deploy from re-rendering engine
-    files, pulling an image or evicting weights in the middle of a measurement — and the
-    resulting numbers would belong to no configuration, invisibly.
-
-    Pinned as constants rather than as behaviour because the mechanisms differ by
-    necessity: `flock(1)` in a shell on one side, `fcntl.flock` on the other. The file is
-    the only thing they share, so the file is what has to match.
-    """
-    from sparky import ansible, runner
-
-    assert runner.FLEET_LOCK == ansible.FLEET_LOCK
-    assert runner.DEFAULT_LOCK != ansible.FLEET_LOCK  # still distinct roles
-
-
-def test_a_suite_holding_the_fleet_refuses_the_deploy(tmp_path, monkeypatch, capsys):
-    """And says which suite, and how to end it. `flock` alone would be correct and
-    awful — the deploy would sit silent for however long the suite has left."""
-    import fcntl
-
-    from sparky import ansible, runner
+def test_a_run_holding_the_fleet_refuses_the_deploy(tmp_path, monkeypatch, capsys):
+    """A deploy declines while a measurement holds the fleet, rather than blocking on the
+    flock — which would sit silent for however long the run has left. The run and the
+    deploy take the SAME lock, now that it has one home; that they do is structural
+    (`fleetlock.hold` vs `flock(1)` on `fleetlock.FLEET_LOCK`), not something a test pins."""
+    from sparky.foundation import fleetlock
+    from sparky.serve import ansible
 
     lock = tmp_path / "fleet.lock"
-    monkeypatch.setattr(ansible, "FLEET_LOCK", lock)
-    monkeypatch.setattr(runner, "FLEET_LOCK", lock)
-    monkeypatch.setattr(runner, "_fleet_fd", None)
+    monkeypatch.setattr(fleetlock, "FLEET_LOCK", lock)
+    monkeypatch.setattr(fleetlock, "_fleet_fd", None)
 
-    assert ansible.suite_holding_the_fleet() is False
-    runner._hold_fleet_lock(lock)
+    assert ansible._refuse_while_a_suite_runs() is False
+    fleetlock.hold()
     try:
-        # Held in-process, so an flock from another fd in the SAME process still sees it.
-        fd = os.open(lock, os.O_RDWR)
-        try:
-            with pytest.raises(OSError):
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        finally:
-            os.close(fd)
+        assert ansible._refuse_while_a_suite_runs() is True
+        assert "REFUSING" in capsys.readouterr().out
     finally:
-        runner.release(tmp_path / "runner.lock")
+        fleetlock.release()
 
 
 def test_a_run_refuses_to_start_under_a_deploy(tmp_path, monkeypatch):
@@ -177,11 +156,12 @@ def test_a_run_refuses_to_start_under_a_deploy(tmp_path, monkeypatch):
     through re-rendering the fleet measures a moving target."""
     import fcntl
 
-    from sparky import runner
+    from sparky.foundation import fleetlock
+    from sparky.measure.loop import runner
 
     lock = tmp_path / "fleet.lock"
-    monkeypatch.setattr(runner, "FLEET_LOCK", lock)
-    monkeypatch.setattr(runner, "_fleet_fd", None)
+    monkeypatch.setattr(fleetlock, "FLEET_LOCK", lock)
+    monkeypatch.setattr(fleetlock, "_fleet_fd", None)
     holder = os.open(lock, os.O_RDWR | os.O_CREAT, 0o664)
     fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:

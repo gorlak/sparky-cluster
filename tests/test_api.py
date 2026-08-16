@@ -11,7 +11,7 @@ import json
 
 import httpx
 
-from sparky.api import VllmClient
+from sparky.foundation.api import VllmClient
 
 
 def make_client(handler) -> VllmClient:

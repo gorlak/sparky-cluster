@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from sparky import suite
+from sparky.measure.loop import suite
 
 
 def test_a_suite_is_addressed_by_name_never_by_path():
@@ -120,7 +120,7 @@ def test_covers_allowlist_catches_a_profile_that_cannot_be_activated(monkeypatch
     may now be no parked profile to borrow: the fleet's goal is zero. So the fixture
     supplies one.
     """
-    from sparky import topology
+    from sparky.foundation import topology
 
     live = topology.load_profile("qwen3.6-35b-a3b-nvfp4")
     # `is_empty` is derived from `engines`, and an empty profile is excluded before

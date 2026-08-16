@@ -113,7 +113,7 @@ def test_stop_works_with_nothing_installed(tmp_path):
 def test_the_client_and_the_trigger_agree_on_the_paths():
     """`sparky run` composes the log path itself so that reading a log needs no privilege.
     If the two drifted, a run would start and its log would be somewhere nobody looks."""
-    from sparky import suitectl
+    from sparky.measure.loop import suitectl
 
     assert suitectl.UNIT == trigger.UNIT
     assert suitectl.LOG_DIR == trigger.LOG_DIR

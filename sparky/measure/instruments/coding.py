@@ -30,7 +30,7 @@ from pathlib import Path
 
 import yaml
 
-SETS_ROOT = Path(__file__).resolve().parent.parent / "benchmarks" / "coding" / "problems"
+SETS_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "benchmarks" / "coding" / "problems"
 # The file that makes a directory a set. Its absence is how an unfetched submodule is told
 # apart from a real set, so it is also excluded when globbing for problems.
 SET_MANIFEST = "set.yml"

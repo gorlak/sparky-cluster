@@ -7,7 +7,7 @@ someone depends on; too shy and the scoreboard says nothing useful.
 
 from __future__ import annotations
 
-from sparky import scoreboard
+from sparky.measure.record import scoreboard
 
 
 def _rows(*specs):

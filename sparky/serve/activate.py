@@ -26,8 +26,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from sparky import topology
-from sparky.api import VllmClient
+from sparky.foundation import topology
+from sparky.foundation.api import VllmClient
 
 ACTIVATE_BIN = "/usr/local/sbin/vllm-activate"
 DESIRED_PROFILE = Path("/opt/cluster/desired-profile")
@@ -270,20 +270,16 @@ def wait_for_deploy(timeout: float = 1800.0, poll: float = 5.0, on_event=None) -
     `docs/synchronization.md`.
 
     ⚠️ **Returns immediately when THIS process already holds the lock.** A suite takes
-    `fleet.lock` for its whole run (`runner._hold_fleet_lock`) and then activates once per
-    job through `bring_up`. flock is per open-file-description, so a second acquire from
-    the same process blocks against itself — an unconditional wait here would hang every
-    suite forever, and an unconditional acquire would deadlock it.
+    `fleet.lock` for its whole run (`fleetlock.hold`) and then activates once per job
+    through `bring_up`. flock is per open-file-description, so a second acquire from the
+    same process blocks against itself — an unconditional wait here would hang every suite
+    forever, and an unconditional acquire would deadlock it.
     """
-    from sparky import runner          # deferred: suite imports this module's callers
-    if runner._fleet_fd is not None:
+    from sparky.foundation import fleetlock
+    if fleetlock.held_by_us():
         return                        # we ARE the holder — see the warning above
-    from sparky import ansible
 
-    def held() -> bool:
-        return ansible.suite_holding_the_fleet()
-
-    if not held():
+    if not fleetlock.held():
         return
     if on_event:
         on_event("a deploy holds the fleet lock — waiting for it to finish "
@@ -293,7 +289,7 @@ def wait_for_deploy(timeout: float = 1800.0, poll: float = 5.0, on_event=None) -
     while time.monotonic() < deadline:
         time.sleep(poll)
         waited += poll
-        if not held():
+        if not fleetlock.held():
             if on_event:
                 on_event(f"deploy finished after {waited:.0f}s — continuing")
             return
@@ -349,9 +345,8 @@ def bring_up(profile: str, *, force: bool = False, wait: bool = True,
     # WebUI attaches tools (that shipped once); measuring it would produce numbers for a
     # configuration nobody can use.
     #
-    # Imported at call time: the gate lives in `cli`, which imports this module.
-    from sparky.cli import SMOKE_REPORT, _smoke
-    if _smoke(None, str(SMOKE_REPORT)) != 0:
+    from sparky.verify import smoke
+    if smoke.run(None, str(smoke.SMOKE_REPORT)) != 0:
         raise NotLive(f"{profile} came up but FAILED the smoke gate — it answers, but not "
                       f"the shapes callers send. See {SMOKE_REPORT}")
 

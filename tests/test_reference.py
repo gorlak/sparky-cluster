@@ -18,8 +18,8 @@ import re
 import httpx
 import pytest
 
-from sparky import coding, reference
-from sparky.coding import Verdict
+from sparky.measure.instruments import coding, reference
+from sparky.measure.instruments.coding import Verdict
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
@@ -79,12 +79,12 @@ def test_the_key_is_never_read_from_a_file():
     Asserted as "opens nothing at all" rather than "mentions no path", because the module
     legitimately NAMES /opt/cluster in the message explaining that it never uses it.
     """
-    tree = ast.parse((REPO / "sparky" / "reference.py").read_text())
+    tree = ast.parse((REPO / "sparky" / "measure" / "instruments" / "reference.py").read_text())
     called = {node.func.id for node in ast.walk(tree)
               if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
     assert "open" not in called, "the reference module opens a file"
     assert "Path" not in called, "the reference module names a path"
-    assert "ANTHROPIC_API_KEY" in (REPO / "sparky" / "reference.py").read_text()
+    assert "ANTHROPIC_API_KEY" in (REPO / "sparky" / "measure" / "instruments" / "reference.py").read_text()
 
 
 def test_a_missing_key_explains_itself_rather_than_prompting(monkeypatch):

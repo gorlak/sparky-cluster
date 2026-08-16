@@ -30,15 +30,19 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from sparky import coding, reference, runner, sandbox, soak, suite, suitectl, tools, activate as act
-from sparky import ansible as ops
-from sparky import bench as httpbench
-from sparky import evals, report, scoreboard, store, topology
-from sparky.vision import probe as vision_probe
-from sparky.api import VllmClient
-from sparky.fleet import load_fleet
-from sparky.multiturn import run_multiturn
-from sparky.store import Store
+from sparky.foundation import scope
+from sparky.verify import smoke
+from sparky.serve import activate as act
+from sparky.measure.loop import runner, suite, suitectl
+from sparky.measure.instruments import coding, reference, sandbox, soak, tools
+from sparky.serve import ansible as ops
+from sparky.measure.instruments import bench as httpbench
+from sparky.foundation import topology
+from sparky.measure.instruments import evals
+from sparky.measure.record import report, scoreboard, store
+from sparky.foundation.api import VllmClient
+from sparky.serve.fleet import load_fleet
+from sparky.measure.record.store import Store
 
 app = typer.Typer(
     help="Sparky Cluster — operator entrypoint (ADR-0015).",
@@ -76,7 +80,7 @@ def _root() -> None:
     """Sparky Cluster — operator entrypoint (ADR-0015)."""
 
 
-@app.command("topology", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command("topology", rich_help_panel=scope.OPERATE)
 def show_topology(
     profile: str = typer.Argument(
         "empty", help="Profile name (or a path to a profile YAML)."
@@ -101,11 +105,6 @@ def show_topology(
             str(e.port), e.model, f"{e.gpu_memory_utilization:g}", str(e.max_model_len),
         )
     console.print(table)
-
-
-# The activation-gate breadcrumb. The reconciler deletes it at the start of every
-# activation, so a stale result can never be read as a verdict on the live model.
-SMOKE_REPORT = Path("/opt/cluster/last-smoke.json")
 
 
 def _panel_unreachable(json_out: bool) -> int:
@@ -158,87 +157,12 @@ def _panel_unreachable(json_out: bool) -> int:
     return 2
 
 
-def _smoke(topology_file: str | None, report_file: str | None) -> int:
-    """The gate itself, as a return code — `activate` runs it in-process."""
-    path = Path(topology_file) if topology_file else topology.CURRENT_TOPOLOGY
-    current = topology.load_current_topology(path)
-    if current is None:
-        console.print(f"[yellow]No topology at {path} — nothing to probe.[/]")
-        return 1
-    engines = current.get("engines", [])
-    profile = current.get("profile", "?")
-    if not engines:
-        console.print(f"[bold]{profile}[/] — nothing serving, no engines to probe")
-        return 0
-
-    table = Table(title=f"smoke: {profile}", title_justify="left")
-    for col in ("engine", "api", "ready", "tool-shape", "quality", "vision"):
-        table.add_column(col, overflow="fold")
-
-    failed = False
-    results = []
-    for e in engines:
-        tool, quality, ok = "—", "—", False
-        tool_code, quality_str = None, "skipped"
-        vision_cell, vision_str, vision_ok = "—", "skipped", True
-        with VllmClient(e["api_url"], timeout=120.0) as client:
-            ready = client.is_ready()
-            if ready:
-                # Vision runs on READINESS, not on the tool/quality chain: a model can
-                # lack tool flags and still be asked to look at an image, and a VL model
-                # that serves text perfectly is exactly the case this catches.
-                v = vision_probe(client, e["served_as"])
-                vision_ok = v.ok
-                vision_cell = ("[dim]n/a[/]" if v.unsupported
-                               else "[green]pass[/]" if v.ok else f"[red]{v.detail}[/]")
-                vision_str = v.detail
-                code = client.probe_tool_support(e["served_as"]).status_code
-                tool_code = code
-                tool = "[green]200[/]" if code == 200 else f"[red]{code}[/]"
-                ok = code == 200
-                # Quality runs on READINESS, not on tool support. It used to be chained
-                # behind a 200 here, which meant any model without the tool flags — every
-                # minimal-flag first bring-up — silently skipped its output-quality check
-                # and showed "—". Tool calling and coherent prose are independent
-                # capabilities; a model can lack the first and still be the thing we are
-                # deciding whether to serve.
-                if True:
-                    result = run_multiturn(client, e["served_as"])
-                    ok = ok and result.ok
-                    if result.ok:
-                        quality = "[green]pass[/]"
-                        quality_str = "pass"
-                    else:
-                        reasons = sorted({r for t in result.failures for r in t.verdict.reasons})
-                        quality = "[red]FAIL: " + ",".join(reasons) + "[/]"
-                        quality_str = "fail: " + ",".join(reasons)
-        failed = failed or not ok or not vision_ok
-        results.append({"name": e["name"], "api_url": e["api_url"], "ready": ready,
-                        "tool_shape": tool_code, "quality": quality_str,
-                        "vision": vision_str, "ok": ok and vision_ok})
-        table.add_row(
-            e["name"], e["api_url"],
-            "[green]yes[/]" if ready else "[red]no[/]", tool, quality, vision_cell,
-        )
-
-    console.print(table)
-    if report_file:
-        out = Path(report_file)
-        # Unlink first: the reconciler and other members of the cluster group take
-        # turns owning this file, and only the DIRECTORY is group-writable.
-        out.unlink(missing_ok=True)
-        out.write_text(json.dumps(
-            {"profile": profile, "ran_at": datetime.now(timezone.utc).isoformat(),
-             "ok": not failed, "engines": results}, indent=2) + "\n")
-    return 1 if failed else 0
-
-
-@app.command("smoke", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command("smoke", rich_help_panel=scope.OPERATE)
 def smoke(
     topology_file: str = typer.Option(
         None, "--topology", help="Topology JSON to probe (default: the live current-topology.json)."),
     report_file: str = typer.Option(
-        str(SMOKE_REPORT), "--report",
+        str(smoke.SMOKE_REPORT), "--report",
         help="Write the gate result (per-engine ready/tool-shape/quality + overall ok) to this "
              "JSON path — a durable breadcrumb, written pass OR fail."),
 ) -> None:
@@ -250,10 +174,10 @@ def smoke(
     conversation (ADR-0012). ~2 min per engine. `sparky activate` runs it for you
     once the engines answer; run it standalone to re-check without re-activating.
     """
-    raise typer.Exit(_smoke(topology_file, report_file))
+    raise typer.Exit(smoke.run(topology_file, report_file))
 
 
-@app.command("report", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command("report", rich_help_panel=scope.OPERATE)
 def report_cmd(
     label_a: str = typer.Argument(..., help="Baseline label."),
     label_b: str = typer.Argument(..., help="Comparison label."),
@@ -266,7 +190,7 @@ def report_cmd(
 
 # --- deploy: converge the fleet (privileged, human, password-gated) ---------
 
-@app.command(rich_help_panel="Provision — password-gated (sudo -u deploy), control node only")
+@app.command(rich_help_panel=scope.PROVISION)
 def deploy(
     evict: bool = typer.Option(
         False, "--evict",
@@ -299,7 +223,7 @@ def deploy(
 
 # --- activate: choose the live model (unprivileged, human OR agent) ---------
 
-@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command(rich_help_panel=scope.OPERATE)
 def activate(
     profile: str = typer.Argument(
         None, help="Profile to make live, or `empty`. Omit to show what's activatable."),
@@ -344,7 +268,7 @@ def activate(
     raise typer.Exit(0)
 
 
-@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command(rich_help_panel=scope.OPERATE)
 def probe(
     what: str = typer.Argument(..., help="versions | archs | pip | attr | quant"),
     args: list[str] = typer.Argument(None, help="Probe arguments (architectures, packages, …)."),
@@ -378,7 +302,7 @@ def probe(
     raise typer.Exit(proc.returncode)
 
 
-@app.command("bench", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command("bench", rich_help_panel=scope.OPERATE)
 def bench(
     label: str = typer.Argument(None, help="Label to record under (default: the profile)."),
     scenarios: str = typer.Option("latency,throughput,prefix_cache", "--scenarios", "-s"),
@@ -576,7 +500,7 @@ def _refresh_panel_snapshot() -> None:
         pass
 
 
-@app.command("run", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command("run", rich_help_panel=scope.OPERATE)
 def run_cmd(
     name: str = typer.Argument(None, help="Suite name (not a path). Omit to list."),
     follow: bool = typer.Option(False, "--follow", "-f", help="Tail the log after starting."),
@@ -658,7 +582,7 @@ def _suite_list() -> None:
     console.print(f"[bold]running:[/] {running}" if running else "[dim]nothing running[/]")
 
 
-@app.command("suite", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command("suite", rich_help_panel=scope.OPERATE)
 def suite_cmd(
     spec_file: str = typer.Argument(..., help="YAML job list (profile x regiments)."),
     resume: bool = typer.Option(True, "--resume/--restart",
@@ -809,7 +733,7 @@ def suite_cmd(
         raise typer.Exit(1)
 
 
-@app.command("scoreboard", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command("scoreboard", rich_help_panel=scope.OPERATE)
 def scoreboard_cmd(
     markdown: bool = typer.Option(False, "--markdown", "-m",
                                   help="Emit a markdown table for docs/."),
@@ -884,7 +808,7 @@ def scoreboard_cmd(
                       f"run the missing regiment to place them[/]")
 
 
-@app.command("eval", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command("eval", rich_help_panel=scope.OPERATE)
 def eval_cmd(
     label: str = typer.Argument(None, help="Label to record under (default: the profile)."),
     limit: int = typer.Option(140, "--limit", "-n", help="Questions (max 280)."),
@@ -971,7 +895,7 @@ def eval_cmd(
         _refresh_panel_snapshot()
 
 
-@app.command("coding", rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command("coding", rich_help_panel=scope.OPERATE)
 def coding_cmd(
     label: str = typer.Argument(None, help="Label to record under (default: the profile)."),
     only: str = typer.Option(None, "--set", "-s", help="Score just this problem set."),
@@ -1129,7 +1053,7 @@ def coding_cmd(
     _refresh_panel_snapshot()
 
 
-@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command(rich_help_panel=scope.OPERATE)
 def fleet() -> None:
     """Show the allowlist: what a deploy installed, where its weights live, and which
     profiles are parked."""
@@ -1168,7 +1092,7 @@ def fleet() -> None:
         console.print(f"  [yellow]no {act.FLEET_STATE} — this cluster has not been deployed yet.[/]")
 
 
-@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command(rich_help_panel=scope.OPERATE)
 def teardown(
     webui: bool = typer.Option(False, "--webui", help="also stop Open WebUI + Caddy"),
     break_glass: bool = typer.Option(
@@ -1182,7 +1106,7 @@ def teardown(
     raise typer.Exit(act.activate(act.EMPTY))
 
 
-@app.command("admin-password", rich_help_panel="Provision — password-gated (sudo -u deploy), control node only")
+@app.command("admin-password", rich_help_panel=scope.PROVISION)
 def admin_password() -> None:
     """Set the /admin basic_auth password (ADR-0018 turns the panel's auth on).
 
@@ -1264,7 +1188,7 @@ def _render_status(s: dict) -> None:
     console.print("  " + "   ".join(f"{svc['name']}: {svc['state']}" for svc in s.get("services", [])))
 
 
-@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command(rich_help_panel=scope.OPERATE)
 def status(
     json_out: bool = typer.Option(False, "--json", help="Emit raw JSON (machine-readable)."),
 ) -> None:
@@ -1291,13 +1215,13 @@ def status(
     raise typer.Exit(0 if s.get("ok") else 1)
 
 
-@app.command(rich_help_panel="Operate — no privilege, agent-drivable, needs a live cluster")
+@app.command(rich_help_panel=scope.OPERATE)
 def logs(node: str = typer.Argument("head", help="head | worker")) -> None:
     """Follow the vLLM journal on a node."""
     raise typer.Exit(ops.logs(node))
 
 
-@app.command(rich_help_panel="Develop — repo only, no cluster, no privilege")
+@app.command(rich_help_panel=scope.DEVELOP)
 def lint() -> None:
     """Ansible syntax-check + validate the whole allowlist (ADR-0011 Layer 1)."""
 
@@ -1327,7 +1251,7 @@ def lint() -> None:
 
 
 @app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-             rich_help_panel="Develop — repo only, no cluster, no privilege")
+             rich_help_panel=scope.DEVELOP)
 def test(ctx: typer.Context) -> None:
     """Run the harness unit tests (pytest). Extra args pass through (e.g. -k name, -x)."""
     import pytest
@@ -1336,7 +1260,7 @@ def test(ctx: typer.Context) -> None:
     raise typer.Exit(int(pytest.main(list(ctx.args))))
 
 
-@app.command(rich_help_panel="Develop — repo only, no cluster, no privilege")
+@app.command(rich_help_panel=scope.DEVELOP)
 def download(
     repo: str = typer.Argument(..., help="HF repo id, e.g. stepfun-ai/Step-3.5-Flash-FP8."),
     dest: str = typer.Argument(None, help="Optional dir name in the inbox."),

@@ -39,7 +39,7 @@ import yaml
 #
 # So adding a suite is a deploy, the same bargain profiles make. Iterating on one that
 # has not earned that yet is `sparky suite <path>`, in the foreground.
-REPO_DIR = Path(__file__).resolve().parent.parent / "suites"
+REPO_DIR = Path(__file__).resolve().parent.parent.parent.parent / "suites"
 INSTALLED_DIR = Path("/opt/cluster/suites")
 
 
@@ -149,18 +149,16 @@ def load(name: str, *, directory: Path | None = None) -> dict:
 
 
 def operate_commands() -> set[str]:
-    """The commands a suite may invoke — sparky's own Operate scope.
+    """The commands a suite may invoke — sparky's own Operate scope (ADR-0018).
 
-    Read from the CLI at call time rather than duplicated, so the two cannot disagree.
-    Imported late because `cli` imports plenty and this module is also used by `lint`.
+    The allowlist is declared in `sparky.scope`, not read back from the CLI app: a suite
+    step names a `sparky` subcommand, and letting it name a privileged one is the failure
+    this guards, so the permitted set is a reviewed constant rather than something inferred
+    from help-panel formatting (ADR-0027). `test_cli_surface` asserts the CLI's Operate
+    commands are exactly this set, so the two cannot drift.
     """
-    from sparky.cli import app
-    out = set()
-    for command in app.registered_commands:
-        scope = getattr(command, "rich_help_panel", "") or ""
-        if scope.startswith("Operate"):
-            out.add(command.name or command.callback.__name__)
-    return out
+    from sparky.foundation import scope
+    return set(scope.OPERATE_COMMANDS)
 
 
 def _coverage_problems(name: str, spec: dict, jobs: list) -> list[str]:
@@ -180,7 +178,7 @@ def _coverage_problems(name: str, spec: dict, jobs: list) -> list[str]:
             return [f"{name}: unknown `covers: {spec['covers']!r}` — only 'allowlist'"]
         return []
 
-    from sparky import topology
+    from sparky.foundation import topology
     try:
         # Activatable: not `empty` (nothing to measure) and not parked — a `blocked`
         # profile keeps its weights precisely so it cannot be activated.

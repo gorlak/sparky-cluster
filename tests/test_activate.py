@@ -544,13 +544,13 @@ def test_success_is_refused_when_another_profile_is_live(monkeypatch):
     "gated" is a trap: it is exactly the state someone commits, benchmarks, or walks away
     from.
     """
-    from sparky import activate as act
+    from sparky.serve import activate as act
 
     monkeypatch.setattr(act, "activate", lambda p, force=False: 0)
     monkeypatch.setattr(act, "wait_for_ready", lambda *a, **k: True)
     monkeypatch.setattr(act, "live_profile", lambda: "some-other-profile")
-    import sparky.cli as cli
-    monkeypatch.setattr(cli, "_smoke", lambda *a, **k: 0)
+    from sparky.verify import smoke
+    monkeypatch.setattr(smoke, "run", lambda *a, **k: 0)
 
     with pytest.raises(act.NotLive, match="is what is serving"):
         act.bring_up("the-one-i-asked-for")
@@ -558,14 +558,14 @@ def test_success_is_refused_when_another_profile_is_live(monkeypatch):
 
 def test_success_is_reported_when_the_live_profile_matches(monkeypatch):
     """The converse, so the guard cannot be satisfied by simply never succeeding."""
-    from sparky import activate as act
+    from sparky.serve import activate as act
 
     seen = []
     monkeypatch.setattr(act, "activate", lambda p, force=False: 0)
     monkeypatch.setattr(act, "wait_for_ready", lambda *a, **k: True)
     monkeypatch.setattr(act, "live_profile", lambda: "wanted")
-    import sparky.cli as cli
-    monkeypatch.setattr(cli, "_smoke", lambda *a, **k: 0)
+    from sparky.verify import smoke
+    monkeypatch.setattr(smoke, "run", lambda *a, **k: 0)
 
     act.bring_up("wanted", on_event=seen.append)
     assert any("live and gated" in m for m in seen)
@@ -574,9 +574,10 @@ def test_success_is_reported_when_the_live_profile_matches(monkeypatch):
 # --- activate must not fire into a running deploy (2026-08-12) -------------
 
 def test_wait_for_deploy_returns_when_the_lock_is_free(tmp_path, monkeypatch):
-    from sparky import activate as act, ansible, runner
-    monkeypatch.setattr(ansible, "FLEET_LOCK", tmp_path / "fleet.lock")
-    monkeypatch.setattr(runner, "_fleet_fd", None)
+    from sparky.foundation import fleetlock
+    from sparky.serve import activate as act
+    monkeypatch.setattr(fleetlock, "FLEET_LOCK", tmp_path / "fleet.lock")
+    monkeypatch.setattr(fleetlock, "_fleet_fd", None)
     act.wait_for_deploy(timeout=1.0, poll=0.05)      # returns, does not raise
 
 
@@ -588,12 +589,13 @@ def test_wait_for_deploy_skips_when_this_process_holds_the_lock(tmp_path, monkey
     guard has to dodge, and it is why the naive "just take the lock" fix is wrong.
     """
     import fcntl
-    from sparky import activate as act, ansible, runner
+    from sparky.foundation import fleetlock
+    from sparky.serve import activate as act
     lock = tmp_path / "fleet.lock"
-    monkeypatch.setattr(ansible, "FLEET_LOCK", lock)
+    monkeypatch.setattr(fleetlock, "FLEET_LOCK", lock)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o664)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)     # we are the suite
-    monkeypatch.setattr(runner, "_fleet_fd", fd)
+    monkeypatch.setattr(fleetlock, "_fleet_fd", fd)
     try:
         act.wait_for_deploy(timeout=1.0, poll=0.05)     # must NOT hang or raise
     finally:
@@ -605,10 +607,11 @@ def test_wait_for_deploy_raises_rather_than_waiting_forever(tmp_path, monkeypatc
     """A wedged deploy must surface, not silently stall an activation for 30 minutes."""
     import fcntl
     import pytest
-    from sparky import activate as act, ansible, runner
+    from sparky.foundation import fleetlock
+    from sparky.serve import activate as act
     lock = tmp_path / "fleet.lock"
-    monkeypatch.setattr(ansible, "FLEET_LOCK", lock)
-    monkeypatch.setattr(runner, "_fleet_fd", None)       # someone ELSE holds it
+    monkeypatch.setattr(fleetlock, "FLEET_LOCK", lock)
+    monkeypatch.setattr(fleetlock, "_fleet_fd", None)       # someone ELSE holds it
     fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o664)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
@@ -622,7 +625,7 @@ def test_wait_for_deploy_raises_rather_than_waiting_forever(tmp_path, monkeypatc
 def test_bring_up_consults_the_guard_before_activating():
     """The guard is only worth having if `bring_up` actually calls it."""
     import inspect
-    from sparky import activate as act
+    from sparky.serve import activate as act
     src = inspect.getsource(act.bring_up)
     assert "wait_for_deploy" in src.split("activate(profile")[0], \
         "bring_up must wait for a deploy BEFORE requesting the activation"

@@ -11,7 +11,7 @@ from __future__ import annotations
 import itertools
 import threading
 
-from sparky import soak
+from sparky.measure.instruments import soak
 
 
 class _Clock:

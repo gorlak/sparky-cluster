@@ -62,8 +62,8 @@ run holding the lock from Python, because no `ansible-playbook` is running at al
 
 | direction | guarded? | by what |
 |---|---|---|
-| deploy → during a run | ✅ | `ansible.suite_holding_the_fleet()`, refuses with a message |
-| a run → during a deploy | ✅ | `runner._hold_fleet_lock()`, raises `SweepBusy` |
+| deploy → during a run | ✅ | `fleetlock.held()`, refuses with a message |
+| a run → during a deploy | ✅ | `fleetlock.hold()`, raises `SuiteBusy` |
 | activation → during an activation | ✅ | the reconciler's per-node lock: *"another activation is in flight"* |
 | deploy → during an activation | ⚠️ partial | `fleet-state` fails at the **last role**; nothing is corrupted, but the deploy dies one task from the end |
 | activation → during a deploy | ✅ | `activate.wait_for_deploy()`, called by `bring_up()` — **waits** rather than refusing |
@@ -80,12 +80,12 @@ All four directions are guarded as of 2026-08-12. The last row was the gap that 
 rather than stalling silently on a wedged deploy.
 
 ⚠️ **It must not simply take the lock, and this is the subtle part.** A run already
-holds `fleet.lock` for its whole run (`runner._hold_fleet_lock`) and then activates once per
+holds `fleet.lock` for its whole run (`fleetlock.hold`) and then activates once per
 job — `runner.run()`'s `activate` callback is `cli.activate_profile`, which calls
 `bring_up()`. flock is per **open file description**, so a second acquire from the *same
 process* blocks against itself: an unconditional acquire would deadlock every run, and an
 unconditional *wait* would hang one just as dead. So the wait returns immediately when
-`runner._fleet_fd is not None` — i.e. when we are the holder.
+`fleetlock.held_by_us()` — i.e. when we are the holder.
 
 That skip is the whole reason the obvious one-line fix is wrong, so it has its own test
 (`test_wait_for_deploy_skips_when_this_process_holds_the_lock`).

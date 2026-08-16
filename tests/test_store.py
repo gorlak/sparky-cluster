@@ -1,6 +1,6 @@
 """Unit tests for the SQLite trend store (ADR-0012). Uses a tmp_path db."""
 
-from sparky.store import Row, Store
+from sparky.measure.record.store import Row, Store
 
 
 def test_record_and_read_back(tmp_path):
