@@ -45,6 +45,28 @@ correct *and* internally consistent — ~108 of those 120 belong to the vLLM CUD
 pool, not the visible process tree. The unit's `MemoryMax` (`124G`) is set
 generously because cgroup *does* count CUDA allocations against the unit.
 
+## Measured memory — the safety floor
+
+The per-model math below is *analytical* (`gmu × 121 −` weights), and the
+accounting quirk above is why it runs optimistic: GPU allocations don't show in RSS
+or the cgroup, so the estimate under-counts what the OS actually has left. On
+2026-08-15 that gap bit — qwen3.6 at `gmu 0.80` estimated fine, left ~6 GiB real
+host headroom, and a `soak` exhausted it into an unrecoverable OOM
+([ADR-0028](adr/0028-unified-memory-oom-headroom.md)). So the rule below is a safety
+property, not only a performance one:
+
+> **Keep ≥ ~10–12 GiB idle host headroom for any profile you intend to run a
+> regiment against.** The peak that OOMs is host-side and appears *under sustained
+> load*, not at idle: the full regiment crashed at ~6 GiB, ran clean at ≥ ~11 GiB,
+> and stayed flat at ~20 GiB.
+
+The *measured* numbers themselves — idle floor and peak-under-load per profile — are
+deliberately **not kept here**: measured data does not belong in prose, where it
+rots against the config that produced it. They live in the trend store, stamped with
+a config fingerprint and refreshed by `smoke` and `soak`, per
+[ADR-0028 §4](adr/0028-unified-memory-oom-headroom.md) — read them with `sparky`,
+not from a table someone has to hand-edit.
+
 ## Picking `gpu_memory_utilization`
 
 Decision procedure:
@@ -176,6 +198,12 @@ your chosen `max_model_len` at the concurrency you actually need. If vLLM
 refuses to start it'll emit `Based on the available memory, the estimated
 maximum model length is N` — **believe that number over the back-of-envelope
 budget**.
+
+The *measured* headroom numbers need no hand-update here: `smoke` and `soak` record
+them to the trend store, stamped with the config fingerprint, per
+[ADR-0028 §4](adr/0028-unified-memory-oom-headroom.md). A `gmu`, weights or container
+change moves the fingerprint, so the old numbers self-flag stale and the next run
+regenerates them.
 
 ## See also
 

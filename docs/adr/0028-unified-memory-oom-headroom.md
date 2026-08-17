@@ -129,6 +129,49 @@ rare livelock for frequent spurious failures. It is a **proposed follow-up**, ga
 testing vLLM engine startup and the harness under `overcommit_memory=2` on one node before
 the fleet. Recorded here so the option is not rediscovered from scratch.
 
+### 4. Track the measured headroom, and know when it is stale (deferred; design settled 2026-08-17)
+
+§2 makes headroom a *measured* quantity — "the largest transient is measured, not reasoned."
+But a measurement describes the configuration it was taken under, and it rots the instant
+that configuration moves: the `0.80 → 0.70` change in §1 silently orphaned **every** headroom,
+KV and throughput number ever recorded for this profile at 0.80. Nothing flagged them; a
+human had to remember. The OOM is what "a human had to remember" looks like when they don't.
+So the floor needs a custodian, and it is built by *harvesting*, not by adding an instrument:
+
+- **Harvest, don't instrument — the memory is already scraped.** `smoke` sees the idle
+  reservation on every activation; `soak` drives the load that produces the peak — the
+  **high-water mark**, the number this ADR is about. Neither reads memory itself:
+  `node-exporter` already scrapes unified memory to Prometheus on both nodes, so the peak is
+  `min_over_time(node_memory_MemAvailable_bytes[window])` over the regiment's window. The
+  harvest is **measure-tier** — `smoke` is `verify`, which may not reach the trend store
+  ([ADR-0027](0027-harness-module-boundaries.md)'s layering forbids it) — so a measure step
+  keyed to when each check ran does the recording.
+- **Fingerprint the resolved config, not the profile text.** A recorded metric carries
+  `(fingerprint, value)`, where `fingerprint = hash(model-folder manifest ‖ rendered engine
+  env, per-node fields normalised out)`. Two things this gets right that hashing the profile
+  YAML would not: the **model manifest** (sorted `name+size`, not the bytes) captures weight
+  identity, which the profile cannot — profiles pin no revision; and the **rendered env**
+  (`/opt/vllm/engines/<engine>.env`, `0644`) is hashed because deploy has already **flattened
+  every inherited default into it** — `vllm_image`, `gmu`, every serve flag. Hashing the raw
+  profile would silently miss a container bump a profile inherits from `group_vars`, the exact
+  bug that default is commented to warn about. No privileged read, no reconciler change. A
+  metric whose fingerprint ≠ the current one is **stale by construction**, so the `0.80 → 0.70`
+  orphaning above becomes automatic.
+- **The trend store is the home — no git reference.** The numbers are records like any other
+  metric: they land in the SQLite trend store (append-only, already the measurement home),
+  stamped with the fingerprint. Staleness, regression and safety are then *queries against it*
+  plus one constant — **stale** = no row at the current fingerprint; **regression** = drift vs
+  prior rows at the *same* fingerprint; **safety** = peak must clear the ADR floor
+  (~10–12 GiB). A committed git baseline was considered and dropped: the data is cheap to
+  regenerate, so a reviewed reference would be ceremony, and Prometheus already holds the raw
+  series. Prometheus is the *source*, the store is the *record* — the numbers leave the prose
+  docs either way.
+
+**Larger than memory, recorded here because memory motivates it.** The high-water mark is the
+first consumer, but fingerprint-and-store guards every metric `smoke` and `soak` emit. If it is
+built as general measurement-provenance it earns its own decision record; it is noted here
+because the headroom floor is where it is first needed and first pays for itself.
+
 ## Consequences
 
 - **`gmu` now carries a safety floor, not just a performance target.** A profile that maxes
@@ -142,6 +185,9 @@ the fleet. Recorded here so the option is not rediscovered from scratch.
   what made an unrecoverable livelock into a reboot-and-reactivate rather than a rescue. It
   is a backstop, not a licence to run at the edge.
 - **A latent, better failure mode is on the table** (strict overcommit) but unproven here.
+- **The measured floor has no custodian yet.** §2 declares headroom a measured quantity, but
+  nothing keeps the measurement fresh; until §4 lands, a config change orphans its numbers
+  silently and re-measuring rides on someone remembering. §4 is what makes staleness automatic.
 
 ## Alternatives considered
 
