@@ -169,7 +169,7 @@ def test_single_node_profile_runs_on_snoopy():
 
 def test_gmu_string_parses_to_float():
     e = topology.load_profile("minimax-m2.7-nvfp4").engines[0]
-    assert e.gpu_memory_utilization == 0.80
+    assert e.gpu_memory_utilization == 0.70
 
 
 def test_per_profile_vllm_image_override():
