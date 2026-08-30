@@ -41,7 +41,7 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
   values below were picked, with the per-model memory math and the GB10
   unified-memory accounting quirk.
 - [`serving-topology.md`](serving-topology.md) — the `serving_topology` schema
-  and how each engine kind (`vllm`, `ollama`) projects into the various roles.
+  and how the `vllm` engine kind projects into the various roles.
 
 ## Catalog
 

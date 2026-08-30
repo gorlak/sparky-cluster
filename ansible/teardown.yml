@@ -54,30 +54,6 @@
       changed_when: false
       failed_when: false
 
-    - name: Find Ollama unit files
-      ansible.builtin.find:
-        paths: /etc/systemd/system
-        patterns: ['ollama.service', 'ollama-*.service']
-      register: ollama_units
-
-    - name: Stop and disable each Ollama unit
-      ansible.builtin.systemd:
-        name: "{{ item.path | basename }}"
-        state: stopped
-        enabled: false
-      loop: "{{ ollama_units.files }}"
-      loop_control:
-        label: "{{ item.path | basename }}"
-      failed_when: false
-
-    - name: Remove each Ollama container
-      ansible.builtin.command: "docker rm -f {{ item.path | basename | regex_replace('\\.service$', '') }}"
-      loop: "{{ ollama_units.files }}"
-      loop_control:
-        label: "{{ item.path | basename }}"
-      changed_when: false
-      failed_when: false
-
 - name: Record that nothing is selected (sparky)
   hosts: head
   tasks:

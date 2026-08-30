@@ -11,11 +11,7 @@ before relying on the projection table. The full profile family
 big-shared TP=2; `qwen3-coder-nvfp4-*` and `qwen3.6-35b-nvfp4-*` are per-node single-engine; `empty` takes
 the cluster down to bare. Co-residency of vLLM engines on one node was attempted
 (retired `multi` profile) and abandoned — see decisions log + operational
-gotcha #8 (rank-asymmetric CUDA graphs under co-residency). The Ollama role is
-GPU-verified on GB10 but unused by any current profile — the role was **removed** by
-ADR-0018, since `deploy` is whole-fleet and no longer has a per-profile serving
-topology for it to project from; re-add it from git history if an Ollama engine is
-ever wanted. Talkie is deferred to a custom-runtime follow-on (see TODO.md).
+gotcha #8 (rank-asymmetric CUDA graphs under co-residency).
 
 ## What ADR-0018 changed
 
@@ -79,9 +75,9 @@ control panel point at the wrong place.
 
 ## The core abstraction: `serving_topology`
 
-A profile carries a list of **engines**. Two kinds: `vllm` (tensor-parallel
-across 1+ nodes, one OpenAI API) and `ollama` (standalone, single-node, many
-models — one server per engine; to run Ollama on both nodes, declare two engines).
+A profile carries a list of **engines**, each with a `kind:`. Today the only kind is
+`vllm` (tensor-parallel across 1+ nodes, one OpenAI API). The field exists so a second
+engine kind can be added without reshaping the schema — see ADR-0030 (SGLang).
 
 ```yaml
 serving_topology:
@@ -110,19 +106,12 @@ serving_topology:
     tensor_parallel_size: 1
     gpu_memory_utilization: 0.33
     max_model_len: 32768
-
-  # Ollama, persistent on sparky; hosts one or more GGUF models.
-  - name: fun
-    kind: ollama
-    nodes: [sparky]
-    port: 11434
-    models: [talkie-1930-13b-it]
 ```
 
 Derived facts (not authored): an engine's **rank** for a node = its index in
 `nodes`; the **API host** = `nodes[0]`; **master_addr** = `nodes[0]`'s ConnectX
 IP (today a global constant — becomes per-engine); unit/container name =
-`vllm-<name>` / `ollama-<name>`.
+`vllm-<name>`.
 
 
 ### `engine_env:` — when a flag is not enough
@@ -146,12 +135,11 @@ discovered at run time. This is the escape hatch, not the front door.
 | Service | Projection |
 |---|---|
 | **vllm role** | For each `kind: vllm` engine, for each node in `nodes`: template a `vllm-<name>.service` (rank = list index; API+`served_as` only on rank 0; `--headless` on ranks > 0). A host loops over every engine that lists it — so one host can run several units on distinct ports. |
-| **ollama role** | For each `kind: ollama` engine (single-node), on its node: prune stale `ollama-*` units, bring the `ollama-<name>` container up (persistent), wait for its API, and `ollama pull` each model (idempotent). |
-| **open-webui** | `OPENAI_API_BASE_URLS` = each vllm engine's `api_host_ip:port/v1`; `OPENAI_API_KEYS` matching; `OLLAMA_BASE_URLS` = each ollama engine's `node_ip:port`; `ENABLE_OLLAMA_API=true` if any. (PersistentConfig — see below.) |
+| **open-webui** | `OPENAI_API_BASE_URLS` = each vllm engine's `api_host_ip:port/v1`; `OPENAI_API_KEYS` matching. (PersistentConfig — see below.) |
 | **prometheus** | vLLM scrape targets = each vllm engine's `api_host_ip:port`. Prefer `file_sd` (Ansible writes a targets file) so adding/removing engines reloads without a Prometheus restart. Node/GPU exporter jobs are unchanged (per-host, topology-agnostic). |
 | **grafana** | Dashboard panels group by the `model_name` label vLLM already emits, so multiple engines render as separate series instead of aggregating. A removed model just leaves a gap (graceful). |
 | **control panel** | Reads the deployed state file (below): health-check each engine's API + each unit; P3 actions act per-engine ("restart minimax") or all. Replaces the hardcoded `localhost:8000` + fixed unit names. |
-| **teardown** | Stop/disable/rm every managed engine unit + Ollama. A deploy **prunes** stale units (below). |
+| **teardown** | Stop/disable/rm every managed engine unit. A deploy **prunes** stale units (below). |
 | **caddy** | Unaffected unless we later expose a model API route (`api.`); the landing page is hostname-stable. |
 
 ## Mechanisms
@@ -162,7 +150,7 @@ for the control panel (status + "which profile is live?" — also closes that op
 question in `control-interface.md`).
 
 **Pruning (the migration safety piece).** Managed units are namespaced
-`vllm-<name>` / `ollama-<name>`. After bringing up the desired set, each host
+`vllm-<name>`. After bringing up the desired set, each host
 enumerates its `vllm-*` / `ollama-*` units and stops+disables+removes any **not**
 in the desired set. This makes a profile switch converge to exactly the declared
 topology without orphaning a prior profile's engines — and only ever touches
@@ -176,7 +164,7 @@ ordering. During a migration an endpoint is briefly down for its load window
 (10–20 min for big models); Open WebUI shows that model unavailable, then
 self-heals on refetch. Benign.
 
-**Open WebUI PersistentConfig.** `OPENAI_API_BASE_URLS` / `OLLAMA_BASE_URLS` are
+**Open WebUI PersistentConfig.** `OPENAI_API_BASE_URLS` and `OPENAI_API_KEYS` are
 PersistentConfig: env seeds them once on a fresh data volume, then the DB wins and
 env is ignored on later starts (same gotcha as `webui_enable_signup`). To let each
 deploy re-assert connections, either set `ENABLE_PERSISTENT_CONFIG=false` (env

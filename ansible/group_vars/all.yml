@@ -275,13 +275,6 @@ vllm_shm_size: 32g
 vllm_restart_sec: 20
 vllm_start_timeout_sec: 1200
 
-# Ollama: the role was removed by ADR-0018 — `deploy` is whole-fleet and no longer has
-# a per-profile serving topology for an Ollama engine to project from, and no profile
-# had declared one since the role was built. It was GPU-verified on GB10/sm_121
-# (CUDA v13, 100% offload, co-resident with vLLM); recover it from git history if an
-# Ollama engine is ever wanted, and give it the same env-file + template-unit shape the
-# vLLM engines now have. teardown.yml still suites any leftover `ollama-*` unit.
-
 # Metrics stack (P2) — see docs/control-interface.md. Exporters run on every node;
 # Prometheus + Grafana on the head. (GB10 reports no GPU memory via nvidia-smi —
 # that's the unified memory, covered by node-exporter.)
@@ -307,7 +300,7 @@ grafana_image: grafana/grafana@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b
 grafana_dir: /opt/grafana
 grafana_port: 3000
 
-# Open WebUI front-end (sparky, host networking). Its connections (OpenAI/Ollama
+# Open WebUI front-end (sparky, host networking). Its connections (OpenAI
 # endpoints) are generated from the profile's serving_topology by the open-webui
 # role — no per-endpoint var here. Kept here (not role defaults) so teardown.yml
 # can reach them too. Binds an INTERNAL port (8080) — Caddy fronts it at
