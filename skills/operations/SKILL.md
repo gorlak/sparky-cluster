@@ -125,6 +125,59 @@ print("go" if s["ok"] else ("wait — "+s["phase"] if s["phase"]=="loading" else
 Curl them directly if the CLI isn't handy — note `/admin` is behind basic_auth, but the
 panel itself on localhost is not: `curl -s 127.0.0.1:8088/status.json`.
 
+## Watching a deploy finish, then continuing — DRIVE THE WHOLE CHAIN
+
+**`deploy` is sudo — only the operator can run it, so "I'm deploying" is a CUE TO ACT, not a status
+to acknowledge.** The mental model (operator, 2026-08-30): *if you could deploy yourself, you'd
+obviously follow it with work* — so the moment they say they are deploying, **default to lining up
+and running the follow-up**, unless told not to. Even a bare "deploying now" carries the implied
+"…and then verify + exercise it." Don't wait to be asked; don't stop at "deploy finished."
+
+**Follow up on WHAT IS DIFFERENT about that deploy, not a generic health check.** Diff the intent
+against what a deploy changes and exercise exactly that:
+- a **new/changed model** → `activate` it, read the smoke gate, then *exercise the capability that
+  motivated it* (a real chat, a tool call, vision), watching memory (ADR-0028);
+- a **changed serve flag** (gmu, `max_model_len`, a parser) → confirm it took **live**
+  (`curl :8000/v1/models`, the engine journal), then re-run the gate;
+- a **container bump** → re-verify the models it touched.
+
+When the operator hands you a fuller chain (*"monitor it, re-activate, test, stage when done"*),
+that is a **chain, not a checkpoint** — run it to the end autonomously. The failure this section
+exists to stop (twice on 2026-08-30): launching a watcher and then **ending the turn** — "standing
+by" — so the operator comes back to a finished deploy and a stalled agent.
+
+**The rule: never yield mid-chain.** Launch the long step, and when it completes, immediately do
+the *next* thing the request named, and the next, until the whole request is satisfied. A
+completion notification is a cue to **continue**, never to report-and-wait. If there is genuine
+wait time, fill it with the request's other work (write the doc, prep the next profile) — do not
+sit idle.
+
+**Chain the follow-up INTO the background command** so one notification covers a whole step:
+
+```bash
+# ONE background op: apply the change AND verify it, so the notification means "done + checked"
+./sparky.sh activate <profile>; RC=$?
+echo "ACTIVATE_EXIT=$RC"
+curl -s http://10.0.200.12:8000/v1/models | grep -oE '"max_model_len":[0-9]+'
+python3 -c "import json;d=json.load(open('/opt/cluster/last-smoke.json'));print('smoke ok:',d['ok'])"
+```
+
+**Completion signals — robust, cluster-specific (NOT `pgrep`):**
+
+| step | "it's done" when | confirm clean |
+|---|---|---|
+| **deploy** | `flock -n /opt/cluster/fleet.lock -c true` **succeeds** (the deploy holds this flock for the whole playbook, so lock-free = finished) | a fresh `PLAY RECAP … failed=0` in `/opt/cluster/ansible.log` |
+| **activate** | `./sparky.sh activate` **exits** (it blocks until model-ready + smoke, then returns its code) | `last-smoke.json` `ok: true` |
+| **a config change is live** | `curl :8000/v1/models` shows the new value | a deploy only re-renders (`pending`); the **re-activate** is what applies it |
+
+**Pitfalls that caused the false waits:**
+- **Never `pgrep -f "<pattern>"` when the pattern appears in the monitor's own command line** — it
+  matches *itself* and the loop never breaks (a 60-min phantom wait, 2026-08-30). Use the
+  `fleet.lock` / `PLAY RECAP` signals above.
+- Bare foreground `sleep` is blocked by the harness. Put it inside a condition loop
+  (`until flock -n /opt/cluster/fleet.lock -c true; do sleep 15; done`) and run that with
+  `run_in_background: true` when it may run longer than ~2 min — then act on the completion.
+
 ## Did the last activation pass its gate?
 
 ```bash
