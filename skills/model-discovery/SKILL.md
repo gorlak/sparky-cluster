@@ -5,30 +5,36 @@ description: Find new models or quantizations that fit this cluster — search H
 
 ## Priority tiers — what this cluster is FOR
 
-Two GB10 nodes were bought and wired with 200 Gbit RoCE **specifically to run one model
-across both, dedicated** — maximum intelligence and speed, both machines fully committed.
-Rank every sweep by these tiers:
+Two GB10 nodes were bought and wired with 200 Gbit RoCE to run **one model across both,
+dedicated**, and the fleet serves exactly one at a time (one front port fleet-wide, ADR-0018).
+But we **rank per capability, not one flagship** (ADR-0029): the fleet is a *set* of
+best-in-track profiles, and `activate` picks which is live. Ask the ranking question **once per
+track**, and judge a candidate against the track it is *for*:
 
-- **Tier 1 — the point.** The **smartest model that fits TP=2 across both nodes and still
-  decodes fast enough to talk to** — multimodal too, when the container supports its vision
-  path. This flagship slot is the primary job. "Fully committed" means filling the ~215 GiB
-  two-node budget (~108 GiB/node) with the best weights — a candidate that only fits by
-  leaving a node idle is *under-using the hardware*.
+- **General / reasoning — the default track.** The **smartest model that fits TP=2 across both
+  nodes and still decodes fast enough to talk to.** "Fully committed" means filling the ~215 GiB
+  two-node budget (~108 GiB/node) with the best weights — a candidate that only fits by leaving a
+  node idle is *under-using the hardware*.
+- **Multimodal / vision — its own track.** Ranked separately. Vision is a **nice-to-have** for
+  the general and coding tracks, never a requirement, *because it is sourced here.* Do not score a
+  strong text model down for lacking vision — that is a different track's question.
+- **Coding — its own track.** Ranked on coding-specific evidence (ADR-0024's harness), not folded
+  into general intelligence.
+- **Secondary / experimental.** Single-node (`-single`, on snoopy by design) and dev-headroom
+  profiles exist only to spare a node for experimentation. **"Frees a node" is a cost here, not a
+  feature.**
 
-  ⚠️ **But "fills the box" is a CAPACITY test, not a speed one, and reading it as both cost
-  a bring-up on 2026-08-11.** `mistral-medium-3.5-128b` — dense, official FP8, 62 GiB/node,
-  a textbook "fully committed" fit — loaded and served perfectly at **3.44 tok/s**. Not a
-  misconfiguration: 84% of its theoretical ceiling. See the arithmetic below and **do it
-  before proposing anything.**
-- **Tier 2 — secondary / experimental.** Single-node (`-single`, on snoopy by design) and
-  dev-headroom profiles exist only to spare a node for experimentation. **"Frees a node" is a cost here,
-  not a feature.**
+⚠️ **"Fills the box" is a CAPACITY test, not a speed one, and reading it as both cost a bring-up
+on 2026-08-11.** `mistral-medium-3.5-128b` — dense, official FP8, 62 GiB/node, a textbook "fully
+committed" fit — loaded and served perfectly at **3.44 tok/s**. Not a misconfiguration: 84% of its
+theoretical ceiling. The decode-arithmetic gate below applies **within every track** — a dense
+model is a write-off for the *general* track however good, exactly as it is for the flagship. **Do
+the arithmetic before proposing anything.**
 
-So a sweep leads with the Tier-1 question: *is the current flagship still the smartest
-fast-enough model that fills both nodes?* Everything else is secondary. When Tier-1
-candidates are close on intelligence+speed, **vendor/region diversity is a tiebreaker** —
-the suite is currently all-Chinese, so a strong European option (Mistral especially) or
-other diversity is a plus, all else near-equal.
+So a sweep leads with the track's ranking question: *is the current best-in-track still the
+smartest fast-enough model for it?* When candidates are close on intelligence+speed within a
+track, **vendor/region diversity is a tiebreaker** — the suite is currently all-Chinese, so a
+strong European (Mistral) or US (IBM/Granite) option is a plus, all else near-equal.
 
 ## Decode speed is ARITHMETIC — do it before you propose a model
 
@@ -217,8 +223,14 @@ Using the searches above (and vLLM release notes / leaderboards for context), lo
 2. **Newer generations of what we run:** successor models from the same family (Step-3.5 →
    3.7; MiniMax-M2.7 → M3; a newer Qwen), each taken at its best-fitting quant.
 
-3. **Strong reasoning models with standard vLLM support:** Prioritize models that
-   work with the stock NVIDIA vLLM image — no custom forks, no special patches.
+3. **vLLM support — stock is preferred, not required (ADR-0029).** A model that runs on a stock
+   `nvcr.io/nvidia/vllm` tag is the lowest-effort path and still the default. But a model needing
+   an image element **we can build ourselves** — a transformers bump, a parser, a grammar, a
+   kernel — is *in range*, not a reject: we already ship a derived image (`26.07-xgrammar-fix`).
+   The gate is **buildable-by-us + front-loaded confidence** (a config that names the arch, a vLLM
+   model file that supports it, a GB10 report that ran it), not "stock only." What is still out:
+   an arch **no released vLLM supports at all** (that is a `candidates/` blocker with a *clears
+   when*), or anything requiring **Ray** (our multinode is Ray-free, ADR-0003).
 
 4. **SM 12.1 compatibility:** Must work on GB10 Blackwell. Models requiring
    CUTLASS kernels need vLLM 26.04+. Flag any that are known to have issues.

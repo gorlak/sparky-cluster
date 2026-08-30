@@ -81,18 +81,26 @@ Check for:
   for memory math, not active param count.
 - `architectures` — confirms the model type and what vLLM flags apply.
 
-### 3. Verify runtime dependencies exist in the container
+### 3. Verify runtime dependencies — and if they're missing, decide whether to BUILD (ADR-0029)
 
-Before writing any unit files, confirm the container has what you need:
+Before writing any unit files, confirm what the container has (arch support, vLLM version,
+transformers version, parsers):
 
 ```bash
-sudo docker run --rm nvcr.io/nvidia/vllm:26.04-py3 python3 -c "import vllm; print(vllm.__version__)"
-# Check for specific features (e.g., Ray):
-sudo docker run --rm nvcr.io/nvidia/vllm:26.04-py3 python3 -c "import ray" 2>&1
+sudo docker run --rm nvcr.io/nvidia/vllm:26.07-py3 python3 -c "import vllm, transformers; print(vllm.__version__, transformers.__version__)"
+# Does it know the model's architecture? (substitute the config.json `architectures` value)
+sudo docker run --rm nvcr.io/nvidia/vllm:26.07-py3 python3 -c "from vllm import ModelRegistry; print('Glm4MoeLiteForCausalLM' in ModelRegistry.get_supported_archs())"
 ```
 
-Lesson: vLLM 0.19 dropped Ray entirely. A 30-second container check would
-have caught this before writing Ray unit files.
+A missing dependency is **not** an automatic reject (ADR-0029). Sort what's missing into two bins:
+
+- **Buildable by us → in range.** A newer `transformers`, a parser, a grammar, a kernel — add it
+  to a derived image (the `26.07-xgrammar-fix` template) and open a `docs/upgrades/container-*`
+  tracker with a WAR register. Front-load confidence first: the arch in `config.json`, a vLLM model
+  file that supports it, a GB10 forum report that served it. Confidence, not certainty.
+- **Not ours to fix → a `candidates/` blocker.** An arch **no released vLLM supports at all**, or
+  anything requiring **Ray** (our multinode is Ray-free — vLLM 0.19 dropped it; a 30-second check
+  catches this before you write Ray unit files). File it with a falsifiable *clears when*.
 
 ### 4. Memory math — `gpu_memory_utilization` is a split, not a baseline
 

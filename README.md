@@ -308,6 +308,12 @@ rather than fleet-wide — which is what keeps a bad image from taking the whole
 it. Nothing straddles two containers today; the mechanism is there for when something
 must.
 
+**Building our own image is policy, not a last resort (ADR-0029).** A stock
+`nvcr.io/nvidia/vllm` tag is the lowest-effort path and the default, but "stock only" is not a
+gate: the `xgrammar-fix` derived image is the template, and a model needing an element we can
+build ourselves — a transformers bump, a parser, a kernel — is in range. Owning our containers
+keeps the cluster near the bleeding edge; the gate is *buildable-by-us*, not *already-shipped*.
+
 | Container | Runs | Why |
 |---|---|---|
 | **26.07-py3** (vLLM 0.24.0, NCCL 2.30.7) — via the derived `dgx-spark/vllm:26.07-xgrammar-fix` | **every profile** | current. The derived image patches xgrammar (DEF-0010) — NVIDIA shipped it *below* vLLM's own declared minimum, breaking all tool-calling |
