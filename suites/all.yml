@@ -40,6 +40,12 @@ jobs:
   # after four hours of Qwen3-VL is how a night gets wasted.
   - profile: qwen3.6-35b-a3b-nvfp4
   - profile: qwen3-coder-next-nvfp4
+  # glm-4.7-flash (~30 GiB/node bf16, cheapest) joined 2026-08-27 — general/coding track,
+  # ADR-0029. Runs on the existing image (transformers 5.6.1 recognises glm4_moe_lite). It is
+  # in the suite on the same basis mistral-small-4 was: it must have ONE clean attended
+  # activation FIRST. Until that lands, do not launch `all` — its bring-up is a manual
+  # `activate glm-4.7-flash`, not a suite run.
+  - profile: glm-4.7-flash
   # `covers: allowlist` counts ACTIVATABLE profiles, so this list moves whenever a profile
   # is parked or unparked — that is the mechanism keeping it honest, not a chore.
   # 2026-08-11/12: `step-3.7-flash-nvfp4` joined when DEF-0006 cleared and left again the

@@ -1,0 +1,60 @@
+---
+# glm-4.7-flash — GLM-4.7-Flash (Z.ai), the general/coding track (ADR-0029). Text-only;
+# vision is sourced on its own track, so its absence is not a mark against it here.
+#
+# WHY IT IS HERE. A 30B-A3B MoE (`Glm4MoeLiteForCausalLM`) — the same fast shape as
+# `qwen3.6-35b-a3b` — sourced for GLM's agentic/coding strength. See the candidate sheet
+# docs/models/glm-4.7-flash.md and the sweep scouting-reports/2026-08-17-*.
+#
+# CONTAINER — the stock-derived image we already run, NOT a new build. The bring-up
+# investigation (docs/upgrades/container-glm-4.7-flash-tf5.md) found all three pieces
+# already present in `26.07-xgrammar-fix`:
+#   - vLLM 0.24.0 registers Glm4MoeLiteForCausalLM (probed true, 2026-08-27);
+#   - the image already runs transformers 5 (vLLM 0.24.0 removed v4 — see the image's
+#     own build assert), which is what the arch requires (vLLM #34098);
+#   - the glm47/glm45 parsers shipped in 0.24.0's streaming-parser engine.
+# So GLM-4.7-Flash rides the existing image. If the image's transformers 5.x turns out too
+# old to recognise the `glm4_moe_lite` config, the fallback is the derived image the tracker
+# describes — but the evidence says it is not needed.
+#
+# BF16 FIRST, deliberately. The community NVFP4 (GadflyII) is uncalibrated; bf16 removes the
+# quant as a variable on a brand-new arch's first bring-up (~30 GiB/node at TP=2, huge room).
+# Promote to a `glm-4.7-flash-nvfp4` profile and A/B once bf16 is clean.
+#
+# gmu 0.70, not 0.80 — ADR-0028. vLLM reserves `gmu x 121 GiB` regardless of weight size, so
+# 0.80 leaves the same ~6 GiB host headroom that OOM-hard-reset both nodes; 0.70 hands it back
+# (~18-20 GiB idle). At 0.70 KV still gets ~55 GiB/node here — far more than max_model_len needs.
+#
+# PARSERS ARE PROVEN, NOT GUESSED. `glm47`/`glm45` shipped in vLLM 0.24.0 and a GB10 forum
+# user served this exact model with them (docs/models/glm-4.7-flash.md). The forum's
+# single-node `-tp 1`, Ray backend and `RAY_memory_usage_threshold` workaround are NOT ours —
+# we serve native TP=2, no Ray (ADR-0003).
+# ONBOARDED 2026-08-30 — brought up on the running `26.07-xgrammar-fix` image with NO container
+# work: transformers 5.6.1 recognises `glm4_moe_lite`, vLLM 0.24.0 registers the arch, and the
+# `glm47`/`glm45` parsers ship in 0.24.0 (docs/upgrades/container-glm-4.7-flash-tf5.md was the
+# fallback, not needed). First activation was attended and clean — smoke passed
+# (ready/tool-shape 200/quality), tool-calling (`glm47`) and reasoning (`glm45`) verified, memory
+# held ~18-24 GiB free at gmu 0.70. Heavy reasoner: give requests a generous `max_tokens`.
+profile_name: glm-4.7-flash
+hf_repo: zai-org/GLM-4.7-Flash
+archetypes: [big-shared, tool-calling]
+vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010); already carries transformers 5
+serving_topology:
+  - name: glm-4.7-flash
+    kind: vllm
+    model: GLM-4.7-Flash
+    served_as: glm-4.7-flash
+    gpu_memory_utilization: "0.70"
+    # 202752 = the model's NATIVE context (config `max_position_embeddings`, no YaRN). Raised
+    # 2026-08-30 from a conservative 131072 first-bring-up: GLM-4.7-Flash is a heavy reasoner
+    # (it can spend a full budget thinking before it answers), so it wants the full window. KV
+    # at gmu 0.70 holds ~1.0M tokens = ~5x this window — ample. The "1M context" the card cites
+    # needs a `rope_scaling` YaRN block; that is a separate, deliberate step, not this.
+    max_model_len: 202752
+    head_extra_args:
+      - --enable-chunked-prefill
+      - --enable-auto-tool-choice
+      - --tool-call-parser glm47
+      - --reasoning-parser glm45
+    worker_extra_args:
+      - --enable-chunked-prefill
