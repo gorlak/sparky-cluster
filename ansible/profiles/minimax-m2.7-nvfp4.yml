@@ -27,8 +27,21 @@ serving_topology:
     kind: vllm
     model: MiniMax-M2.7-NVFP4
     served_as: minimax-m2.7-nvfp4
-    gpu_memory_utilization: "0.80"
-    max_model_len: 131072
+    # gmu 0.80 -> 0.70 (2026-08-30, ADR-0028). At 0.80 minimax measured ~11 GiB idle headroom —
+    # right at the ~10-12 GiB floor the qwen3.6 OOM established, and vLLM reserves `gmu x 121`
+    # regardless of quant. It ran the regiment clean at 0.80, but the margin is thinner than a
+    # sustained heavy-reasoner soak deserves; 0.70 hands ~12 GiB back — measured 23-26 GiB idle at
+    # 0.70 (2026-08-30) against the ~11 at 0.80.
+    gpu_memory_utilization: "0.70"
+    # 131072 -> 196608 (2026-08-30) = the model's NATIVE context (`max_position_embeddings`).
+    # MiniMax-M2.7 is an EXTREME reasoner — it reasons past the eval's cap on 32% of items, and a
+    # 6000-token reply here spent the whole budget thinking with no answer emitted — so a window
+    # below native truncates its reasoning+answer outright. Measured 2026-08-30: at gmu 0.70 the KV
+    # pool holds 237,936 tokens = ~1.21x this window. Tight, and the deliberate cost of pairing
+    # 0.70's host headroom with the native context — the gmu drop came out of KV. Fine for a heavy
+    # reasoner served to a few users; gmu 0.75 would buy ~1.45x KV at ~15 GiB headroom if
+    # concurrency ever matters (still above the ADR-0028 floor).
+    max_model_len: 196608
     head_extra_args:
       - --enable-chunked-prefill
       - --reasoning-parser deepseek_r1
