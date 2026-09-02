@@ -55,7 +55,7 @@ E.g. NVIDIA ships `26.07-py3`, or Open WebUI releases a new version.
    `ansible/roles/images/files/<context>/Dockerfile` `FROM` line — this is a **second
    place the same digest lives** (the base pull + the Dockerfile base); they must move
    together. (ADR-0013.)
-4. **Per-profile `vllm_image:`.** Point each profile that should run the new image at
+4. **Per-profile `image:`.** Point each profile that should run the new image at
    it (`ansible/profiles/*.yml`). Leave AWQ/Marlin-MoE profiles on 26.04 — see DEF-0004.
    The image is part of each engine's `ENGINE_SPEC_HASH`, so a bump moves the hash on
    **both** ranks of a TP=2 engine and they restart as a matched pair.
@@ -93,7 +93,7 @@ The mechanical steps are in the README ("Adding models / profiles"); the fan-out
 2. **Fit check first:** the [model-evaluation skill](../skills/model-evaluation/SKILL.md)
    — memory math, `config.json`, never `--quantization` on a self-declaring checkpoint.
 3. **Profile:** copy the nearest-shape `ansible/profiles/<name>.yml` and edit
-   `serving_topology` + `vllm_image`. Confirm its image is in `container_images`.
+   `serving_topology` + `image`. Confirm its image is in `container_images`.
    Three fields are **required and enforced by `lint`** (all added 2026-08-10):
    - **the name itself** is the lowercased canonical HF model name, **copied verbatim**,
      plus at most one suffix from `topology.VARIANT_SUFFIXES` when the same weights are

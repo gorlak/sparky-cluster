@@ -38,8 +38,11 @@ services:
     # nvidia-smi then exits 255 forever and every scrape fails silently (the exporter
     # itself stays "up", so Prometheus sees a healthy target emitting nothing but
     # nvidia_smi_failed_scrapes_total). That is the README's documented gotcha, and a
-    # deploy runs daemon-reload, so it fires routinely. Sharing the host cgroup
-    # namespace is the fix — the same reason the vLLM units pass --cgroupns=host.
+    # deploy runs daemon-reload, so it fires routinely. Sharing the host cgroup namespace
+    # was meant to prevent it (the same reason the vLLM units pass --cgroupns=host) —
+    # but empirically it does NOT hold (found 2026-08-30, 90k+ failed scrapes deep). What
+    # actually recovers it is the exporters role FORCE-RECREATING this container after the
+    # deploy's daemon-reloads (see tasks/main.yml); this stays as belt-and-suspenders.
     cgroup: host
     # Pin query fields — GB10's nvidia-smi exposes clocks_event_reasons_* "[us]"
     # fields that crash the exporter (invalid metric names). See group_vars.

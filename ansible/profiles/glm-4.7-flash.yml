@@ -23,7 +23,7 @@
 #
 # gmu 0.70, not 0.80 — ADR-0028. vLLM reserves `gmu x 121 GiB` regardless of weight size, so
 # 0.80 leaves the same ~6 GiB host headroom that OOM-hard-reset both nodes; 0.70 hands it back
-# (~18-20 GiB idle). At 0.70 KV still gets ~55 GiB/node here — far more than max_model_len needs.
+# (~18-20 GiB idle). At 0.70 KV still gets ~55 GiB/node here — far more than context_length needs.
 #
 # PARSERS ARE PROVEN, NOT GUESSED. `glm47`/`glm45` shipped in vLLM 0.24.0 and a GB10 forum
 # user served this exact model with them (docs/models/glm-4.7-flash.md). The forum's
@@ -38,19 +38,19 @@
 profile_name: glm-4.7-flash
 hf_repo: zai-org/GLM-4.7-Flash
 archetypes: [big-shared, tool-calling]
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010); already carries transformers 5
+image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010); already carries transformers 5
 serving_topology:
   - name: glm-4.7-flash
     kind: vllm
     model: GLM-4.7-Flash
     served_as: glm-4.7-flash
-    gpu_memory_utilization: "0.70"
+    memory_fraction: "0.70"
     # 202752 = the model's NATIVE context (config `max_position_embeddings`, no YaRN). Raised
     # 2026-08-30 from a conservative 131072 first-bring-up: GLM-4.7-Flash is a heavy reasoner
     # (it can spend a full budget thinking before it answers), so it wants the full window. KV
     # at gmu 0.70 holds ~1.0M tokens = ~5x this window — ample. The "1M context" the card cites
     # needs a `rope_scaling` YaRN block; that is a separate, deliberate step, not this.
-    max_model_len: 202752
+    context_length: 202752
     head_extra_args:
       - --enable-chunked-prefill
       - --enable-auto-tool-choice

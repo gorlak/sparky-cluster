@@ -164,14 +164,30 @@ def test_a_second_run_refuses_to_start(tmp_path):
     runner.acquire(lock)          # released, so it is available again
 
 
-def test_a_stale_lock_from_a_killed_run_expires(tmp_path):
-    """Otherwise one SIGKILL blocks every future suite until someone finds the file."""
+def test_a_stale_lock_from_a_killed_run_is_reclaimed(tmp_path):
+    """A SIGKILLed runner's release() never runs, so its lock lingers naming a dead pid. The
+    next run must reclaim it AT ONCE — the ADR-0009 idea, the run lock's version: the holder's
+    DEATH makes the lock stale, not a clock. (The footgun that had me hand-`rm` a 2-minute-old
+    lock, because the age threshold still thought it was live.)"""
+    import os, subprocess
     lock = tmp_path / "runner.lock"
-    runner.acquire(lock)
+    dead = subprocess.Popen(["true"]); dead.wait()       # a real pid that is now gone
+    lock.write_text(f"pid={dead.pid} started=1\n")        # a YOUNG lock, but the holder is dead
+    runner.acquire(lock)                                  # must NOT raise — reclaim the stale lock
+    assert f"pid={os.getpid()}" in lock.read_text()       # ...and this process now owns it
+
+
+def test_a_live_run_is_never_reclaimed_by_age(tmp_path):
+    """The mirror image — and the latent bug the old clock-based check carried. The `all`
+    suite runs ~7h, so ANY age threshold would let a second suite steal its lock mid-run and
+    interleave two measurement passes. A live holder is refused no matter how old it looks."""
     import os, time
-    old = time.time() - 7 * 3600
-    os.utime(lock, (old, old))
-    runner.acquire(lock, stale_after=6 * 3600)      # must not raise
+    lock = tmp_path / "runner.lock"
+    lock.write_text(f"pid={os.getpid()} started=1\n")     # this process is alive
+    old = time.time() - 30 * 3600
+    os.utime(lock, (old, old))                             # ...and the lock looks 30h old
+    with pytest.raises(runner.SuiteBusy):
+        runner.acquire(lock)
 
 
 def test_release_is_safe_when_the_lock_is_already_gone(tmp_path):

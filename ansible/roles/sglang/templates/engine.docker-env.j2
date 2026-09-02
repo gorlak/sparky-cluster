@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+# Per-engine CONTAINER environment for {{ engine.name }} ({{ engine._profile }}), served
+# by SGLang. Same mechanism as the vLLM docker-env: a profile's `engine_env:` map, passed
+# with docker --env-file so the unit template stays fixed while the per-engine surface
+# lives entirely in generated files.
+#
+# For SGLang on GB10 this is where the proven-recipe env rides — e.g. LD_PRELOAD of the
+# host NCCL, HF_HUB_OFFLINE, SGLANG_SANITIZE_NAN_LOGITS — none of which is expressible as
+# a serve flag.
+#
+# ALWAYS RENDERED, even when empty: docker fails on a missing --env-file, and an engine
+# that declares no env is the common case.
+{% for key, value in (engine.engine_env | default({})).items() %}
+{{ key }}={{ value }}
+{% endfor %}

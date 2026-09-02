@@ -2,16 +2,15 @@
 
 **Last updated:** 2026-08-30
 **Hardware:** sparky + snoopy — GB10 Blackwell (SM 12.1), 128 GiB unified memory each (121 GiB usable), ConnectX-7 200 Gbit RoCE
-**Installed quant:** none — weights not held
-**Target quant:** NVFP4 (community), ~62 GiB/node at TP2 — or FP8 (official), ~87 GiB/node
+**Installed quant:** NVFP4 — `RadixArk/Qwen3.8-Flash-Next-NVFP4` staged in the inbox (~126 GiB on disk)
+**Target quant:** NVFP4 (`RadixArk`, the proven-recipe checkpoint), ~62 GiB/node at TP2
 
-> **Blocked on:** **no vLLM path on GB10.** vLLM has *day-0* support on x86/AMD, but on **SM121
-> (GB10) the arm64 image does not register `Qwen4ExpForConditionalGeneration`**, and even patched,
-> the QSA sparse-decode resolver falls back to an FA4 CUTE path that **fails in warmup**. The only
-> proven DGX-Spark path today is **SGLang**.
-> **Clears when — either of:** (a) a vLLM image we can run registers `qwen4_exp` **and** the SM121
-> QSA path works (upstream — plausible, since x86 is day-0 — or a derived-image patch of ours); or
-> (b) we deliberately adopt **SGLang as a second engine kind** (an ADR-scale decision, below).
+> **Blocker RESOLVED (2026-08-30) — path (b): SGLang adopted as a second engine kind
+> ([ADR-0030](../../adr/0030-sglang-second-engine-kind.md)).** The `qwen3.8-flash-next-nvfp4`
+> profile (`kind: sglang`), the SM121-QSA derived image
+> (`roles/images/files/sglang-qwen38fn-sm121/`), and the weights are staged; what remains is the
+> deploy + the attended TP=2 bring-up. vLLM path (a) — an arm64 image registering `qwen4_exp` with a
+> working SM121 QSA path — stays the longer-term option if it ever lands, but is not the path taken.
 
 **Track:** general **and** multimodal at once (ADR-0029) — a 125B-A6B *vision* MoE. If served, it is
 a candidate to supersede **both** `qwen3.6-35b-a3b` (general) **and** `qwen3-vl-235b` (vision), and
@@ -37,7 +36,8 @@ it would narrow `glm-4.7-flash` to the coding track. That breadth is why it is w
 |---|---|---|---|---|
 | BF16 | `Qwen/Qwen3.8-Flash-Next` | 360.9 GB | ~168 GiB | ❌ Overflows 121 GiB/node |
 | **FP8** | **`Qwen/…-FP8`** (official) | **186.5 GB** | **~87 GiB** | ✅ Fits, fully-committed, best quality |
-| **NVFP4** | **`lovedheart/…-NVFP4-FP8`** (community) | **123.5 GiB** | **~62 GiB** | ✅ Fits with room |
+| **NVFP4** ✅ chosen | **`RadixArk/Qwen3.8-Flash-Next-NVFP4`** (the checkpoint BOTH proven 2×Spark recipes load) | **~135 GB (126 GiB)** | **~62 GiB** | ✅ Fits with room |
+| ~~NVFP4-FP8~~ | ~~`lovedheart/…-NVFP4-FP8`~~ — a *different*, mixed NVFP4+FP8 checkpoint; **neither** proven recipe uses it. Do not use. | 123.5 GiB | ~62 GiB | — |
 | uint3 | `HamboneLabs-AI/…-uint3-g64` (community, **GB10-tagged**) | 51.5 GiB | ~26 GiB | ✅ Sub-4-bit, huge room |
 
 **Note the 51B n-gram table offloads.** With `--ple-offload-embedding` it sits in **host RAM (~13

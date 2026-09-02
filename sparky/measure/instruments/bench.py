@@ -66,6 +66,21 @@ SCENARIOS: dict[str, Scenario] = {
                              requests=32, concurrency=8, shared_prefix_tokens=1024),
 }
 
+# Prefill: TTFT with the output pinned to a SINGLE token, so the timing is almost entirely the
+# prompt's INGESTION, swept across growing depths. The `latency` scenario measures TTFT at a
+# fixed 512-token prompt — right for a chat turn, but attention is O(n^2), so it says nothing
+# about how long the model sits before answering a 64k-token document. That curve is the real
+# long-context cost, and it is what `context_length` (a number we choose and never validate)
+# actually charges. A distinct prompt per request (run_scenario's seed=i) keeps prefix caching
+# from turning a repeat prefill into a cache lookup and reporting a fictitious TTFT. Deepest is
+# 64k, which every current profile's context comfortably holds; a future sub-64k-context model
+# would 400 on it (a known edge, not yet worth the guard). Not in the interactive default —
+# a 64k prefill is seconds of work — but the full sweep runs them (cli `_bench`).
+_PREFILL_DEPTHS = {"prefill@4k": 4096, "prefill@16k": 16384, "prefill@64k": 65536}
+for _name, _depth in _PREFILL_DEPTHS.items():
+    SCENARIOS[_name] = Scenario(_name, prompt_tokens=_depth, max_tokens=1,
+                                requests=2, concurrency=1, warmup=1)
+
 
 @dataclass
 class RequestResult:
@@ -85,6 +100,7 @@ class ScenarioResult:
     scenario: str
     results: list[RequestResult]
     wall_s: float
+    prompt_tokens: int = 0     # the scenario's prompt size, so prefill rate is self-describing
     # The activation this ran against, sampled BEFORE and AFTER. A number is only
     # meaningful if one engine produced all of it, and several things move the fleet
     # underneath a run: scale-to-zero unloading an idle model (ADR-0022), a deploy's
@@ -123,12 +139,20 @@ class ScenarioResult:
         # speed a user sees once generation starts.
         tpots = [((r.total_s * 1000) - r.ttft_ms) / max(1, r.output_tokens - 1)
                  for r in good if r.output_tokens > 1]
+        ttft_mean = statistics.fmean(ttfts)
         return {
             "output_toks_s": out_tokens / self.wall_s if self.wall_s else None,
             "total_toks_s": out_tokens / self.wall_s if self.wall_s else None,
             "requests_s": len(good) / self.wall_s if self.wall_s else None,
-            "ttft_mean_ms": statistics.fmean(ttfts),
+            "ttft_mean_ms": ttft_mean,
             "ttft_p99_ms": _p99(ttfts),
+            # Prefill throughput: prompt tokens ingested per second (= prompt_tokens / TTFT).
+            # This is the length-NORMALISED prefill speed — TTFT alone conflates the ingestion
+            # rate with the prompt size, so it cannot be compared across depths. Computed for
+            # every scenario; the scoreboard reads it from the deepest prefill sweep, where
+            # decode is a single token and TTFT is almost pure prefill.
+            "prefill_toks_s": (self.prompt_tokens / (ttft_mean / 1000)
+                               if self.prompt_tokens and ttft_mean else None),
             "tpot_mean_ms": statistics.fmean(tpots) if tpots else None,
             "tpot_p99_ms": _p99(tpots) if tpots else None,
             "itl_mean_ms": statistics.fmean(itls) if itls else None,
@@ -238,6 +262,7 @@ def run_scenario(client, served_as: str, scenario: Scenario, *, model_dir: str =
             if on_progress:
                 on_progress(len(results), scenario.requests)
     return ScenarioResult(scenario.name, results, time.monotonic() - started,
+                          prompt_tokens=scenario.prompt_tokens,
                           activation_before=before,
                           activation_after=topology.activation_fingerprint())
 
@@ -250,11 +275,11 @@ def context_capacity(api_url: str, timeout: float = 8.0) -> dict:
     vLLM publishes the numbers on /metrics — no root, no log scraping:
 
         kv_tokens        total KV capacity, in tokens (blocks x block_size)
-        max_model_len    the per-request ceiling the profile sets
+        context_length   the per-request ceiling the profile sets
         usable_context   min(the two) — the real answer to "how much can ONE request
-                         hold", because a max_model_len larger than the whole cache is
+                         hold", because a context_length larger than the whole cache is
                          a promise the engine cannot keep
-        full_slots       kv_tokens / max_model_len — simultaneous max-length requests
+        full_slots       kv_tokens / context_length — simultaneous max-length requests
 
     `usable_context` is the number that matters for a single long session; `full_slots`
     is the concurrency story, which is the less interesting half here.
@@ -281,7 +306,20 @@ def context_capacity(api_url: str, timeout: float = 8.0) -> dict:
             out["kv_tokens"] = blocks * block_size
     except (TypeError, ValueError):
         pass
-    # max_model_len is NOT a label of cache_config_info — vLLM 0.24 does not carry it
+    # SGLang doesn't publish cache_config_info — it exposes total KV capacity directly as
+    # `sglang:max_total_num_tokens`. Without this the context column was blank for the whole
+    # sglang engine (2026-08-31, qwen3.8): context_length came through fine from /v1/models,
+    # but usable_context = min(kv, ctx) never computed with kv_tokens missing.
+    if "kv_tokens" not in out:
+        for line in body.splitlines():
+            if line.startswith("sglang:max_total_num_tokens"):
+                try:
+                    out["kv_tokens"] = int(float(line.rsplit(None, 1)[1]))
+                except (ValueError, IndexError):
+                    pass
+                break
+    # vLLM's OWN field for the per-request ceiling is `max_model_len` (we store it as
+    # `context_length`). It is NOT a label of cache_config_info — vLLM 0.24 does not carry it
     # there, so reading it from the labels silently yielded 0 and made `usable_context`
     # and `full_slots` both 0 while kv_tokens looked perfectly healthy (2026-08-10,
     # qwen3-vl-235b). The model card on /v1/models is the authoritative source; the label
@@ -292,17 +330,17 @@ def context_capacity(api_url: str, timeout: float = 8.0) -> dict:
         if lens:
             # every card is the same engine under a different served name (the `sparky`
             # alias), so they agree; max() is just a total function over the list
-            out["max_model_len"] = max(lens)
+            out["context_length"] = max(lens)
     except Exception:
         pass
-    if "max_model_len" not in out:
+    if "context_length" not in out:
         try:
-            out["max_model_len"] = int(float(labels["max_model_len"]))
+            out["context_length"] = int(float(labels["max_model_len"]))
         except (KeyError, TypeError, ValueError):
             pass
-    if "kv_tokens" in out and "max_model_len" in out:
-        out["usable_context"] = min(out["kv_tokens"], out["max_model_len"])
-        out["full_slots"] = out["kv_tokens"] / out["max_model_len"]
+    if "kv_tokens" in out and "context_length" in out:
+        out["usable_context"] = min(out["kv_tokens"], out["context_length"])
+        out["full_slots"] = out["kv_tokens"] / out["context_length"]
     return out
 
 

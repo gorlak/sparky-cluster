@@ -68,7 +68,7 @@ All numbers from the installed model at `/opt/vllm/models/MiniMax-M2.7-AWQ-4bit`
 | **KV available** | **~29 GiB** |
 | **Outside headroom** | **~30 GiB** |
 
-At `max_model_len=131072`: KV per full-context sequence ≈ 131K × 124 KiB ≈ **~16 GiB**.
+At `context_length=131072`: KV per full-context sequence ≈ 131K × 124 KiB ≈ **~16 GiB**.
 That gives room for **1–2 concurrent 128K sessions** — comfortable for single/few-user use.
 
 ### Alternative gmu settings
@@ -135,7 +135,7 @@ conservative choice:
 - At 131K: ~16 GiB per session, room for 1–2 concurrent
 - No RoPE extrapolation needed (131K is well within 196K trained range)
 
-To extend to the full trained context, raise `max_model_len` to 196608 in the profile —
+To extend to the full trained context, raise `context_length` to 196608 in the profile —
 vLLM will refuse to start if KV budget doesn't cover it, which is the safety check.
 
 ---
@@ -161,7 +161,7 @@ container bump) resolves for Step-3.7-Flash.
 1. **Tool-call parser name** — identify the correct `--tool-call-parser` value for
    MiniMax-M2.7 in vLLM 0.19 / 26.04 and add to the profile. Check vLLM's parser
    registry or model card.
-2. **Full context (196K) testing** — raise `max_model_len` to 196608, verify vLLM
+2. **Full context (196K) testing** — raise `context_length` to 196608, verify vLLM
    accepts it at gmu=0.75, and measure TTFT at full context.
 3. **Official quantization** — MiniMaxAI may release an official FP8 or NVFP4 quant.
    Would replace the community AWQ quant.

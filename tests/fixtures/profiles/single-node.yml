@@ -17,7 +17,7 @@ archetypes: [single-node, tool-calling]
 # canary it does NOT mask DEF-0003 — activating it runs FULL_AND_PIECEWISE
 # cudagraphs for the first time ever on GB10. That is the point: it is the DEF-0003
 # experiment. Run it AFTER the canary proves the container itself is sound.
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
+image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
   - name: qwen3-coder-next-nvfp4-single
     kind: vllm
@@ -25,8 +25,8 @@ serving_topology:
     model: Qwen3-Coder-Next-NVFP4
     served_as: qwen3-coder-next-nvfp4-single
     tensor_parallel_size: 1
-    gpu_memory_utilization: "0.55"
-    max_model_len: 262144
+    memory_fraction: "0.55"
+    context_length: 262144
     head_extra_args:
       - --enable-chunked-prefill
       - --enable-auto-tool-choice

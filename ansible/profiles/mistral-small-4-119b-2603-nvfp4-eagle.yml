@@ -63,18 +63,18 @@
 #   MLA ON : ~22.5 KiB/token  → **2,392,720 tokens** of cache measured
 #   MLA OFF: ~576 KiB/token   → ~25× worse, and their 40k ceiling
 # If a future container regresses this, the fallback is `VLLM_MLA_DISABLE: "1"` in
-# `engine_env` **and** dropping `max_model_len` to 40960 — the two go together.
+# `engine_env` **and** dropping `context_length` to 40960 — the two go together.
 #
 # MEMORY MATH (gmu 0.75 — big-shared with dev headroom):
 #   weights 65 GiB total → ~32.5 GiB/node at TP=2 — the LIGHTEST big-shared profile here
 #   gmu 0.75 × 121 = 90.75 GiB/node budget − 32.5 weights − ~1 graphs → ~57 GiB KV/rank
 #   With MLA on, ~57 GiB at ~22.5 KiB/token is on the order of 2.5M tokens — far more than
-#   any max_model_len we would set. Capacity is not the constraint on this profile;
+#   any context_length we would set. Capacity is not the constraint on this profile;
 #   kernel support is.
 #
 # CONTEXT: 262144 — the vendor's own stated 256k, and their serve recipe uses exactly this
 # number. `max_position_embeddings` claims 1,048,576 but that is YaRN factor 128 from an
-# original 8192; the card recommends <=200k. See the note on `max_model_len` below.
+# original 8192; the card recommends <=200k. See the note on `context_length` below.
 #
 # VISION: ✅ passed the smoke gate's vision probe on first activation (2026-08-11), which
 # was not a given — Step-3.7 passed text quality and still produced garbage on vision the
@@ -174,14 +174,14 @@ archetypes: [big-shared, vision]
 # password-gated deploy to buy nothing — and a human round trip is the scarce resource
 # here ([[model-bringup]]: profiles batch, activations serialize).
 
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
+image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 
 serving_topology:
   - name: mistral-small-4-119b-2603-nvfp4-eagle
     kind: vllm
     model: Mistral-Small-4-119B-2603-NVFP4  # dir under /opt/vllm/models
     served_as: mistral-small-4-119b-2603-nvfp4-eagle
-    gpu_memory_utilization: "0.75"
+    memory_fraction: "0.75"
     # 65536 was the first-bring-up number; raised to the model's stated 256k on
     # 2026-08-11 once the real KV budget was known. It costs nothing: the cache holds
     # **2,392,720 tokens**, so 262144 still leaves ~9 concurrent full-length sequences
@@ -190,7 +190,7 @@ serving_topology:
     # from an original 8192 — the far end of the rope curve, and the model card recommends
     # <=200k. 262144 is the vendor's own stated context, and 1M would buy 2.3 concurrent
     # sequences of mostly-extrapolated attention.
-    max_model_len: 262144
+    context_length: 262144
     # Deliberately EMPTY for the first activation. The two standing by, both from the
     # forum recipe and neither yet justified on 0.24.0:
     #   VLLM_MLA_DISABLE: "1"              # if it refuses on head_size=320 (then ctx 40960)
@@ -214,7 +214,7 @@ serving_topology:
         # serve flags travel through the engine env file as one single-quoted value that
         # systemd re-splits on whitespace with no quote processing, so the JSON must carry no
         # spaces and no outer quotes. `model` is the LOCAL path, not the Hub id — the engine
-        # has no network. The inner `max_model_len` bounds how far the DRAFT looks; it is not
+        # has no network. The inner `context_length` bounds how far the DRAFT looks; it is not
         # the served context, which stays 262144.
         #
         # `--attention-backend FLASH_ATTN_MLA` is REQUIRED, not a tweak: vLLM auto-selects
@@ -230,13 +230,13 @@ serving_topology:
       - --attention-backend FLASH_ATTN_MLA
       - --max-num-batched-tokens 16384
       - --max-num-seqs 128
-      - --speculative-config {"model":"/models/Mistral-Small-4-119B-2603-eagle","num_speculative_tokens":3,"method":"eagle","max_model_len":"65536"}
+      - --speculative-config {"model":"/models/Mistral-Small-4-119B-2603-eagle","num_speculative_tokens":3,"method":"eagle","context_length":"65536"}
     worker_extra_args:
       - --enable-chunked-prefill
       - --tokenizer-mode mistral
       - --config-format mistral
       - --load-format mistral
-      - --speculative-config {"model":"/models/Mistral-Small-4-119B-2603-eagle","num_speculative_tokens":3,"method":"eagle","max_model_len":"65536"}
+      - --speculative-config {"model":"/models/Mistral-Small-4-119B-2603-eagle","num_speculative_tokens":3,"method":"eagle","context_length":"65536"}
       - --attention-backend FLASH_ATTN_MLA
       - --max-num-batched-tokens 16384
       - --max-num-seqs 128

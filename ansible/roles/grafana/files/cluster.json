@@ -153,17 +153,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (model_name) (rate(vllm:generation_tokens_total[1m]))",
-          "legendFormat": "{{model_name}} out"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "sum by (model_name) (rate(vllm:prompt_tokens_total[1m]))",
-          "legendFormat": "{{model_name}} in"
+          "expr": "sum by (model_name) (rate(vllm:generation_tokens_total[1m])) or sum by (model_name) (rate(sglang:generation_tokens_total[1m]))",
+          "legendFormat": "{{model_name}}"
         }
       ]
     },

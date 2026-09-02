@@ -62,14 +62,14 @@ def _live_image() -> str | None:
     live = act.live_profile()
     if live:
         try:
-            img = topology.load_profile(live).vllm_image
+            img = topology.load_profile(live).image
             if img:
                 return img
         except Exception:
             pass
     from collections import Counter
     try:
-        images = Counter(p.vllm_image for p in topology.all_profiles() if p.vllm_image)
+        images = Counter(p.image for p in topology.all_profiles() if p.image)
     except Exception:
         return None
     return images.most_common(1)[0][0] if images else None
@@ -92,17 +92,17 @@ def show_topology(
         console.print(f"[bold]{p.name}[/] — empty profile (no engines serving)")
         raise typer.Exit()
 
-    title = p.name + (f"   image: {p.vllm_image}" if p.vllm_image else "")
+    title = p.name + (f"   image: {p.image}" if p.image else "")
     if p.blocked:
         title += "   [yellow](blocked — weights kept, not activatable)[/]"
     table = Table(title=title, title_justify="left")
-    for col in ("engine", "served as", "nodes (rank0=API)", "TP", "port", "model", "gmu", "max_len"):
+    for col in ("engine", "served as", "nodes (rank0=API)", "TP", "port", "model", "mem_frac", "context"):
         table.add_column(col, overflow="fold")
     for e in p.engines:
         nodes = "+".join(e.nodes) + (f"  API:{e.api_node}" if e.is_multinode else "")
         table.add_row(
             e.name, e.served_as, nodes, str(e.tensor_parallel_size),
-            str(e.port), e.model, f"{e.gpu_memory_utilization:g}", str(e.max_model_len),
+            str(e.port), e.model, f"{e.memory_fraction:g}", str(e.context_length),
         )
     console.print(table)
 
@@ -344,8 +344,8 @@ def bench(
     if ctx:
         console.print(
             f"  [bold]context[/]: {ctx.get('usable_context', 0):,} usable tokens "
-            f"(KV holds {ctx.get('kv_tokens', 0):,}, max_model_len "
-            f"{ctx.get('max_model_len', 0):,}) · "
+            f"(KV holds {ctx.get('kv_tokens', 0):,}, context "
+            f"{ctx.get('context_length', 0):,}) · "
             f"{ctx.get('full_slots', 0):.1f} full-length slots")
     else:
         console.print("  [yellow]context: unavailable[/] — cache_config_info not exposed")
@@ -383,7 +383,7 @@ def bench(
                     run = httpbench.to_run(result, label=label,
                                            model=engine.get("model", "?"), profile=profile)
                     run.kv_tokens = ctx.get("kv_tokens")
-                    run.max_model_len = ctx.get("max_model_len")
+                    run.context_length = ctx.get("context_length")
                     db.record(run)
     console.print(table)
     if record:
@@ -460,13 +460,15 @@ def _scoreboard_table(*, include_retired: bool = False):
     for row in table:
         row.hf_repo = (live.get(row.label) or live.get(row.profile)
                        or archived.get(row.label) or archived.get(row.profile))
-        # Retired means an ARCHIVED profile exists — a retirement someone recorded, with a
-        # banner and a tombstone. Not merely "absent from the live set": a label matching
-        # nothing at all is orphaned, not retired, and hiding it would quietly discard a
-        # measurement on the strength of a filename. The retirement gesture is a `git mv`
-        # into docs/models/retired/ (docs/updating.md), so absence from BOTH sets means
-        # nobody decided anything, and the row stays.
-        row.retired = row.label in archived or row.profile in archived
+        # Off the default board iff the profile is not in the LIVE allowlist. The scoreboard
+        # answers "which model I could serve NOW should be serving", so a measurement of a
+        # profile that no longer exists — a formal retirement OR a deleted experimental variant
+        # (`-single`, `-mtp3`) — is noise on that question. The rows are never deleted, only
+        # hidden; `--retired` brings them all back, and the hf_repo stays attached (from the
+        # retired-doc set when present) so a shown-with-flag row is still searchable on the Hub.
+        # (The old code checked `archived` — a dir of profile .yml that does not exist — so it
+        # hid nothing, contradicting the intent stated just above. 2026-08-31.)
+        row.retired = not (row.label in live or row.profile in live)
 
     # Dropped BEFORE pareto, so dominance is a claim about models you could actually
     # activate. "Beaten on every axis" is only useful as advice, and advice about a
@@ -476,6 +478,25 @@ def _scoreboard_table(*, include_retired: bool = False):
     if not include_retired:
         table = [r for r in table if not r.retired]
     return table, dropped
+
+
+def _make_snapshot_shared(path: Path) -> None:
+    """The panel snapshot is rewritten by BOTH refreshers — the CLI (geoff) and the detached
+    suite runner (activator) — which share no owning identity, only the `activate` group. So it
+    must be group=activate and group-WRITABLE (0o664), or whoever wrote it last freezes the other
+    out: 2026-09-02, an activator suite run could not overwrite a geoff-owned `chmod 644` snapshot
+    and the panel sat two weeks stale. chown/chmod bind only for the file's OWNER; a non-owner
+    writer reaches the file through the group-write bit and simply skips them (the owner already
+    set them). Best-effort — a dev checkout has no `activate` group, which is fine."""
+    import grp
+    try:
+        os.chown(path, -1, grp.getgrnam("activate").gr_gid)
+    except (KeyError, PermissionError, OSError):
+        pass
+    try:
+        path.chmod(0o664)
+    except (PermissionError, OSError):
+        pass
 
 
 def _refresh_panel_snapshot() -> None:
@@ -495,7 +516,7 @@ def _refresh_panel_snapshot() -> None:
         payload = scoreboard.to_json(table, points, dominated)
         payload["generated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         PANEL_SNAPSHOT.write_text(_json.dumps(payload, indent=2) + "\n")
-        PANEL_SNAPSHOT.chmod(0o644)   # the panel runs as `activator`, not in `cluster`
+        _make_snapshot_shared(PANEL_SNAPSHOT)
     except Exception:
         pass
 
@@ -657,10 +678,15 @@ def suite_cmd(
         return f"recorded {', '.join(sorted(landed))}"
 
     def _bench(job) -> str:
+        # The prefill sweep (prefill@4k/16k/64k) rides the full sweep, not the interactive
+        # default: a 64k prefill is seconds of work, worth it once per campaign for the
+        # long-context curve, too slow for a quick `sparky bench`.
+        scenarios = ("latency,throughput,prefix_cache,"
+                     "prefill@4k,prefill@16k,prefill@64k")
         return _measured(
-            job, lambda: bench(label=job.key, scenarios="latency,throughput,prefix_cache",
-                               record=True),
-            {"latency", "throughput", "prefix_cache"}, "bench")
+            job, lambda: bench(label=job.key, scenarios=scenarios, record=True),
+            {"latency", "throughput", "prefix_cache",
+             "prefill@4k", "prefill@16k", "prefill@64k"}, "bench")
 
     def _quality(job) -> str:
         return _measured(
@@ -777,7 +803,7 @@ def scoreboard_cmd(
         payload["generated"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         path = Path(json_out)
         path.write_text(_json.dumps(payload, indent=2) + "\n")
-        path.chmod(0o644)          # the panel runs as `activator`, not in the cluster group
+        _make_snapshot_shared(path)
         console.print(f"[dim]snapshot -> {json_out}[/]")
         raise typer.Exit()
 

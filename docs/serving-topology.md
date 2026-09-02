@@ -1,7 +1,7 @@
 # Serving topology — profile-driven, multi-model cluster (design)
 
 > **Companion doc:** [`profile-tuning.md`](profile-tuning.md) — how to pick
-> `gpu_memory_utilization` and `max_model_len` for a given workflow, with the
+> `memory_fraction` and `context_length` for a given workflow, with the
 > per-model math and the GB10 unified-memory accounting quirk.
 
 **Status:** T1–T5 built and deployed; **substantially revised by
@@ -89,8 +89,8 @@ serving_topology:
     model: MiniMax-M2.7-AWQ-4bit # dir under /opt/vllm/models
     served_as: minimax-m2
     tensor_parallel_size: 2
-    gpu_memory_utilization: 0.55 # co-resident engines must sum < ~0.95/node
-    max_model_len: 32768
+    memory_fraction: 0.55 # co-resident engines must sum < ~0.95/node
+    context_length: 32768
     head_extra_args: [--enable-chunked-prefill, --enable-auto-tool-choice]
     worker_extra_args: [--enable-chunked-prefill]
     engine_env:                       # optional: CONTAINER env vars, not serve flags
@@ -104,8 +104,8 @@ serving_topology:
     model: Qwen3-30B-A3B-Instruct-2507-FP8
     served_as: qwen3-30b
     tensor_parallel_size: 1
-    gpu_memory_utilization: 0.33
-    max_model_len: 32768
+    memory_fraction: 0.33
+    context_length: 32768
 ```
 
 Derived facts (not authored): an engine's **rank** for a node = its index in
@@ -173,7 +173,7 @@ acceptable for config-as-code) **or** push the connection list via Open WebUI's
 admin REST API as a deploy task (surgical; keeps persistence for other settings).
 Leaning toward `false` for simplicity; revisit if UI-managed settings matter.
 
-**Memory partitioning.** `gpu_memory_utilization` is per-engine; vLLM engines are
+**Memory partitioning.** `memory_fraction` is per-engine; vLLM engines are
 blind to each other (and to Ollama) on a shared GPU and grab their fraction of
 *total* memory up front. Co-resident engines on a node must have fractions summing
 < ~0.95, with weights + KV verified against the per-node budget (0.90 × 121 =

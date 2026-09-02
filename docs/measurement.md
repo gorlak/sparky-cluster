@@ -91,7 +91,7 @@ that model.
 profile_name: qwen3.6-35b-a3b-nvfp4
 serving_topology:
   engines:
-    - gpu_memory_utilization: 0.80
+    - memory_fraction: 0.80
       kv_cache_dtype: fp8
       tensor_parallel_size: 2
 ```
@@ -109,7 +109,7 @@ one deliberately when a specific question comes up.
 
 ```yaml
 variants:
-  gpu_memory_utilization: [0.70, 0.80, 0.88]
+  memory_fraction: [0.70, 0.80, 0.88]
   kv_cache_dtype: [auto, fp8]
 ```
 

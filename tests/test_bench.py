@@ -130,11 +130,33 @@ def test_warmup_requests_are_excluded_from_the_measurement():
     assert len(client.prompts) == 5          # 3 warmup + 2 measured
 
 
-def test_scenarios_cover_the_three_shapes():
-    assert set(bench.SCENARIOS) == {"latency", "throughput", "prefix_cache"}
+def test_scenarios_cover_the_core_shapes_and_the_prefill_sweep():
+    assert {"latency", "throughput", "prefix_cache"} <= set(bench.SCENARIOS)
     assert bench.SCENARIOS["latency"].concurrency == 1
     assert bench.SCENARIOS["throughput"].concurrency > 1
     assert bench.SCENARIOS["prefix_cache"].shared_prefix_tokens > 0
+    # the prefill sweep: growing prompt, a single output token so the timing is prefill, at
+    # concurrency 1 so it is one session's wait — not aggregate.
+    prefill = {n: s for n, s in bench.SCENARIOS.items() if n.startswith("prefill@")}
+    assert set(prefill) == {"prefill@4k", "prefill@16k", "prefill@64k"}
+    assert [s.prompt_tokens for s in
+            (prefill["prefill@4k"], prefill["prefill@16k"], prefill["prefill@64k"])] \
+        == [4096, 16384, 65536]
+    assert all(s.max_tokens == 1 and s.concurrency == 1 for s in prefill.values())
+
+
+def test_prefill_throughput_is_prompt_tokens_over_ttft():
+    """The prefill metric is length-normalised: prompt tokens ingested per second, so a
+    64k-token prompt at 100ms TTFT reads at ~640k tok/s regardless of the prompt size."""
+    result = bench.ScenarioResult("prefill@64k", [
+        bench.RequestResult(ttft_ms=100.0, itls_ms=[], output_tokens=1, total_s=0.1),
+        bench.RequestResult(ttft_ms=100.0, itls_ms=[], output_tokens=1, total_s=0.1),
+    ], wall_s=0.2, prompt_tokens=65536)
+    m = result.metrics()
+    assert m["prefill_toks_s"] == 65536 / (100.0 / 1000)     # = prompt_tokens / TTFT(s)
+    # and it rides through to_run into the store row
+    run = bench.to_run(result, label="lbl", model="m", profile="p")
+    assert run.prefill_toks_s == m["prefill_toks_s"]
 
 
 def test_to_run_maps_onto_the_trend_store():
@@ -231,7 +253,7 @@ def test_max_model_len_comes_from_the_model_card_not_the_metric(monkeypatch):
                                    {"id": "qwen3-vl-235b", "max_model_len": 262144}])
     out = bench.context_capacity("http://x")
     assert out["kv_tokens"] == 33761 * 16          # 540,176
-    assert out["max_model_len"] == 262144
+    assert out["context_length"] == 262144         # vLLM's `max_model_len` card field, stored as context_length
     assert out["usable_context"] == 262144         # the cache is the larger of the two
     assert out["full_slots"] == pytest.approx(540176 / 262144)
 
@@ -250,7 +272,20 @@ def test_a_missing_model_card_does_not_fabricate_a_context(monkeypatch):
     _fake_http(monkeypatch, cards=[])
     out = bench.context_capacity("http://x")
     assert out["kv_tokens"] == 540176
-    assert "usable_context" not in out and "max_model_len" not in out
+    assert "usable_context" not in out and "context_length" not in out
+
+
+def test_kv_capacity_falls_back_to_the_sglang_metric(monkeypatch):
+    """SGLang has no vllm:cache_config_info; it publishes total KV directly as
+    sglang:max_total_num_tokens. Without this fallback the whole sglang engine's context
+    column was blank (2026-08-31, qwen3.8) — context_length came through from /v1/models, but
+    usable_context = min(kv, ctx) never computed with kv_tokens missing."""
+    metrics = 'sglang:max_total_num_tokens{model_name="sparky"} 607040.0\n'
+    _fake_http(monkeypatch, metrics=metrics, cards=[{"id": "sparky", "max_model_len": 262144}])
+    out = bench.context_capacity("http://x")
+    assert out["kv_tokens"] == 607040                 # from the sglang metric, not cache_config_info
+    assert out["context_length"] == 262144            # from the model card, engine-agnostic
+    assert out["usable_context"] == 262144            # min(607040, 262144) — now computes
 
 
 # --- a measurement must know if the fleet moved under it (2026-08-13) -----

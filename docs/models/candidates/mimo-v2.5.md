@@ -93,7 +93,7 @@ this the long-context model of the fleet by a wide margin, against
 > ⚠️ The 5:1 ratio is from the model card, **not** from `config.json` (which carries no
 > `layer_types`). If the true ratio is richer in full-attention layers the KV cost scales
 > linearly with it — at 3:1 (12 full layers) the 1M budget becomes ~14.3 GiB/node, still
-> comfortable. Verify against the loaded model before trusting a `max_model_len`.
+> comfortable. Verify against the loaded model before trusting a `context_length`.
 
 ### Speed — the arithmetic gate
 

@@ -135,7 +135,7 @@ def test_images_are_run_by_the_same_reference_they_are_pulled_by():
     trigger an unpinned runtime pull — reintroducing the drift the digest prevents."""
     gv = _group_vars()
     # An image is guaranteed present by EITHER a pull (upstream, digest-pinned) or a
-    # build (derived, no registry digest to pin). Since 2026-08-10 `vllm_image` is the
+    # build (derived, no registry digest to pin). Since 2026-08-10 `default_image` is the
     # derived 26.07 image, so a pull-only check would fail on the fleet's only container.
     # The invariant is unchanged — every runnable reference is guaranteed — but "pulled"
     # was only ever a proxy for it.
@@ -143,7 +143,7 @@ def test_images_are_run_by_the_same_reference_they_are_pulled_by():
     for entry in gv["container_images"]:
         ref = entry.get("pull") or entry.get("build")
         guaranteed.add(gv.get(ref.strip("{} \"'"), ref))
-    for var in ("vllm_image", "webui_image", "caddy_image", "prometheus_image",
+    for var in ("default_image", "webui_image", "caddy_image", "prometheus_image",
                 "grafana_image", "node_exporter_image", "nvidia_exporter_image"):
         assert gv[var] in guaranteed, f"{var} is run but never pulled or built: {gv[var]}"
 
@@ -158,9 +158,9 @@ def test_head_only_images_are_not_pushed_to_workers():
         assert placement.get("{{ %s }}" % var) == "head", f"{var} should be head-only"
     for var in ("node_exporter_image", "nvidia_exporter_image"):
         assert placement.get("{{ %s }}" % var) == "all", f"{var} should be on all nodes"
-    # `vllm_image` is a BUILT image, so it appears under its literal name rather than as
+    # `default_image` is a BUILT image, so it appears under its literal name rather than as
     # a `{{ var }}` reference. Any node may run any engine, so it must still be everywhere.
-    assert placement.get(gv["vllm_image"]) == "all", "vllm_image should be on all nodes"
+    assert placement.get(gv["default_image"]) == "all", "default_image should be on all nodes"
 
 
 def test_the_panel_is_tested_against_the_fastapi_it_deploys():

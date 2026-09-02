@@ -173,9 +173,9 @@ class Fleet:
         managed = managed_images()
         if managed:
             for p in self.profiles:
-                if p.vllm_image and p.vllm_image not in managed:
+                if p.image and p.image not in managed:
                     problems.append(
-                        f"{p.name}: selects {p.vllm_image!r}, which is not in "
+                        f"{p.name}: selects {p.image!r}, which is not in "
                         f"container_images — nothing would pull or build it, and the "
                         f"engine would fail to start (ADR-0013)")
 

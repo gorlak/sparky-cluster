@@ -265,6 +265,14 @@ def test_a_failed_marker_write_rolls_the_whole_set_back(rec, tmp_path, monkeypat
 
 def test_unit_and_container_naming(rec):
     assert rec.unit_of("step-3.5-flash-fp8") == "vllm@step-3.5-flash-fp8.service"
+    # ADR-0030: `kind` selects the template unit and the fail-safe marker prefix. The
+    # default stays vllm so every pre-0030 caller and env file is unchanged.
+    assert rec.unit_of("qwen38-flash-next", "sglang") == "sglang@qwen38-flash-next.service"
+    assert rec.running_marker("step-3.5-flash-fp8").name == "vllm-step-3.5-flash-fp8.running"
+    assert rec.running_marker("qwen38-flash-next", "sglang").name == \
+        "sglang-qwen38-flash-next.running"
+    assert rec.kind_of({"ENGINE_KIND": "sglang"}) == "sglang"
+    assert rec.kind_of({}) == "vllm"  # a pre-0030 env file carries no ENGINE_KIND
 
 
 # --- driving one node: marker-first, then systemd ---------------------------
@@ -303,12 +311,13 @@ def node(rec, tmp_path, monkeypatch):
         return type("P", (), {"returncode": 0, "stdout": "active", "stderr": ""})()
 
     monkeypatch.setattr(rec, "_systemctl", fake_systemctl)
-    monkeypatch.setattr(rec, "is_active", lambda e: rec.unit_of(e) in live)
+    monkeypatch.setattr(rec, "is_active", lambda e, kind="vllm": rec.unit_of(e, kind) in live)
     # The plan reads the unit's ActiveState, not a bool — a fake that answers "active" for
     # everything (which the generic `fake_systemctl` above would) makes every engine look
-    # like it needs stopping.
+    # like it needs stopping. The kind arg is carried through so the fake unit name matches
+    # what the reconciler drives (`vllm@…` vs `sglang@…`, ADR-0030).
     monkeypatch.setattr(rec, "unit_state",
-                        lambda e: "active" if rec.unit_of(e) in live else "inactive")
+                        lambda e, kind="vllm": "active" if rec.unit_of(e, kind) in live else "inactive")
     return rec, calls, live, state
 
 
@@ -385,6 +394,25 @@ def test_preserve_leaves_it_running_and_the_next_activate_still_applies_it(node)
     assert p2.restart == ["solo"]
 
 
+def test_reconcile_drives_the_sglang_unit_for_an_sglang_engine(node):
+    """ADR-0030: an engine whose env carries ENGINE_KIND=sglang must be driven through
+    the sglang@ template unit and clear the sglang- fail-safe marker — never vllm@. The
+    decision logic is shared; only the unit it drives is kind-specific."""
+    rec, calls, live, state = node
+    (rec.ENGINES_DIR / "allowlist").write_text("step\nqwen\nflash\n")
+    (rec.ENGINES_DIR / "flash.env").write_text(
+        "ENGINE_PROFILE=flash\nENGINE_KIND=sglang\nENGINE_NODES='snoopy'\n"
+        "ENGINE_MODEL=Flash\nENGINE_API_NODE=snoopy\nENGINE_API_ADDR=10.0.200.13\n"
+        "ENGINE_PORT=8000\nENGINE_SERVED_AS=flash\n")
+    stale = state / "sglang-flash.running"   # the fail-safe marker the sglang@ unit owns
+    stale.write_text("")
+    rec.reconcile_node("flash", node="snoopy")
+    assert ("start", "sglang@flash.service") in calls
+    assert not any(a[-1] == "vllm@flash.service" for a in calls)  # never the wrong kind
+    assert not stale.exists()                # cleared the sglang- marker, not a vllm- one
+    assert rec.read_markers() == {"flash": rec.read_engines()["flash"]["_hash"]}
+
+
 def test_orchestrate_refuses_without_its_wiring(rec, tmp_path, monkeypatch):
     """Reconciling only the head would silently leave a worker serving."""
     monkeypatch.setattr(rec, "CONF", tmp_path / "missing")
@@ -418,6 +446,37 @@ def test_topology_falls_back_to_local_env_files_without_an_index(node):
     entries = rec.topology_entries("qwen")
     assert [e["name"] for e in entries] == ["solo"]
     assert entries[0]["api_url"] == "http://10.0.200.13:8000"
+
+
+def test_topology_entry_reflects_the_engine_kind(node):
+    """ADR-0030: an sglang index entry must report the sglang@ unit, the sglang- container
+    and the sglang- marker. The panel and harness read this to reach the engine, so a
+    mislabelled kind would point them at a unit that does not exist."""
+    rec, _, _, _ = node
+    (rec.ENGINES_DIR / "index.json").write_text(json.dumps([
+        {"name": "flash", "kind": "sglang", "profile": "qwen38", "nodes": ["sparky", "snoopy"],
+         "api_node": "sparky", "api_addr": "10.0.200.12", "port": "8000", "model": "Flash",
+         "served_as": "flash", "stable_name": "sparky"},
+    ]))
+    entry = rec.topology_entries("qwen38")[0]
+    assert entry["kind"] == "sglang"
+    assert entry["unit"] == "sglang@flash.service"
+    assert entry["container"] == "sglang-flash"
+    assert entry["marker"].endswith("/sglang-flash.running")
+
+
+def test_topology_entry_defaults_to_vllm_for_a_pre_0030_index(node):
+    """An index.json written before ADR-0030 has no `kind` field; it must read as vllm,
+    not vanish or error."""
+    rec, _, _, _ = node
+    (rec.ENGINES_DIR / "index.json").write_text(json.dumps([
+        {"name": "solo", "profile": "qwen", "nodes": ["snoopy"], "api_node": "snoopy",
+         "api_addr": "10.0.200.13", "port": "8000", "model": "Solo",
+         "served_as": "solo", "stable_name": "sparky"},
+    ]))
+    entry = rec.topology_entries("qwen")[0]
+    assert entry["kind"] == "vllm"
+    assert entry["unit"] == "vllm@solo.service"
 
 
 def test_topology_of_empty_is_empty(node):

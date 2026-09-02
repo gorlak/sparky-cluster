@@ -1,0 +1,86 @@
+# {{ ansible_managed }}
+# Generated from roles/sglang/templates/sglang@.service.j2 — do NOT edit on the host.
+#
+# The SGLang sibling of vllm@.service (ADR-0030). It is the SAME template-unit shape:
+# ONE unit for every SGLang engine on this node, `%i` the engine name, everything that
+# varies per engine in {{ vllm_engines_dir }}/%i.env. The two boot gates, the ADR-0009
+# marker lifecycle, and the docker harness are reproduced VERBATIM — they are
+# engine-agnostic, which is the whole reason a second engine kind costs a template + a
+# role and not a parallel control plane. Only the launch line and the SGLANG_* env names
+# differ from vllm@.service; the marker and container are kind-scoped (`sglang-…`) so the
+# two kinds never collide on a name.
+[Unit]
+Description=SGLang engine %i
+Documentation=file://{{ vllm_engines_dir }}/%i.env
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+# ---- the two boot gates (ADR-0018 / ADR-0009), identical to vllm@ -----------
+# A unit boots iff  DESIRED  and  CLEANLY-STOPPED-LAST-TIME. The desired marker is
+# kind-agnostic (engine names are unique fleet-wide), so the reconciler writes the same
+# {{ vllm_active_dir }}/%i whichever kind serves %i. The cleanly-stopped sentinel is
+# kind-scoped, because THIS unit is what touches and clears it.
+ConditionPathExists={{ vllm_active_dir }}/%i
+ConditionPathExists=!{{ vllm_state_dir }}/sglang-%i.running
+
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile={{ nccl_conf_path }}
+EnvironmentFile={{ vllm_engines_dir }}/%i.env
+
+ExecStartPre=-/usr/bin/docker rm -f sglang-%i
+ExecStartPre=/usr/bin/mkdir -p {{ vllm_state_dir }}
+ExecStartPre=/usr/bin/touch {{ vllm_state_dir }}/sglang-%i.running
+# GB10 unified-memory hygiene for the large-model SGLang recipe: a warm host page cache
+# starves the GPU allocator part-way into a 100+ GiB weight load and can freeze the node.
+# drop_caches is non-destructive (frees only reclaimable cache) and needs root — which the
+# unprivileged `activate` path lacks, so it belongs here in the root-run unit start, not the
+# reconciler. Runs on the HOST before the container, which is where the page cache lives.
+ExecStartPre=/usr/bin/bash -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+
+# $SGLANG_SERVE_ARGS is deliberately UNBRACED so systemd splits it on whitespace into
+# argv words — the same round-trip the fleet role guards for vLLM (no single quote or
+# newline in any flag). Docker env-vars pinned here are GB10 hardware constants (the
+# SM121 arch lists SGLang's JIT paths need); per-engine recipe data rides the
+# --env-file docker-env instead, so this unit stays fixed and rarely-changing.
+ExecStart=/usr/bin/docker run --rm --name sglang-%i \
+    --network=host \
+    --gpus all \
+    --cgroupns=host \
+    --ipc=host \
+    --cap-add=IPC_LOCK \
+    --device=/dev/infiniband \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    --shm-size={{ vllm_shm_size }} \
+    --memory={{ vllm_container_memory }} \
+    -v {{ vllm_models_dir }}:/models:ro \
+    -v {{ nccl_conf_path }}:/etc/nccl-env.conf:ro \
+    --env-file {{ nccl_conf_path }} \
+    --env-file {{ vllm_engines_dir }}/%i.docker-env \
+    -e HF_HOME=/tmp/hf \
+    -e TORCH_CUDA_ARCH_LIST=12.1a \
+    -e FLASHINFER_CUDA_ARCH_LIST=12.1a \
+    ${SGLANG_IMAGE} \
+    python3 -m sglang.launch_server --model-path /models/${ENGINE_MODEL} $SGLANG_SERVE_ARGS
+
+ExecStop=/usr/bin/docker stop --time=120 sglang-%i
+ExecStopPost=/usr/bin/rm -f {{ vllm_state_dir }}/sglang-%i.running
+
+MemoryMax={{ vllm_systemd_memory_max }}
+OOMPolicy=stop
+
+Restart=on-failure
+RestartSec={{ vllm_restart_sec }}
+
+# Peer-join timeout, not hang (ADR-0018 invariant): a TP=2 activation whose peer never
+# joins fails within this bound and the fleet falls to empty.
+TimeoutStartSec={{ vllm_start_timeout_sec }}
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

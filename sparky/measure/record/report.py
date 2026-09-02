@@ -25,8 +25,10 @@ METRICS = [
     ("tpot_p99_ms", "TPOT p99 (ms)", "{:.2f}", False),
     ("itl_mean_ms", "ITL mean (ms)", "{:.2f}", False),
     ("itl_p99_ms", "ITL p99 (ms)", "{:.2f}", False),
+    ("prefill_toks_s", "Prefill tok/s", "{:.0f}", True),
 ]
-SCENARIOS = ("quality:mmlu-pro", "latency", "throughput", "prefix_cache")
+SCENARIOS = ("quality:mmlu-pro", "latency", "throughput", "prefix_cache",
+             "prefill@4k", "prefill@16k", "prefill@64k")
 
 
 def improvement_pct(a: float | None, b: float | None, higher_better: bool) -> float | None:

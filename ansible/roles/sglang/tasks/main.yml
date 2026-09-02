@@ -1,0 +1,124 @@
+---
+# Provision the SGLang serving surface on this node (ADR-0030) — the additive sibling of
+# roles/vllm. It renders one env file per SGLang engine that lands here, installs the
+# `sglang@.service` template unit, and enables the instances. Like the vllm role it is
+# SELECTION-NEUTRAL: it never starts/stops/restarts an engine — that is `activate`'s job.
+#
+# What it deliberately does NOT do: own the shared `/opt/vllm/engines/` env-file janitor
+# or the fleet-wide index.json / allowlist. Those are kind-agnostic and stay in the vllm
+# role (which runs first), so this role only has to manage the sglang@ UNITS and their own
+# kind-scoped `.running` markers — the two things only it knows how to name.
+#
+#   /etc/systemd/system/sglang@.service       one template unit; %i = engine name
+#   {{ vllm_engines_dir }}/<engine>.env        the whole per-variant surface (shared dir)
+#   {{ vllm_state_dir }}/sglang-<engine>.running  the ADR-0009 cleanly-stopped sentinel
+
+# Defensive: the vllm role creates these earlier in the same deploy, but this role must
+# also be correct when run alone (`--tags sglang`).
+- name: Ensure the engine + active-marker directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ vllm_engines_dir }}"
+    - "{{ vllm_active_dir }}"
+
+- name: Install the sglang@.service template unit
+  ansible.builtin.template:
+    src: sglang@.service.j2
+    dest: /etc/systemd/system/sglang@.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: sglang_template_unit
+
+- name: Render each SGLang engine's env file
+  ansible.builtin.template:
+    src: engine.env.j2
+    dest: "{{ vllm_engines_dir }}/{{ engine.name }}.env"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ host_sglang_engines | default([]) }}"
+  loop_control:
+    loop_var: engine
+    label: "{{ engine.name }} ({{ engine._profile }}, rank {{ engine.nodes.index(inventory_hostname) }})"
+
+- name: Render each SGLang engine's container env file (profile `engine_env:`)
+  ansible.builtin.template:
+    src: engine.docker-env.j2
+    dest: "{{ vllm_engines_dir }}/{{ engine.name }}.docker-env"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ host_sglang_engines | default([]) }}"
+  loop_control:
+    loop_var: engine
+    label: "{{ engine.name }}: {{ (engine.engine_env | default({})).keys() | list | join(',') or 'none' }}"
+
+- name: Reload unit definitions
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+# --- converge the sglang@ units this node should run -------------------------
+# Units stay ENABLED so systemd — not the reconciler — is the boot authority: the two
+# ConditionPathExists gates decide which one actually comes up (ADR-0018 / ADR-0009).
+- name: Enable each allowlisted SGLang engine instance on this node
+  ansible.builtin.systemd:
+    name: "sglang@{{ item }}.service"
+    enabled: true
+  loop: "{{ host_sglang_engines | default([]) | map(attribute='name') | list }}"
+
+# Disable any sglang@ instance still enabled here whose engine this node no longer runs.
+# Enumerated from the wants-symlinks so it is scoped to OUR template unit alone — the
+# vllm role's env-file janitor removes the stale .env; this removes the stale unit.
+- name: Find enabled sglang@ instances
+  ansible.builtin.find:
+    paths: /etc/systemd/system/multi-user.target.wants
+    patterns: ["sglang@*.service"]
+    file_type: any
+  register: enabled_sglang_units
+
+- name: Compute the sglang@ instances no longer desired here
+  ansible.builtin.set_fact:
+    stale_sglang_engines: >-
+      {{ enabled_sglang_units.files | map(attribute='path') | map('basename')
+         | map('regex_replace', '^sglang@(.*)\.service$', '\1')
+         | reject('in', host_sglang_engines | default([]) | map(attribute='name') | list)
+         | list }}
+
+- name: Remove the desired markers of no-longer-run SGLang engines
+  ansible.builtin.file:
+    path: "{{ vllm_active_dir }}/{{ item }}"
+    state: absent
+  loop: "{{ stale_sglang_engines }}"
+
+- name: Disable no-longer-run SGLang engine instances
+  ansible.builtin.systemd:
+    name: "sglang@{{ item }}.service"
+    enabled: false
+  loop: "{{ stale_sglang_engines }}"
+  failed_when: false
+
+# An ADR-0009 `.running` sentinel for a sglang engine that no longer runs here can never
+# gate anything, but the status surface reads it — so left behind it is a phantom
+# fail-safe report. Strictly namespaced to sglang-<engine>.running.
+- name: Find orphaned SGLang unclean-shutdown markers
+  ansible.builtin.find:
+    paths: "{{ vllm_state_dir }}"
+    patterns: ["sglang-*.running"]
+  register: sglang_state_markers
+
+- name: Remove SGLang unclean-shutdown markers for engines no longer run here
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ sglang_state_markers.files | map(attribute='path')
+       | reject('search', '/sglang-(' ~ (host_sglang_engines | default([]) | map(attribute='name')
+                | map('regex_escape') | join('|')) ~ ')\.running$')
+       | list }}
+  when: host_sglang_engines | default([]) | length > 0

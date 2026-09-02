@@ -24,14 +24,14 @@ hf_repo: nvidia/Qwen3-VL-235B-A22B-Instruct-NVFP4
 # What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
 # to this model's name (sparky/topology.py: ARCHETYPES).
 archetypes: [big-shared, tool-calling, vision]
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
+image: dgx-spark/vllm:26.07-xgrammar-fix
 serving_topology:
   - name: qwen3-vl-235b-a22b-instruct-nvfp4
     kind: vllm
     model: Qwen3-VL-235B-A22B-Instruct-NVFP4
     served_as: qwen3-vl-235b-a22b-instruct-nvfp4
-    gpu_memory_utilization: "0.80"
-    max_model_len: 131072
+    memory_fraction: "0.80"
+    context_length: 131072
     head_extra_args:
       - --enable-chunked-prefill
       # `hermes` — SECOND candidate. `qwen3_xml` was tried first because the

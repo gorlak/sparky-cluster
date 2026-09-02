@@ -28,3 +28,18 @@
   changed_when: >-
     ('Started' in exporters_up.stderr) or ('Created' in exporters_up.stderr)
     or ('Recreated' in exporters_up.stderr)
+
+# The nvidia-gpu-exporter's NVML dies the moment a `systemctl daemon-reload` runs while it is
+# up (the README gotcha), after which nvidia-smi exits 255 and every scrape yields nothing but
+# nvidia_smi_failed_scrapes_total. A deploy runs several daemon-reloads, in roles BEFORE this
+# one — and a plain `up -d` will NOT restart an UNCHANGED container, so once broken it never
+# recovers (found 2026-08-30 at 90k+ failed scrapes / ~15 days dark). `cgroup: host` was meant
+# to make it immune; empirically it does not hold. So force-recreate it HERE, after the
+# deploy's daemon-reloads, to hand it a fresh NVML. This runs on every deploy (cheap; a brief
+# GPU-metrics gap while it restarts) and is the only reason GPU util/temp/power render at all.
+- name: Recover the GPU exporter's NVML (force-recreate after the deploy's daemon-reloads)
+  ansible.builtin.command:
+    cmd: docker compose up -d --force-recreate nvidia-gpu-exporter
+    chdir: "{{ exporters_dir }}"
+  become: true
+  changed_when: true

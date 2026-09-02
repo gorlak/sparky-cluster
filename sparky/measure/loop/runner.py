@@ -137,7 +137,32 @@ def load_jobs(spec: dict) -> list[Job]:
     return jobs
 
 
-def acquire(lock_path: Path = DEFAULT_LOCK, *, stale_after: float = 6 * 3600) -> Path:
+def _pid_alive(pid: int) -> bool:
+    """Is `pid` a live process? Cross-user safe: a suite runs under a different uid than the
+    operator, so `kill(pid, 0)` raises PermissionError for it — which means it EXISTS and is
+    someone else's, i.e. alive. Only ProcessLookupError means the process is gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _holder_alive(holder: str) -> bool | None:
+    """Is the process that wrote a `pid=… started=…` lock still alive? None when the lock is
+    unparseable (a corrupt lock — the caller then falls back to the age heuristic)."""
+    for tok in holder.split():
+        if tok.startswith("pid="):
+            try:
+                return _pid_alive(int(tok[4:]))
+            except ValueError:
+                return None
+    return None
+
+
+def acquire(lock_path: Path = DEFAULT_LOCK, *, stale_after: float = 24 * 3600) -> Path:
     """Take exclusive ownership of the cluster, or refuse.
 
     A suite activates models; two of them interleaving would each measure whatever the
@@ -145,20 +170,29 @@ def acquire(lock_path: Path = DEFAULT_LOCK, *, stale_after: float = 6 * 3600) ->
     bench on one engine and contaminated a TP=1 baseline — the mild version of this, and
     it still cost a re-run.
 
-    A lock left by a killed process would block every future suite, so it expires. The
-    window is generous because a legitimate suite with a 45-minute soak is genuinely long.
+    A lock is LIVE iff the process that wrote it is still alive — the ADR-0009 idea applied
+    to the run lock. So a killed runner's lock (whose `release()` never ran, e.g. after
+    `run --stop` SIGKILLs it) is reclaimed AT ONCE rather than demanding a manual `rm`,
+    while a legitimately long run — the `all` suite is ~7h — is never stolen out from under
+    itself by a clock. `stale_after` is only the fallback for a corrupt, unparseable lock.
+    A dead holder's fleet flock is released by the OS on its exit, so re-holding it here is
+    clean.
     """
     now = time.time()
     if lock_path.exists():
         try:
-            age = now - lock_path.stat().st_mtime
             holder = lock_path.read_text().strip()
+            age = now - lock_path.stat().st_mtime
         except OSError:
-            age, holder = 0.0, "unreadable"
-        if age < stale_after:
+            holder, age = "unreadable", 0.0
+        alive = _holder_alive(holder)
+        if alive is None:                      # corrupt lock: no pid to check
+            alive = age < stale_after
+        if alive:
             raise SuiteBusy(
                 f"a suite is already running ({holder}, {age / 60:.0f} min ago). "
-                f"Wait, or remove {lock_path} if you know it is dead.")
+                f"Stop it first with `sparky run --stop`.")
+        # else: the holder is dead — its lock is stale. Fall through and reclaim it.
     fleetlock.hold()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(f"pid={os.getpid()} started={int(now)}\n")

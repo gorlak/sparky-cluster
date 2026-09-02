@@ -1,0 +1,92 @@
+---
+# qwen3.8-flash-next-nvfp4 — the first SGLang engine on the fleet (ADR-0030).
+#
+# Qwen3.8-Flash-Next: 125B total / A6B active hybrid MoE (Gated DeltaNet + Qwen Sparse
+# Attention), 512 experts, vision-capable, 262k native context. vLLM CANNOT serve it on GB10
+# (the arm64 image does not register `qwen4_exp`, and the SM121 QSA path fails in warmup), so
+# it is the model that justified adopting SGLang as a second engine kind. Served here under
+# SGLang at TP=2 with the reproducible SM121 QSA fix baked into our derived image.
+#
+# CHECKPOINT: RadixArk/Qwen3.8-Flash-Next-NVFP4 (~135 GB) — the checkpoint BOTH proven
+# 2×DGX-Spark recipes load (tonyd2wild, MiaAI-Lab), NOT lovedheart's mixed NVFP4+FP8 one.
+#
+# TEXT-FIRST bring-up. The image carries only the QSA fix; the NVFP4-KV-cache and M-RoPE
+# vision patches are deferred, so this serves text (and tools) but NOT vision yet — hence no
+# `vision` archetype. KV dtype is left at the DEFAULT (bf16). The first attempt (2026-08-30)
+# set `--kv-cache-dtype fp8_e4m3` on the theory the QSA fallback kernel upcasts it — but the
+# COMPRESSED-QSA path (page-size 64) dots fp8 keys RAW, and Triton has no fp8 `tl.dot` on
+# SM121, so warmup crashed with "Unsupported rhs dtype fp8e4nv". bf16 KV is universally
+# dottable. If it proves insufficient (compressed QSA may want a quantized KV), the proven
+# path is the NVFP4-KV patch (qsa_nvfp4_kv.py + apply_nvfp4_patches.py) with
+# `--kv-cache-dtype nvfp4` — the MiaAI-Lab config we deferred as "text-first".
+#
+# FLAGS are MiaAI-Lab's proven set (the root-cause-fix recipe): flashinfer attention with the
+# Triton QSA fallback our image patches in, NEXTN speculative decode (MTP), mamba pool tuning,
+# and pinned decode cuda-graph batch sizes (the default list OOMs the graph pool on GB10).
+# SGLang runs the SAME command on both nodes (only --node-rank differs), so head and worker
+# carry the identical arg set — unlike vLLM's headless worker.
+#
+# BRING-UP WATCH (attended, ADR-0030 Phase 4):
+#   1. MEMORY — re-derive the ADR-0028 headroom floor for SGLang: --mem-fraction-static 0.80
+#      is the proven value, but the accounting differs from vLLM's gmu and the 51B PLE table
+#      shares the unified pool. Watch idle headroom; lower to 0.75 (or add
+#      --ple-offload-embedding) if the load OOMs.
+#   2. NCCL — the #1 TP=2 hazard: PyTorch-bundled NCCL lacks SM121 cubins → cross-node
+#      collectives DEADLOCK after ~30 min. The LMSYS base image should ship a good NCCL;
+#      confirm at bring-up, and if it deadlocks, LD_PRELOAD one via engine_env.
+#   3. SAMPLING — cap temperature ≤ 0.7 (a multimodal-rope assert fires under cuda-graphs at
+#      temp 1.0 on this arch).
+#   4. SERVED NAME — SGLang advertises the stable name `sparky` only (single-valued flag);
+#      bench/eval address it by the stable name.
+
+profile_name: qwen3.8-flash-next-nvfp4
+hf_repo: RadixArk/Qwen3.8-Flash-Next-NVFP4
+image: dgx-spark/sglang:qwen38fn-sm121   # the derived SM121-QSA image (group_vars)
+archetypes: [big-shared, tool-calling]
+
+serving_topology:
+  - name: qwen3.8-flash-next-nvfp4
+    kind: sglang
+    model: Qwen3.8-Flash-Next-NVFP4      # dir under /opt/vllm/models
+    served_as: qwen3.8-flash-next-nvfp4
+    # --mem-fraction-static (SGLang's static pool fraction, projected from this field). 0.80
+    # is the proven value; the ADR-0028 floor is re-derived empirically at bring-up.
+    memory_fraction: 0.80
+    # --context-length. Native 262k; YaRN-to-1M is deferred (needs the rope-scaling override).
+    context_length: 262144
+    # Both ranks run the identical command (SGLang multi-node), so head == worker args.
+    head_extra_args: &sglang_args
+      - --quantization modelopt_fp4
+      - --attention-backend flashinfer
+      - --page-size 64
+      - --mamba-ssm-dtype bfloat16
+      - --mamba-radix-cache-strategy extra_buffer
+      - --mamba-track-interval 64
+      - --chunked-prefill-size 1024
+      - --max-running-requests 28
+      - --speculative-algorithm NEXTN
+      - --speculative-num-steps 3
+      - --speculative-eagle-topk 1
+      - --speculative-num-draft-tokens 4
+      - --reasoning-parser auto
+      - --tool-call-parser auto
+      - --enable-metrics
+      - --enable-cache-report
+      - --disable-prefill-cuda-graph
+      - --cuda-graph-bs-decode 1 2 3 4 5 6 7 8 10 12 14 16
+    worker_extra_args: *sglang_args
+    # Docker-env recipe data: NCCL tuning MiaAI-Lab found necessary on GB10 RoCE beyond our
+    # nccl-env.conf base, plus SGLang/HF runtime flags. (Applied via --env-file after
+    # nccl-env.conf, so these layer on top of the shared NCCL pins.)
+    engine_env:
+      NCCL_NET: IB
+      NCCL_IB_ROCE_VERSION_NUM: 2
+      NCCL_NET_PLUGIN: none
+      NCCL_NVLS_ENABLE: 0
+      NCCL_CUMEM_ENABLE: 0
+      NCCL_CROSS_NIC: 0
+      NCCL_IGNORE_CPU_AFFINITY: 1
+      HF_HUB_OFFLINE: 1
+      TRANSFORMERS_OFFLINE: 1
+      TRITON_CACHE_DIR: /root/.triton
+      SGLANG_SANITIZE_NAN_LOGITS: 1

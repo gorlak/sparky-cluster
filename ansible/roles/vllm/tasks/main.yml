@@ -39,7 +39,7 @@
     owner: root
     group: root
     mode: "0644"
-  loop: "{{ host_engines | default([]) }}"
+  loop: "{{ host_vllm_engines | default([]) }}"
   loop_control:
     loop_var: engine
     label: "{{ engine.name }} ({{ engine._profile }}, rank {{ engine.nodes.index(inventory_hostname) }})"
@@ -51,12 +51,17 @@
     owner: root
     group: root
     mode: "0644"
-  loop: "{{ host_engines | default([]) }}"
+  loop: "{{ host_vllm_engines | default([]) }}"
   loop_control:
     loop_var: engine
     label: "{{ engine.name }}: {{ (engine.engine_env | default({})).keys() | list | join(',') or 'none' }}"
 
 # --- converge: drop engines this node should no longer be able to run --------
+# This is the shared engine-surface janitor: `/opt/vllm/engines/` holds one env file per
+# engine of EVERY kind (ADR-0030), so the keep-set is `host_engines` (all kinds) and the
+# removal below is kind-agnostic file cleanup. Enabling/disabling the actual systemd
+# instances is each engine role's own job (vllm@ here, sglang@ in the sglang role), since
+# only the owning role knows which template unit backs its engines.
 - name: Find installed engine env files
   ansible.builtin.find:
     paths: "{{ vllm_engines_dir }}"
@@ -161,7 +166,7 @@
   ansible.builtin.systemd:
     name: "vllm@{{ item }}.service"
     enabled: true
-  loop: "{{ host_engines | default([]) | map(attribute='name') | list }}"
+  loop: "{{ host_vllm_engines | default([]) | map(attribute='name') | list }}"
 
 # A node's env files describe what IT can run — a snoopy-only engine has no env file
 # on sparky, which is exactly what makes the per-node marker set honest. But the head
@@ -178,6 +183,7 @@
   vars:
     _entry:
       name: "{{ item.name }}"
+      kind: "{{ item.kind | default('vllm') }}"
       profile: "{{ item._profile }}"
       nodes: "{{ item.nodes }}"
       api_node: "{{ item.nodes[0] }}"

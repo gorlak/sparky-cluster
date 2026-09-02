@@ -42,14 +42,14 @@ hf_repo: nvidia/NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4
 # What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
 # to this model's name (sparky/topology.py: ARCHETYPES).
 archetypes: [big-shared, tool-calling]
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
+image: dgx-spark/vllm:26.07-xgrammar-fix
 serving_topology:
   - name: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
     kind: vllm
     model: NVIDIA-Nemotron-Labs-3-Puzzle-75B-A9B-NVFP4
     served_as: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
-    gpu_memory_utilization: "0.80"
-    max_model_len: 131072
+    memory_fraction: "0.80"
+    context_length: 131072
     head_extra_args:
       - --enable-chunked-prefill
       # Tool calling, added 2026-08-10 after the smoke gate refused this profile with

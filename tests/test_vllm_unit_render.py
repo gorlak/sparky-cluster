@@ -36,7 +36,7 @@ _VARS = dict(
     vllm_engines_dir="/opt/vllm/engines",
     vllm_active_dir="/opt/vllm/active",
     nccl_conf_path="/opt/vllm/nccl-env.conf",
-    vllm_image="nvcr.io/nvidia/vllm:26.04-py3",
+    default_image="nvcr.io/nvidia/vllm:26.04-py3",
     vllm_models_dir="/opt/vllm/models",
     vllm_shm_size="16g",
     vllm_container_memory="110g",
@@ -97,8 +97,8 @@ def engine(**overrides) -> dict:
         model="Test-Model",
         served_as="test",
         tensor_parallel_size=2,
-        gpu_memory_utilization="0.8",
-        max_model_len=32768,
+        memory_fraction="0.8",
+        context_length=32768,
         head_extra_args=["--enable-chunked-prefill"],
         worker_extra_args=["--enable-chunked-prefill"],
         _profile="test-profile",
@@ -207,6 +207,7 @@ def test_env_carries_the_reconciler_identity_fields():
     v = env_vars(render_env(engine(), "snoopy"))
     # The reconciler parses these directly to decide what to activate, so a worker
     # can re-validate a request without asking the head anything.
+    assert v["ENGINE_KIND"] == "vllm"   # explicit, symmetric with sglang (ADR-0030)
     assert v["ENGINE_PROFILE"] == "test-profile"
     assert v["ENGINE_NODES"].split() == ["sparky", "snoopy"]
     assert v["ENGINE_MODEL"] == "Test-Model"
@@ -248,20 +249,27 @@ def test_head_env_unchanged_when_only_worker_args_change():
 
 # --- the real fleet ---------------------------------------------------------
 
+def _vllm_placements():
+    """Only the vLLM-kind placements. Since ADR-0030 the fleet can also hold `sglang`
+    engines, which this template does not render — those are covered by
+    test_sglang_unit_render.py."""
+    return [pl for pl in load_fleet().placements if pl.engine.kind == "vllm"]
+
+
 def _as_dict(profile, e) -> dict:
     return dict(
         name=e.name, kind=e.kind, nodes=list(e.nodes), port=e.port, model=e.model,
         served_as=e.served_as, tensor_parallel_size=e.tensor_parallel_size,
-        gpu_memory_utilization=str(e.gpu_memory_utilization),
-        max_model_len=e.max_model_len,
+        memory_fraction=str(e.memory_fraction),
+        context_length=e.context_length,
         head_extra_args=list(e.head_extra_args), worker_extra_args=list(e.worker_extra_args),
-        _profile=profile.name, _image=profile.vllm_image or _VARS["vllm_image"],
+        _profile=profile.name, _image=profile.image or _VARS["default_image"],
         _blocked=profile.blocked,
     )
 
 
 def test_every_real_profile_engine_renders_on_every_node():
-    for pl in load_fleet().placements:
+    for pl in _vllm_placements():
         for node in pl.engine.nodes:
             v = env_vars(render_env(_as_dict(pl.profile, pl.engine), node))
             assert v["ENGINE_MODEL"] == pl.engine.model
@@ -285,7 +293,7 @@ def to_argv(env_value: str) -> list[str]:
 def test_serve_args_survive_the_full_round_trip_to_argv():
     """End to end: profile flags -> env file -> systemd unquoting -> argv. Every flag
     a profile wrote must come back byte-identical, quotes and all."""
-    for pl in load_fleet().placements:
+    for pl in _vllm_placements():
         for node in pl.engine.nodes:
             raw = render_env(_as_dict(pl.profile, pl.engine), node)
             argv = to_argv(env_vars(raw)["VLLM_SERVE_ARGS"])
@@ -302,7 +310,7 @@ def test_serve_args_survive_the_full_round_trip_to_argv():
 def test_json_flags_reach_argv_as_valid_json():
     """The regression that took the cluster down: a JSON argument must still parse as
     JSON after systemd has had its way with the quotes."""
-    for pl in load_fleet().placements:
+    for pl in _vllm_placements():
         for node in pl.engine.nodes:
             argv = to_argv(env_vars(render_env(_as_dict(pl.profile, pl.engine), node))["VLLM_SERVE_ARGS"])
             for word in argv:
@@ -330,7 +338,7 @@ def test_profiles_still_parse_as_yaml():
 
 def test_no_profile_needs_shell_quoting():
     """The one authoring constraint ADR-0018 adds, checked against the real fleet."""
-    for pl in load_fleet().placements:
+    for pl in _vllm_placements():
         for arg in tuple(pl.engine.head_extra_args) + tuple(pl.engine.worker_extra_args):
             assert shlex.quote(arg).replace("'", "") or True  # no crash on odd input
             assert "'" not in arg and "\n" not in arg

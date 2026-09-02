@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
     ttft_mean_ms  REAL, ttft_p99_ms REAL,
     tpot_mean_ms  REAL, tpot_p99_ms REAL,
     itl_mean_ms   REAL, itl_p99_ms  REAL,
+    -- prompt tokens ingested per second (prompt_tokens / TTFT). The prefill scenarios sweep
+    -- this across depth; it is the long-context "time before it answers" the decode-rate
+    -- metrics cannot express. NULL for rows measured before the sweep that gathers it.
+    prefill_toks_s REAL,
     -- the `quality` regiment (ADR-0016): an accuracy score, so models can be RANKED
     -- rather than only compared on throughput. NULL for bench rows.
     accuracy      REAL,
@@ -42,8 +46,8 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
     harness       TEXT,
     -- Context capacity. Speed metrics cannot express "how much can this READ", which is
     -- the binding constraint for long-document and whole-codebase work.
-    kv_tokens     INTEGER,
-    max_model_len INTEGER
+    kv_tokens      INTEGER,
+    context_length INTEGER
 );
 """
 
@@ -51,17 +55,20 @@ CREATE TABLE IF NOT EXISTS benchmark_runs (
 # the trend store is a live file on the cluster — dropping it would discard the
 # benchmark history the whole A/B story rests on, so migrate in place.
 _MIGRATIONS = ("accuracy REAL", "items INTEGER", "unparseable INTEGER",
-               "harness TEXT", "kv_tokens INTEGER", "max_model_len INTEGER",
+               "harness TEXT", "kv_tokens INTEGER", "context_length INTEGER",
                # Weighted partial credit (ADR-0024). Deliberately its own column rather
                # than a redefinition of `accuracy`, which stays pass@1 for every scenario:
                # a graded number and a binary one answer different questions, and
                # overloading the binary one changes the meaning of every historical row.
-               "score REAL")
+               "score REAL",
+               # Prefill throughput (the depth-swept prefill scenarios). Added after the table
+               # shipped, so existing DBs gain it empty and backfill on the next sweep.
+               "prefill_toks_s REAL")
 
 _METRIC_COLS = (
     "output_toks_s", "total_toks_s", "requests_s",
     "ttft_mean_ms", "ttft_p99_ms", "tpot_mean_ms", "tpot_p99_ms",
-    "itl_mean_ms", "itl_p99_ms",
+    "itl_mean_ms", "itl_p99_ms", "prefill_toks_s",
 )
 
 
@@ -85,13 +92,14 @@ class Row:
     tpot_p99_ms: float | None = None
     itl_mean_ms: float | None = None
     itl_p99_ms: float | None = None
+    prefill_toks_s: float | None = None
     accuracy: float | None = None
     items: int | None = None
     unparseable: int | None = None
     score: float | None = None
     harness: str | None = None
     kv_tokens: int | None = None
-    max_model_len: int | None = None
+    context_length: int | None = None
 
 
 class Store:
@@ -104,6 +112,14 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         existing = {r[1] for r in self._conn.execute("PRAGMA table_info(benchmark_runs)")}
+        # ADR-0030 schema cleanup: max_model_len -> context_length, renamed IN PLACE so the
+        # benchmark history the A/B story rests on is preserved (a fresh DB already carries the
+        # new name from _SCHEMA). Done before the ADD-COLUMN migrations so context_length then
+        # exists and is not re-added empty.
+        if "max_model_len" in existing and "context_length" not in existing:
+            self._conn.execute(
+                "ALTER TABLE benchmark_runs RENAME COLUMN max_model_len TO context_length")
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(benchmark_runs)")}
         for column in _MIGRATIONS:
             if column.split()[0] not in existing:
                 self._conn.execute(f"ALTER TABLE benchmark_runs ADD COLUMN {column}")
@@ -122,7 +138,7 @@ class Store:
         """Insert one run; returns its row id."""
         cols = ["ts", "label", "model", "profile", "scenario", "skipped", "quality_pass",
                 "accuracy", "items", "unparseable", "score", "harness", "kv_tokens",
-                "max_model_len",
+                "context_length",
                 *_METRIC_COLS]
         vals = [
             run.ts or int(time.time()),
@@ -130,7 +146,7 @@ class Store:
             int(run.skipped),
             None if run.quality_pass is None else int(run.quality_pass),
             run.accuracy, run.items, run.unparseable, run.score, run.harness,
-            run.kv_tokens, run.max_model_len,
+            run.kv_tokens, run.context_length,
             *(getattr(run, c) for c in _METRIC_COLS),
         ]
         placeholders = ", ".join("?" * len(cols))

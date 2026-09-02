@@ -27,6 +27,7 @@ survives the panel restarting. The unit sets KillMode=process to match.
 See docs/control-interface.md and ADR-0018.
 """
 import json
+import math
 import os
 import shlex
 import shutil
@@ -749,6 +750,107 @@ def metrics():
     return "\n".join(lines) + "\n"
 
 
+# Family colour + mark are PRESENTATION, so they live here, not in `sparky scoreboard` — the
+# panel still recomputes no analysis (dominance and best-marking arrive in the snapshot). A
+# model's family is read from its name, so related models share a hue and a letter prefix
+# (q1/q2 qwen, n1/n2 nvidia) and read as a cluster on the plot. Order matters: `nemotron`
+# labels start `nvidia-` so the `nvidia` prefix covers them; an unknown family falls to slate.
+_FAMILIES = (
+    ("qwen", "q", "#2563eb"),      # blue
+    ("nvidia", "n", "#16a34a"),    # green (its own brand colour, aptly)
+    ("nemotron", "n", "#16a34a"),
+    ("glm", "g", "#7c3aed"),       # violet
+    ("minimax", "mm", "#ea580c"),  # orange
+    ("mistral", "ms", "#0891b2"),  # cyan
+    ("step", "s", "#a16207"),      # amber
+)
+
+
+def _family(label: str) -> tuple[str, str]:
+    """(mark-prefix, colour) for a model label, by name prefix. Unknown → first letter, slate."""
+    low = label.lower()
+    for prefix, key, colour in _FAMILIES:
+        if low.startswith(prefix):
+            return key, colour
+    return (low[:1] or "x"), "#64748b"
+
+
+def _nice_axis(vmax: float, ticks: int = 4) -> tuple[float, float]:
+    """A zero-based axis TOP and step, rounded to 1/2/2.5/5 x 10^k, so graduations land on
+    round numbers with the data sitting just under the top. (`_nice_axis(96)` -> (100, 25).)"""
+    if vmax <= 0:
+        return 1.0, 1.0
+    raw = vmax / ticks
+    mag = 10.0 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    return math.ceil(vmax / step) * step, step
+
+
+# The plot box inside the 640x340 SVG: origin (0,0) at the bottom-left corner, x -> right.
+_PX_L, _PX_R, _PX_T, _PX_B = 60.0, 580.0, 40.0, 290.0
+
+
+def _project_scatter(points: list[dict]) -> dict:
+    """Place the trade-off dots in the SVG and compute the axis graduations.
+
+    Returns {"points", "x_ticks", "y_ticks"}. Both axes are ZERO-BASED — the origin is a true
+    (0,0), not the data's min — so the eye reads absolute magnitude and a model at 25 tok/s
+    plainly sits a quarter of the way along, not "at the left because it's slowest". The tick
+    tops are rounded (`_nice_axis`) so graduations fall on round numbers, and the dots map
+    through the SAME tops, so every dot lands on that grid.
+
+    Printing ten model names ON the chart ran the long ones off the right edge and stacked
+    nearby ones on top of each other. So a dot carries only a short per-family mark (`q1`,
+    `mm1`) in a family colour, and the full names live in the legend beside it. Dominance is
+    kept (faded dot vs. ringed frontier point). Co-located dots are nudged apart so a model is
+    not hidden under another (minimax and nemotron-super share a coordinate)."""
+    if len(points) < 2:
+        return {"points": [], "x_ticks": [], "y_ticks": []}
+    x_top, x_step = _nice_axis(max(p["x"] for p in points))
+    y_top, y_step = _nice_axis(max(p["y"] for p in points))
+
+    placed: list[dict] = []
+    counts: dict[str, int] = {}
+    for p in sorted(points, key=lambda q: -q["y"]):     # best-first, so q1 is the top qwen
+        key, colour = _family(p["label"])
+        counts[key] = counts.get(key, 0) + 1
+        cx = _PX_L + p["x"] / x_top * (_PX_R - _PX_L)
+        cy = _PX_B - p["y"] / y_top * (_PX_B - _PX_T)
+        for _ in range(8):                              # nudge off an occupied pixel, in frame
+            if not any(abs(q["cx"] - cx) < 17 and abs(q["cy"] - cy) < 17 for q in placed):
+                break
+            cx = min(cx + 17, 604)
+        placed.append({
+            "label": p["label"], "dominated": p["dominated"],
+            "mark": f"{key}{counts[key]}", "colour": colour,
+            "cx": round(cx, 1), "cy": round(cy, 1),
+        })
+
+    # Order the legend by FAMILY, not raw accuracy — so a colour block reads together and the
+    # marks run q1,q2,…,g1,n1,n2 rather than interleaved. Families lead with their strongest
+    # member (qwen first because q1 is the top model overall), and within a family the numbering
+    # (already accuracy-ranked, q1 best) is preserved. The dots are positioned by data, so this
+    # only reorders the list the legend walks; the plot is unchanged.
+    fam_best: dict[str, float] = {}
+    for p in points:
+        fk, _ = _family(p["label"])
+        fam_best[fk] = max(fam_best.get(fk, 0.0), p["y"])
+
+    def _legend_order(pt: dict) -> tuple:
+        fk, _ = _family(pt["label"])
+        return (-fam_best[fk], fk, int(pt["mark"][len(fk):]))
+
+    placed.sort(key=_legend_order)
+
+    n_x = round(x_top / x_step)
+    x_ticks = [{"px": round(_PX_L + i * x_step / x_top * (_PX_R - _PX_L), 1),
+                "label": f"{i * x_step:.0f}"} for i in range(n_x + 1)]
+    n_y = round(y_top / y_step)
+    y_ticks = [{"py": round(_PX_B - i * y_step / y_top * (_PX_B - _PX_T), 1),
+                "label": f"{i * y_step:.0%}"} for i in range(n_y + 1)]
+    return {"points": placed, "x_ticks": x_ticks, "y_ticks": y_ticks}
+
+
 @app.get("/scoreboard", response_class=HTMLResponse)
 def scoreboard(request: Request):
     """Render the fleet scoreboard snapshot written by `sparky scoreboard --json`.
@@ -766,21 +868,5 @@ def scoreboard(request: Request):
             "Run <code>sparky scoreboard --json " + SCOREBOARD_FILE + "</code> "
             "after a suite.</p>", status_code=404)
 
-    # Project the scatter into SVG coordinates here rather than in the template: Jinja
-    # arithmetic is unreadable, and the axes need min/max over the whole set.
-    points = data.get("scatter", {}).get("points", [])
-    if len(points) >= 2:
-        xs = [p["x"] for p in points]
-        ys = [p["y"] for p in points]
-        x0, x1 = min(xs), max(xs)
-        y0, y1 = min(ys), max(ys)
-        sx = (x1 - x0) or 1.0
-        sy = (y1 - y0) or 1.0
-        data["plot_points"] = [{
-            "label": p["label"], "dominated": p["dominated"],
-            "cx": 60 + (p["x"] - x0) / sx * 520,
-            "cy": 290 - (p["y"] - y0) / sy * 250,
-        } for p in points]
-    else:
-        data["plot_points"] = []
+    data["scatter_svg"] = _project_scatter(data.get("scatter", {}).get("points", []))
     return templates.TemplateResponse(request, "scoreboard.html", _ctx(request, data=data))

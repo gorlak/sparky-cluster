@@ -176,6 +176,28 @@ What stays expensive, and still deserves the care: **activations** — serialize
 variable at a time, and attend the first activation of anything in DEF-0004's
 node-freeze territory — plus model downloads and anything that could take a node down.
 
+## Cross-engine surfaces compare only apples-to-apples metrics
+
+The fleet runs more than one engine kind (`vllm`, `sglang` — ADR-0030), so any surface that
+spans them — a Grafana panel, a scoreboard column, a cross-model bake-off — must use metrics
+that **mean the same thing on every engine.** Two failure modes, both drawn from real
+2026-08-31 blood:
+
+- **A metric one engine doesn't emit.** The throughput panel queried `vllm:*` only, so it
+  went blank the instant an sglang engine was live. Query the union so whichever engine is
+  live renders — `rate(vllm:X[1m]) or rate(sglang:X[1m])` — and pick an `X` **both** expose.
+- **A metric whose SEMANTICS differ.** `prompt_tokens_total` exists on both, but it counts
+  cached prefix tokens and the two engines cache differently, so plotting it compares nothing
+  — and it swamped the useful decode line off the panel. It was dropped;
+  `generation_tokens_total` (decoded tokens, identical meaning on both) is what the panel
+  shows.
+
+**The rule:** before a metric goes on a cross-engine surface, confirm (a) every engine kind
+emits it and (b) it means the same thing on each. If only one engine has the clean version
+(sglang's `uncached_prompt_tokens_total` has no vLLM peer), keep it OFF the shared surface and
+put it in an engine-specific view instead. A panel that silently reads a different quantity
+per engine is worse than one metric fewer.
+
 ## A bug found mid-feature: stash the feature, fix the bug, pop it back
 
 **When a bug surfaces while a feature is in progress in the worktree: stash the feature,

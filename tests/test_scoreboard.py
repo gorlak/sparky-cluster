@@ -11,7 +11,10 @@ from sparky.measure.record import scoreboard
 
 
 def _rows(*specs):
-    """specs: (label, accuracy, out_toks_s) -> the two store rows each model produces."""
+    """specs: (label, accuracy, out_toks_s) -> the two store rows each model produces.
+
+    Speed lives under the concurrency-1 `latency` scenario — that is what the scoreboard's
+    out tok/s reads, since the fleet's workload is a single user session (2026-09-02)."""
     out = []
     for label, accuracy, toks in specs:
         if accuracy is not None:
@@ -19,7 +22,7 @@ def _rows(*specs):
                         "scenario": scoreboard.QUALITY_SCENARIO, "accuracy": accuracy})
         if toks is not None:
             out.append({"label": label, "profile": label, "ts": 1,
-                        "scenario": "throughput", "output_toks_s": toks,
+                        "scenario": "latency", "output_toks_s": toks,
                         "requests_s": toks / 100})
     return out
 
@@ -56,7 +59,7 @@ def test_models_missing_a_measurement_are_shown_not_dropped():
     partial = next(r for r in table if r.label == "quality-only")
     assert partial.cells[0].text == "72.0%"
     assert partial.cells[1].text == "—"
-    assert "throughput" in partial.missing
+    assert "latency" in partial.missing
 
 
 def test_a_model_without_both_axes_is_left_out_of_the_scatter():
@@ -83,11 +86,16 @@ def test_the_latest_run_wins():
 def test_best_is_marked_per_column_and_respects_direction():
     """Higher accuracy wins; LOWER latency wins. Marking the max in both would praise
     the slowest model."""
-    rows = _rows(("a", 0.60, 500.0), ("b", 0.70, 300.0))
-    rows += [{"label": "a", "profile": "a", "ts": 1, "scenario": "latency",
-              "ttft_p99_ms": 900.0, "tpot_mean_ms": 30.0},
-             {"label": "b", "profile": "b", "ts": 1, "scenario": "latency",
-              "ttft_p99_ms": 200.0, "tpot_mean_ms": 10.0}]
+    # out tok/s, TTFT and TPOT all live on the one concurrency-1 latency row, so build it
+    # whole rather than as two rows that would collide on (label, scenario).
+    rows = [{"label": "a", "profile": "a", "ts": 1, "scenario": scoreboard.QUALITY_SCENARIO,
+             "accuracy": 0.60},
+            {"label": "b", "profile": "b", "ts": 1, "scenario": scoreboard.QUALITY_SCENARIO,
+             "accuracy": 0.70},
+            {"label": "a", "profile": "a", "ts": 1, "scenario": "latency",
+             "output_toks_s": 500.0, "ttft_p99_ms": 900.0, "tpot_mean_ms": 30.0},
+            {"label": "b", "profile": "b", "ts": 1, "scenario": "latency",
+             "output_toks_s": 300.0, "ttft_p99_ms": 200.0, "tpot_mean_ms": 10.0}]
     table = scoreboard.build(rows)
     by_label = {r.label: r for r in table}
     accuracy_i = next(i for i, c in enumerate(scoreboard.COLUMNS) if c[0] == "accuracy")
@@ -96,6 +104,18 @@ def test_best_is_marked_per_column_and_respects_direction():
     assert by_label["b"].cells[accuracy_i].best        # higher accuracy
     assert by_label["b"].cells[ttft_i].best            # LOWER latency
     assert by_label["a"].cells[toks_i].best            # higher throughput
+
+
+def test_the_prefill_column_reads_the_deepest_prefill_sweep():
+    """prefill@64k is the long-context ingestion rate; it comes from the deepest prefill
+    scenario's prefill_toks_s — a different store row than the speed and accuracy ones, and
+    blank until that sweep has run."""
+    rows = _rows(("m", 0.60, 90.0))
+    rows.append({"label": "m", "profile": "m", "ts": 1, "scenario": "prefill@64k",
+                 "prefill_toks_s": 1676.0})
+    table = scoreboard.build(rows)
+    i = next(i for i, c in enumerate(scoreboard.COLUMNS) if c[0] == "prefill@64k")
+    assert table[0].cells[i].text == "1,676"
 
 
 def test_markdown_is_committable():
@@ -110,6 +130,28 @@ def test_plot_needs_two_points():
     table = scoreboard.build(_rows(("only", 0.60, 500.0)))
     points, dominated = scoreboard.pareto(table)
     assert "at least two" in scoreboard.plot(points, dominated)
+
+
+def test_two_models_on_the_same_cell_both_stay_visible():
+    """minimax and nemotron-super sit at nearly the same (speed, accuracy) and mapped to one
+    cell; a plain grid write let the later mark overwrite the earlier, and a whole model
+    dropped off the plot silently. Every point must keep a distinct visible mark."""
+    pts = [("m0", 25.0, 0.679), ("m1", 26.0, 0.686), ("m2", 96.0, 0.807)]
+    art = scoreboard.plot(pts, set())
+    grid_marks = {ch for line in art.splitlines() if line.startswith("  |")
+                  for ch in line if ch.isalpha()}
+    assert grid_marks == {"a", "b", "c"}, "a colliding point was overwritten off the grid"
+
+
+def test_no_line_runs_off_the_edge():
+    """A 43-char name used to shove the legend's tok/s column rightward and, with the
+    `(dominated)` tag, push the line past 80 columns so a terminal wrapped it. Every line —
+    grid, axis, and legend — must stay within one 80-column screen."""
+    long_name = "nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4"
+    pts = [(long_name, 32.0, 0.671), ("qwen3.6-35b-a3b-nvfp4", 96.0, 0.807)]
+    art = scoreboard.plot(pts, {long_name})
+    assert all(len(line) <= 80 for line in art.splitlines())
+    assert "…" in art, "the over-long name should be elided, not printed in full"
 
 
 def test_accuracy_with_many_unparseable_items_is_flagged():
@@ -140,11 +182,18 @@ def test_the_panel_snapshot_survives_a_missing_directory(tmp_path, monkeypatch):
 
 
 def test_the_snapshot_is_world_readable(tmp_path, monkeypatch):
-    """The panel runs as `activator`, which is not in the `cluster` group that owns
-    /opt/cluster. A snapshot it cannot read renders as 'no scoreboard yet'."""
+    """The panel (activator) and the CLI (geoff) both rewrite the snapshot, sharing only the
+    `activate` group. It must be world-readable (the panel reads it) AND group-writable — else
+    whoever wrote it last freezes the other out (2026-09-02: an activator suite run could not
+    overwrite a geoff-owned `chmod 644` snapshot, and the panel sat two weeks stale)."""
     from sparky import cli
+    from sparky.foundation import topology
     target = tmp_path / "scoreboard.json"
     monkeypatch.setattr(cli, "PANEL_SNAPSHOT", target)
+    # `m` must be in the live allowlist, or the scoreboard filters it as not-current and the
+    # snapshot is empty — this test is about world-readability, not the retired filter.
+    monkeypatch.setattr(cli.topology, "all_profiles",
+                        lambda *a, **k: [topology.Profile(name="m", engines=())])
 
     class _DB:
         def __enter__(self): return self
@@ -155,7 +204,9 @@ def test_the_snapshot_is_world_readable(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.store, "Store", _DB)
     cli._refresh_panel_snapshot()
     assert target.exists()
-    assert target.stat().st_mode & 0o004, "panel (activator) cannot read it"
+    mode = target.stat().st_mode
+    assert mode & 0o004, "panel (activator) cannot READ it"
+    assert mode & 0o020, "the other identity cannot REFRESH it — the freeze bug (2026-09-02)"
 
 
 def test_the_snapshot_carries_column_direction():

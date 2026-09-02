@@ -31,6 +31,14 @@
              padding: 0 .25rem; margin-left: .3rem; vertical-align: .1em; }
   figure { margin: 1rem 0 0; }
   figcaption { opacity: .65; font-size: .85rem; margin-top: .5rem; }
+  /* Legend beside the scatter: full names (the plot carries only marks), two columns so a
+     ten-model fleet does not run down the page. Each key is a family-coloured pill. */
+  .legend { list-style: none; padding: 0; margin: .75rem 0 0; columns: 2; column-gap: 2rem;
+            font-size: .85rem; }
+  .legend li { break-inside: avoid; margin: .2rem 0; }
+  .legend .key { display: inline-block; min-width: 1.5rem; padding: 0 .3rem; margin-right: .45rem;
+                 border-radius: .55rem; color: #fff; font-weight: 700; font-size: .72rem;
+                 text-align: center; font-family: ui-monospace, monospace; }
   .note { margin-top: 1.5rem; padding: .75rem 1rem; border-left: 3px solid #f59e0b;
           background: rgba(245,158,11,.08); font-size: .88rem; }
   select { font: inherit; padding: .3rem .4rem; max-width: 20rem; }
@@ -40,7 +48,7 @@
   .bar { height: .75rem; border-radius: 2px; background: currentColor; opacity: .8; display: block; }
   .barcell { width: 45%; }
 </style>
-<img class="wordmark" src="{{ root }}/static/sparky.png" alt="Sparky">
+<a href="/" title="home"><img class="wordmark" src="{{ root }}/static/sparky.png" alt="Sparky"></a>
 <h1>cluster scoreboard</h1>
 <p class="sub">
   {{ data.rows | length }} models · generated {{ data.generated }}
@@ -92,28 +100,44 @@ the spread; the table above says which direction is good.</p>
 <figure>
   {# Inline SVG: no CDN, no JS, nothing to load. Upper-right is better on both axes,
      which is the convention the Pareto literature settled on. #}
-  <svg viewBox="0 0 640 340" width="100%" role="img" aria-label="quality against throughput">
-    <line x1="60" y1="290" x2="620" y2="290" stroke="currentColor" opacity=".3"/>
-    <line x1="60" y1="20"  x2="60"  y2="290" stroke="currentColor" opacity=".3"/>
-    {% for p in data.plot_points %}
-      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="6"
-              fill="{{ '#ef4444' if p.dominated else '#16a34a' }}" opacity=".85"/>
-      <text x="{{ p.cx + 10 }}" y="{{ p.cy + 4 }}" font-size="11" fill="currentColor">{{ p.label }}</text>
+  <svg viewBox="0 0 640 340" width="100%" role="img" aria-label="accuracy against throughput">
+    {# Zero-based axes with graduations. Gridlines and labels come from scatter_svg.*_ticks,
+       and the dots map through the SAME rounded tops, so every dot sits on this grid. #}
+    {% for t in data.scatter_svg.y_ticks %}
+      <line x1="60" y1="{{ t.py }}" x2="580" y2="{{ t.py }}" stroke="currentColor" opacity=".1"/>
+      <text x="54" y="{{ t.py + 3 }}" font-size="9" text-anchor="end" fill="currentColor" opacity=".6">{{ t.label }}</text>
     {% endfor %}
-    <text x="340" y="325" font-size="12" text-anchor="middle" fill="currentColor" opacity=".7">{{ data.scatter.x_label }} →</text>
-    <text x="18" y="155" font-size="12" text-anchor="middle" fill="currentColor" opacity=".7" transform="rotate(-90 18 155)">{{ data.scatter.y_label }} →</text>
+    {% for t in data.scatter_svg.x_ticks %}
+      <line x1="{{ t.px }}" y1="290" x2="{{ t.px }}" y2="40" stroke="currentColor" opacity=".1"/>
+      <text x="{{ t.px }}" y="304" font-size="9" text-anchor="middle" fill="currentColor" opacity=".6">{{ t.label }}</text>
+    {% endfor %}
+    <line x1="60" y1="290" x2="580" y2="290" stroke="currentColor" opacity=".45"/>
+    <line x1="60" y1="40"  x2="60"  y2="290" stroke="currentColor" opacity=".45"/>
+    {# Names are NOT on the plot — they ran off the right edge and overlapped. Each dot carries
+       a short family mark (q1, n2), coloured by family; the legend below spells them out. A
+       ringed solid dot is on the frontier, a faded one is dominated. #}
+    {% for p in data.scatter_svg.points %}
+      <circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="9" fill="{{ p.colour }}"
+              opacity="{{ '.45' if p.dominated else '1' }}"
+              stroke="{{ 'none' if p.dominated else 'currentColor' }}" stroke-width="1.5"/>
+      <text x="{{ p.cx }}" y="{{ p.cy + 3 }}" font-size="8.5" text-anchor="middle"
+            fill="#fff" font-weight="700">{{ p.mark }}</text>
+    {% endfor %}
+    <text x="320" y="325" font-size="12" text-anchor="middle" fill="currentColor" opacity=".7">{{ data.scatter.x_label }} →</text>
+    <text x="16" y="165" font-size="12" text-anchor="middle" fill="currentColor" opacity=".7" transform="rotate(-90 16 165)">{{ data.scatter.y_label }} →</text>
   </svg>
+  <ul class="legend">
+    {% for p in data.scatter_svg.points %}
+      <li><span class="key" style="background:{{ p.colour }}">{{ p.mark }}</span>{{ p.label }}</li>
+    {% endfor %}
+  </ul>
   <figcaption>
-    Upper-right is better on both axes. Red = <strong>dominated</strong>: another model is
-    at least as good on accuracy, throughput <em>and</em> node occupancy, so there is no
-    workload where it is the right choice. Everything green is a legitimate pick — which
-    one depends on whether you want context, speed, or a free node.
+    Upper-right is better on both axes; <strong>colour is the model family</strong> and each
+    dot's mark (q1, n2, …) keys the legend. The <strong>ringed, solid</strong> dots are the
+    frontier — the picks worth making, depending on whether you want context, speed, or a free
+    node. The faded ones are beaten on every axis at once.
   </figcaption>
 </figure>
-{% endif %}
-
-{% if data.dominated %}
-<div class="note">Dominated: {{ data.dominated | join(', ') }}</div>
 {% endif %}
 
 <script>

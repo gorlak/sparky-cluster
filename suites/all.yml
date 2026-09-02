@@ -62,3 +62,11 @@ jobs:
   - profile: nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4
   - profile: nvidia-nemotron-3-super-120b-a12b-nvfp4
   - profile: qwen3-vl-235b-a22b-instruct-nvfp4
+  # ── SGLang (ADR-0030), the second engine kind ──────────────────────────────
+  # qwen3.8-flash-next-nvfp4 is the FIRST sglang engine and joins on the same basis as
+  # glm/mistral above: it must have ONE clean attended activation FIRST — its bring-up is a
+  # manual `activate qwen3.8-flash-next-nvfp4`, not a suite run — so DO NOT launch `all`
+  # until that lands. Also new: the `bench` regiment shells into the container's `vllm bench
+  # serve`, which an sglang engine has no equivalent of — confirm bench is HTTP-native
+  # (ADR-0016) or give this job a bench-less regiment override before `all` runs it for real.
+  - profile: qwen3.8-flash-next-nvfp4

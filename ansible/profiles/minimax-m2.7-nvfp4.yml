@@ -21,7 +21,7 @@ archetypes: [big-shared, tool-calling]
 # (inference-time CUDA deadlock, 35–55 min in) and is the only TP=2 shape on 26.07.
 # (inference deadlock 35-55 min in). Needs a CONCURRENCY soak, not just duration:
 # the 90-min light-load soak on 2026-08-06 passed and proved little.
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
+image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
   - name: minimax-m2.7-nvfp4
     kind: vllm
@@ -32,7 +32,7 @@ serving_topology:
     # regardless of quant. It ran the regiment clean at 0.80, but the margin is thinner than a
     # sustained heavy-reasoner soak deserves; 0.70 hands ~12 GiB back — measured 23-26 GiB idle at
     # 0.70 (2026-08-30) against the ~11 at 0.80.
-    gpu_memory_utilization: "0.70"
+    memory_fraction: "0.70"
     # 131072 -> 196608 (2026-08-30) = the model's NATIVE context (`max_position_embeddings`).
     # MiniMax-M2.7 is an EXTREME reasoner — it reasons past the eval's cap on 32% of items, and a
     # 6000-token reply here spent the whole budget thinking with no answer emitted — so a window
@@ -41,7 +41,7 @@ serving_topology:
     # 0.70's host headroom with the native context — the gmu drop came out of KV. Fine for a heavy
     # reasoner served to a few users; gmu 0.75 would buy ~1.45x KV at ~15 GiB headroom if
     # concurrency ever matters (still above the ADR-0028 floor).
-    max_model_len: 196608
+    context_length: 196608
     head_extra_args:
       - --enable-chunked-prefill
       - --reasoning-parser deepseek_r1

@@ -2,18 +2,17 @@
 # Infrastructure constants — the same across every profile. Profile files
 # (profiles/*.yml) layer the per-deployment choices (model, TP, flags) on top.
 
-# Container runtime — the cluster DEFAULT image, overridable per profile. Built for
-# GB10 / SM12.1. A profile may set its own `vllm_image` (extra-vars outrank group_vars), so
-# models can run different containers on the same cluster; whatever a profile selects must
-# appear in `container_images` below, which the `images` role guarantees on every node
-# (ADR-0013).
+# Container runtime — the cluster DEFAULT image, overridable per profile with `image:`. Built
+# for GB10 / SM12.1. A profile may name its own `image:`, so models can run different
+# containers on the same cluster; whatever a profile selects must appear in `container_images`
+# below, which the `images` role guarantees on every node (ADR-0013).
 #
-# The default must be the CURRENT image: a new profile that forgets `vllm_image:` inherits
-# it silently, so a stale default ships a stale vLLM to anything that says nothing.
+# The default must be the CURRENT image: a profile that names no `image:` inherits this one
+# silently, so a stale default ships a stale engine to anything that says nothing.
 #
 # This one is BUILT, not pulled, so it is absent from the `pull:` list — the `build:` entry
 # is what guarantees it on every node.
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
+default_image: dgx-spark/vllm:26.07-xgrammar-fix
 # 26.07 upstream: vLLM 0.24.0, NCCL 2.30.7. Pulled because the derived image builds FROM
 # this exact digest — roles/images/files/vllm-26.07-xgrammar-fix/Dockerfile pins the same
 # one, and the two must not drift. Referenced by DIGEST, not tag: `docker pull repo@sha…`
@@ -24,12 +23,24 @@ vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
 # pulled it to both nodes.
 vllm_image_2607: nvcr.io/nvidia/vllm@sha256:95c498a475142c20c989c65e5d223348c09fed83ba17ddf44f117610c0bd3268  # :26.07-py3 — vLLM 0.24.0
 
+# The serving stacks a profile's `serving_topology` may name in `kind:` (ADR-0030). The
+# fleet role renders an engine only if its kind is one of these; the `vllm` and `sglang`
+# roles each select their own subset. Mirrors `topology.SERVING_KINDS` on the Python side
+# (a drift guard test asserts the two agree), so a typo'd kind is dropped in both readers
+# rather than silently half-rendered.
+engine_kinds: [vllm, sglang]
+
+# Rendezvous port for SGLang native multi-node (--dist-init-addr host:PORT). The head's
+# ConnectX-7 IP is the host; workers dial it over the 200 Gbit RoCE rail. One engine is
+# ever live fleet-wide, so this never contends with vLLM's own rendezvous.
+sglang_dist_port: 29500
+
 # Container images required on every node (ADR-0013), ensured by the `images` role
 # in the first play — `docker pull` for upstream images, `docker build` for derived
 # ones (Dockerfiles under roles/images/files/<context>/). This is the codified,
 # all-nodes replacement for the old manual "docker pull on both nodes, digests must
-# match" suite step: per-profile `vllm_image:` above SELECTS which of these a
-# profile runs; this list GUARANTEES they (and their build bases) exist.
+# match" suite step: a profile's `image:` SELECTS which of these it runs; this list
+# GUARANTEES they (and their build bases) exist.
 #
 # Pinning: upstream `pull:` entries are pinned by digest (…@sha256:…) so a bump is a
 # deliberate digest change and both nodes are byte-identical by construction (the
@@ -52,6 +63,15 @@ container_images:
   # patches is expected to keep changing.
   - build: dgx-spark/vllm:26.07-xgrammar-fix
     context: vllm-26.07-xgrammar-fix
+  # SGLang for Qwen3.8-Flash-Next (ADR-0030): the PUBLIC LMSYS day-0 base is pulled by digest,
+  # the SM121-QSA-patched image (roles/images/files/sglang-qwen38fn-sm121/) built on top. The
+  # base is DIGEST-pinned because a TP=2 model must run byte-identical images on both ranks —
+  # the Dockerfile's FROM pins the same digest, and the two must not drift. Re-read with
+  # `docker manifest inspect lmsysorg/sglang:qwen38flashnext` when bumping. The profile selects
+  # this built tag via its `image:` field; this entry is what guarantees it exists on a node.
+  - pull: lmsysorg/sglang@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1  # :qwen38flashnext
+  - build: dgx-spark/sglang:qwen38fn-sm121
+    context: sglang-qwen38fn-sm121
   # --- front-end: head only -----------------------------------------------------
   - pull: "{{ webui_image }}"
     hosts: head

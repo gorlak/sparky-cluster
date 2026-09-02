@@ -167,12 +167,12 @@ def test_single_node_profile_runs_on_snoopy():
     assert e.api_node == "snoopy"
 
 
-def test_gmu_string_parses_to_float():
+def test_memory_fraction_string_parses_to_float():
     e = topology.load_profile("minimax-m2.7-nvfp4").engines[0]
-    assert e.gpu_memory_utilization == 0.70
+    assert e.memory_fraction == 0.70
 
 
-def test_per_profile_vllm_image_override():
+def test_per_profile_image_override():
     # The override exists so a container bump is adopted MODEL BY MODEL, which is what
     # made the 26.07 suite survivable when one model turned out to be a node-killer.
     #
@@ -182,9 +182,9 @@ def test_per_profile_vllm_image_override():
     # left to assert against. The mechanism is still load-bearing and still tested; what
     # changed is that every profile now exercises the pinned branch.
     for prof in topology.by_archetype("big-shared"):
-        assert prof.vllm_image is not None, prof.name
+        assert prof.image is not None, prof.name
     unpinned = [p.name for p in topology.all_profiles()
-                if p.engines and p.vllm_image is None]
+                if p.engines and p.image is None]
     assert unpinned == [], f"expected a single-container fleet, found {unpinned}"
 
 

@@ -1,6 +1,6 @@
 # Profile tuning — memory budgets, headroom, and workflow fit
 
-How to choose `gpu_memory_utilization` and `max_model_len` for a profile *on
+How to choose `memory_fraction` and `context_length` for a profile *on
 this cluster's hardware*. The numbers below are specific to our 2-node DGX
 Spark setup (128 GiB unified memory per node, **~121 GiB usable**, ConnectX-7
 NCCL). Companion to [`serving-topology.md`](serving-topology.md), which covers
@@ -14,7 +14,7 @@ two **independent things**:
 1. **Headroom *inside* vLLM's reservation** — KV cache / batching capacity. The
    slack vLLM has between (weights + CUDA graphs) and its gmu budget. Determines
    how many concurrent sequences the engine can hold and how long
-   `max_model_len` can be. More helps **throughput under concurrency**; useless
+   `context_length` can be. More helps **throughput under concurrency**; useless
    beyond what your real workload uses.
 
 2. **Headroom *outside* vLLM's reservation** — system / user / dev memory. What
@@ -67,7 +67,7 @@ a config fingerprint and refreshed by `smoke` and `soak`, per
 [ADR-0028 §4](adr/0028-unified-memory-oom-headroom.md) — read them with `sparky`,
 not from a table someone has to hand-edit.
 
-## Picking `gpu_memory_utilization`
+## Picking `memory_fraction`
 
 Decision procedure:
 
@@ -76,11 +76,11 @@ Decision procedure:
    *"0 GiB, fully committed"*.
 2. **vLLM budget = `121 GiB − outside_headroom`**.
 3. **Subtract weights shard and CUDA graphs** to find KV available.
-4. **Check KV fits your `max_model_len`** with reasonable batching: aim for
+4. **Check KV fits your `context_length`** with reasonable batching: aim for
    per-sequence KV × (2–5) so the engine can hold a few concurrent sequences.
 5. **gmu = vLLM_budget / 121.**
 
-If step 4 fails: lower `max_model_len`, raise `gmu` (eats into outside
+If step 4 fails: lower `context_length`, raise `gmu` (eats into outside
 headroom), or accept lower concurrent capacity.
 
 ## Workflow archetypes
@@ -117,7 +117,7 @@ Numbers from measured deploys, 2026-05.
 | At gmu 0.90: KV available | ~11.7 GiB |
 | At gmu 0.90: outside headroom | ~5 GiB |
 | **Workflow fit** | Fully-committed; no realistic dev-headroom variant |
-| `max_model_len` | `32768` empirically confirmed; sliding_window=512 may allow more but hasn't been measured |
+| `context_length` | `32768` empirically confirmed; sliding_window=512 may allow more but hasn't been measured |
 
 ### MiniMax-M2.7-AWQ-4bit — `minimax-m2.7-awq`, TP=2 *(retired 2026-08-08 — kept for the math)*
 | | value |
@@ -169,7 +169,7 @@ per-node weight traffic buys. "No NVLink" predicts a penalty only if the workloa
 interconnect-bound, and decode here is not.
 
 **Caveat on the KV column.** Those pairs differ in *two* variables — the TP degree **and**
-`gpu_memory_utilization` (0.55 single vs 0.80 TP=2). Sharding frees the memory; raising gmu
+`memory_fraction` (0.55 single vs 0.80 TP=2). Sharding frees the memory; raising gmu
 is what claims it. A single-node profile at gmu 0.80 would hold roughly 1.9M KV tokens for
 Qwen3-Coder, so TP=2's genuine context advantage is nearer **3×** than the 7.6× the table
 implies. The speed rows are unaffected — gmu does not change generation rate.
@@ -194,7 +194,7 @@ After any deploy, re-read vLLM's startup log lines:
 [gpu_worker.py]       Available KV cache memory: Z GiB
 ```
 Plug `X + Y + Z` back into the math here; verify the per-rank min `Z` covers
-your chosen `max_model_len` at the concurrency you actually need. If vLLM
+your chosen `context_length` at the concurrency you actually need. If vLLM
 refuses to start it'll emit `Based on the available memory, the estimated
 maximum model length is N` — **believe that number over the back-of-envelope
 budget**.

@@ -32,7 +32,12 @@ CURRENT_TOPOLOGY = Path("/opt/cluster/current-topology.json")
 
 @dataclass(frozen=True)
 class Engine:
-    """One vLLM engine as declared in a profile's `serving_topology`."""
+    """One serving engine as declared in a profile's `serving_topology`.
+
+    `kind` names which serving stack runs it — `vllm` or `sglang` (ADR-0030). It
+    decides the systemd template unit, the container name and the state-marker prefix
+    (all `{kind}@…` / `{kind}-…`); everything else here is engine-agnostic, which is
+    the whole point of keeping SGLang reconciler-managed rather than forked."""
 
     name: str
     kind: str
@@ -41,8 +46,8 @@ class Engine:
     model: str
     served_as: str
     tensor_parallel_size: int
-    gpu_memory_utilization: float
-    max_model_len: int
+    memory_fraction: float
+    context_length: int
     head_extra_args: tuple[str, ...] = ()
     worker_extra_args: tuple[str, ...] = ()
     # Weights this engine NEEDS but does not SERVE — today, a speculative-decoding draft
@@ -72,9 +77,11 @@ class Engine:
 
     @property
     def unit(self) -> str:
-        """systemd unit — ONE template unit, instanced per engine (ADR-0018), with
-        the same name on every node it spans (ADR-0003)."""
-        return f"vllm@{self.name}.service"
+        """systemd unit — ONE template unit PER KIND, instanced per engine (ADR-0018 /
+        ADR-0030), with the same name on every node it spans (ADR-0003). `vllm@…` and
+        `sglang@…` are separate template units; the reconciler drives whichever the
+        engine's `kind` names."""
+        return f"{self.kind}@{self.name}.service"
 
     @property
     def env_file(self) -> str:
@@ -89,7 +96,7 @@ class Engine:
 
     @property
     def container(self) -> str:
-        return f"vllm-{self.name}"
+        return f"{self.kind}-{self.name}"
 
     def rank_of(self, node: str) -> int:
         """torch.distributed rank = the node's index in `nodes`."""
@@ -162,7 +169,7 @@ class Profile:
 
     name: str
     engines: tuple[Engine, ...]
-    vllm_image: str | None = None
+    image: str | None = None
     blocked: bool = False
     path: Path | None = None
     # What this profile is an EXAMPLE OF. See ARCHETYPES above; validated by lint, so a
@@ -185,6 +192,12 @@ class Profile:
         raise KeyError(f"no engine {name!r} in profile {self.name!r}")
 
 
+
+# The serving stacks a profile may name in `kind:` (ADR-0030). `vllm` is the default and
+# the historical one; `sglang` is the second, reconciler-managed exactly like it. The
+# fleet role (load_one.yml) filters on the same set, so a typo'd kind is dropped in both
+# readers rather than silently rendered by one.
+SERVING_KINDS: tuple[str, ...] = ("vllm", "sglang")
 
 # The one well-known front port. At most ONE live engine per port fleet-wide is what
 # lets the stable endpoint be a static upstream list (ADR-0018), so this is an invariant
@@ -254,8 +267,8 @@ def _engine_from_dict(d: dict) -> Engine:
         model=d["model"],
         served_as=d["served_as"],
         tensor_parallel_size=int(d.get("tensor_parallel_size", len(nodes))),
-        gpu_memory_utilization=float(d["gpu_memory_utilization"]),
-        max_model_len=int(d["max_model_len"]),
+        memory_fraction=float(d["memory_fraction"]),
+        context_length=int(d["context_length"]),
         head_extra_args=tuple(d.get("head_extra_args") or ()),
         worker_extra_args=tuple(d.get("worker_extra_args") or ()),
         extra_models=tuple(d.get("extra_models") or ()),
@@ -275,12 +288,12 @@ def load_profile(name_or_path: str | Path) -> Profile:
     engines = tuple(
         _engine_from_dict(e)
         for e in (data.get("serving_topology") or [])
-        if e.get("kind", "vllm") == "vllm"
+        if e.get("kind", "vllm") in SERVING_KINDS
     )
     return Profile(
         name=data.get("profile_name", path.stem),
         engines=engines,
-        vllm_image=data.get("vllm_image"),
+        image=data.get("image"),
         blocked=bool(data.get("blocked", False)),
         archetypes=tuple(data.get("archetypes") or ()),
         hf_repo=data.get("hf_repo"),

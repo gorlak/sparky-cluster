@@ -37,7 +37,7 @@ big for one node; it measured faster for models that fit, too. `empty` is the sp
 
 This doc is the **catalog** of profiles that exist today. Companion docs:
 
-- [`profile-tuning.md`](profile-tuning.md) — *why* the `gmu` and `max_model_len`
+- [`profile-tuning.md`](profile-tuning.md) — *why* the `gmu` and `context_length`
   values below were picked, with the per-model memory math and the GB10
   unified-memory accounting quirk.
 - [`serving-topology.md`](serving-topology.md) — the `serving_topology` schema
@@ -46,7 +46,7 @@ This doc is the **catalog** of profiles that exist today. Companion docs:
 ## Catalog
 
 Measured 2026-08-10 on the ADR-0016 HTTP-native harness. **`ctx` is what one request may
-use (`max_model_len`); `KV` is what the cache actually holds** — the gap is the headroom
+use (`context_length`); `KV` is what the cache actually holds** — the gap is the headroom
 we are choosing not to offer, and on this fleet it is enormous.
 
 | Profile | Model | decode | ctx / KV | notes |
@@ -107,10 +107,10 @@ argument for a single-node profile, and no current model makes it.
   > Was documented as 35.2M until 2026-08-12. Re-measured twice that day — 28,130,067
   > during a busy activation sweep and 28,175,438 on a fully idle box, a 0.16% spread —
   > so host load was never the explanation. 35.2M would need ~83.5 GiB of KV, and
-  > `gpu_memory_utilization: 0.80` yields 66.9 GiB after 23.11 GiB of weights.
+  > `memory_fraction: 0.80` yields 66.9 GiB after 23.11 GiB of weights.
 - **Why so large:** of 88 layers only 8 are attention; the rest are Mamba and MLP, and a
   Mamba layer's state is fixed rather than growing per token. Context is nearly free here.
-- **Workflow:** long documents, whole-codebase reading. Raise `max_model_len` before
+- **Workflow:** long documents, whole-codebase reading. Raise `context_length` before
   reaching for another model.
 
 ### qwen3.6-35b-a3b-nvfp4
@@ -221,7 +221,7 @@ The **procedure** is owned elsewhere and is not repeated here: [[model-bringup]]
 sequence from staged weights to serving, [[model-evaluation]] for the fit checks and flag
 decisions, [`updating.md`](updating.md) for the fan-out (every place that must move
 together), and [`profile-tuning.md`](profile-tuning.md) for choosing
-`gpu_memory_utilization` and `max_model_len`.
+`memory_fraction` and `context_length`.
 
 What this file adds is the **catalogue above** — what each profile is and why — and the
 constraints below, which are properties of the fleet rather than steps in a procedure.

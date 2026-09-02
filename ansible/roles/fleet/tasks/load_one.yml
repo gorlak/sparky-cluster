@@ -23,7 +23,7 @@
 - name: Apply engine defaults for {{ profile_path | basename }}
   ansible.builtin.set_fact:
     _norm: "{{ _norm + [_engine_defaults | combine(item)] }}"
-  loop: "{{ _p.serving_topology | default([]) | selectattr('kind', 'defined') | selectattr('kind', 'equalto', 'vllm') | list }}"
+  loop: "{{ _p.serving_topology | default([]) | selectattr('kind', 'defined') | selectattr('kind', 'in', engine_kinds) | list }}"
   loop_control:
     label: "{{ item.name }}"
   vars:
@@ -42,7 +42,9 @@
   vars:
     _pname: "{{ _p.profile_name | default(profile_path | basename | regex_replace('\\.ya?ml$', '')) }}"
     _blocked: "{{ _p.blocked | default(false) | bool }}"
-    _image: "{{ _p.vllm_image | default(vllm_image) }}"
+    # The serving image a profile selects — `image:`, kind-neutral (an SGLang profile names an
+    # SGLang image), defaulting to `default_image` (the fleet's current vLLM image). ADR-0030.
+    _image: "{{ _p.image | default(default_image) }}"
     _vllm: "{{ _norm }}"
     # Per-engine provenance: which profile selects it, which image it runs, and
     # whether that profile is parked. Carried on the engine so the vllm role can

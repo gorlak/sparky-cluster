@@ -34,7 +34,7 @@
 # concurrent load) exhausted RAM + all 16 GiB swap and hard-reset BOTH TP=2 nodes; the
 # fail-safe (ADR-0009) brought them back empty and reachable. 0.70 hands ~12 GiB back to
 # the host (~18 GiB idle headroom) so the harness's own load has room. KV at 0.70 still
-# holds max_model_len many times over. The right ceiling is now a measured question, not a
+# holds context_length many times over. The right ceiling is now a measured question, not a
 # guess — see docs/measurement.md.
 # ONE NAME. profile == engine == served_as == the lowercased canonical HF model
 # name, so the scoreboard, the systemd unit, the API and huggingface.co all agree.
@@ -47,14 +47,14 @@ archetypes: [big-shared, tool-calling, vision]
 # The parsers are NOT guesses: `qwen3_xml` and `qwen3` are inherited from the MTP sibling,
 # which serves with them today. That is why this profile can carry tool flags while the
 # four brand-new ones deliberately cannot — a proven name is not a guessed one.
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
+image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
   - name: qwen3.6-35b-a3b-nvfp4
     kind: vllm
     model: Qwen3.6-35B-A3B-NVFP4
     served_as: qwen3.6-35b-a3b-nvfp4
-    gpu_memory_utilization: "0.70"
-    max_model_len: 262144
+    memory_fraction: "0.70"
+    context_length: 262144
     head_extra_args:
       - --enable-chunked-prefill
       - --kv-cache-dtype fp8

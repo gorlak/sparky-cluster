@@ -44,12 +44,21 @@
       tags: [images]
 
 # The serving surface: one template unit + one env file per allowlisted engine.
-# Installs, never starts.
+# Installs, never starts. The vllm role runs FIRST — it owns the shared env-file janitor
+# and the fleet-wide index.json/allowlist that span both kinds (ADR-0030).
 - name: vLLM engine surface (all nodes)
   hosts: all
   roles:
     - role: vllm
       tags: [vllm]
+
+# The second engine kind (ADR-0030): additive, same template-unit + env-file shape as
+# vLLM. No-op on a fleet with no `kind: sglang` profile.
+- name: SGLang engine surface (all nodes)
+  hosts: all
+  roles:
+    - role: sglang
+      tags: [sglang]
 
 # The activation boundary: the fixed reconciler and its two bounded triggers.
 - name: Activation reconciler and its grants (all nodes)

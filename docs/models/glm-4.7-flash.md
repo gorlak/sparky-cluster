@@ -35,8 +35,8 @@
   arch, transformers **5.6.1** recognises the config, `glm47`/`glm45` parsers ship in 0.24.0. No
   derived image was needed; the fallback tracker (`docs/upgrades/container-glm-4.7-flash-tf5.md`)
   went unused.
-- **`gpu_memory_utilization: 0.70`** (ADR-0028) — held ~18–24 GiB host free under load.
-- **`max_model_len: 202,752`** (native). KV at 0.70 holds **~1,016,000 tokens (51 GiB)** → ~5×
+- **`memory_fraction: 0.70`** (ADR-0028) — held ~18–24 GiB host free under load.
+- **`context_length: 202,752`** (native). KV at 0.70 holds **~1,016,000 tokens (51 GiB)** → ~5×
   concurrency at the full window.
 - **Flags:** `--enable-chunked-prefill --enable-auto-tool-choice --tool-call-parser glm47
   --reasoning-parser glm45`.

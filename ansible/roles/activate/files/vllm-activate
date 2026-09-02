@@ -41,7 +41,8 @@ Over the forced-command channel, SSH_ORIGINAL_COMMAND is one of:
 Safety contract (the ADR-0018 invariants):
   * **Fail to `empty` on any uncertainty** — an unreadable/unparseable request, an
     unknown profile, or a failure on any node activates *nothing*; never a guess.
-  * **Reachability is never gated on a model** — only vllm@ units are touched.
+  * **Reachability is never gated on a model** — only the engine units (`vllm@` /
+    `sglang@`, ADR-0030) are touched, never sshd, docker or the network.
   * **The markers are the source of truth** — each node writes its marker set as an
     all-or-nothing transaction, *then* drives systemd to match; any mid-run failure
     re-drives systemd back to the markers, and a reconciler killed mid-run is
@@ -286,30 +287,45 @@ def _systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return proc
 
 
-def unit_of(engine: str) -> str:
-    return f"vllm@{engine}.service"
+def kind_of(env: dict) -> str:
+    """Which serving stack backs this engine (ADR-0030). The env file the reconciler
+    already parses carries ENGINE_KIND; absent, it is a pre-0030 vLLM engine."""
+    return env.get("ENGINE_KIND", "vllm")
 
 
-def is_active(engine: str) -> bool:
-    return _systemctl("is-active", "--quiet", unit_of(engine), check=False).returncode == 0
+def unit_of(engine: str, kind: str = "vllm") -> str:
+    """The systemd instance for `engine`. There is ONE template unit per kind
+    (`vllm@…`, `sglang@…`); the decision logic never touches this — only the functions
+    that actually drive systemd do, and they take the kind from the engine's env."""
+    return f"{kind}@{engine}.service"
 
 
-def unit_state(engine: str) -> str:
+def running_marker(engine: str, kind: str = "vllm") -> Path:
+    """The ADR-0009 cleanly-stopped sentinel. Kind-scoped because the unit that touches
+    and clears it is kind-specific (`{kind}-<engine>.running`)."""
+    return STATE_DIR / f"{kind}-{engine}.running"
+
+
+def is_active(engine: str, kind: str = "vllm") -> bool:
+    return _systemctl("is-active", "--quiet", unit_of(engine, kind), check=False).returncode == 0
+
+
+def unit_state(engine: str, kind: str = "vllm") -> str:
     """The unit's ActiveState, not a bool.
 
     `is-active --quiet` answers "is it serving", and the state that cost a suite on
     2026-08-11 was `activating` — a failing unit inside its `RestartSec` gap. It answers
     false there, while the unit still owns its port and is seconds from taking it again.
     """
-    out = _systemctl("show", unit_of(engine), "-p", "ActiveState", "--value", check=False)
+    out = _systemctl("show", unit_of(engine, kind), "-p", "ActiveState", "--value", check=False)
     return (out.stdout or "").strip() or "unknown"
 
 
 def live_state(engines) -> dict[str, str]:
-    return {name: unit_state(name) for name in engines}
+    return {name: unit_state(name, kind_of(env)) for name, env in engines.items()}
 
 
-def active_for(engine: str) -> float | None:
+def active_for(engine: str, kind: str = "vllm") -> float | None:
     """Seconds since this engine's unit entered the active state, or None if it is
     not active. Monotonic, so it survives a clock step.
 
@@ -319,7 +335,7 @@ def active_for(engine: str) -> float | None:
     an activation, and is indistinguishable from a genuinely stuck engine without
     knowing how long it has been that way.
     """
-    raw = _systemctl("show", unit_of(engine), "-p", "ActiveEnterTimestampMonotonic",
+    raw = _systemctl("show", unit_of(engine, kind), "-p", "ActiveEnterTimestampMonotonic",
                      "--value", check=False).stdout.strip()
     try:
         entered = int(raw) / 1_000_000
@@ -362,22 +378,22 @@ def write_markers(new: dict[str, str], drop: list[str]) -> dict[str, str]:
     return previous
 
 
-def stop_engine(engine: str) -> None:
-    _systemctl("stop", unit_of(engine))
+def stop_engine(engine: str, kind: str = "vllm") -> None:
+    _systemctl("stop", unit_of(engine, kind))
 
 
-def start_engine(engine: str) -> None:
+def start_engine(engine: str, kind: str = "vllm") -> None:
     # Activation is explicit and operator- or agent-initiated, so it must always
     # proceed — including as the recovery path out of an ADR-0009 fail-safe boot,
     # where the surviving `.running` marker would otherwise make `start` a silent
     # no-op via ConditionPathExists.
-    (STATE_DIR / f"vllm-{engine}.running").unlink(missing_ok=True)
+    running_marker(engine, kind).unlink(missing_ok=True)
     # …and out of a crash loop. Once StartLimitBurst trips, systemd refuses `start`
     # with "Start request repeated too quickly" until the unit is reset. Without this,
     # recovering a crash-looped engine would need root by some other route — which is
     # precisely what this program exists to avoid.
-    _systemctl("reset-failed", unit_of(engine), check=False)
-    _systemctl("start", unit_of(engine))
+    _systemctl("reset-failed", unit_of(engine, kind), check=False)
+    _systemctl("start", unit_of(engine, kind))
 
 
 def drive_from_markers(phase: str = "all") -> None:
@@ -387,12 +403,13 @@ def drive_from_markers(phase: str = "all") -> None:
     engines = read_engines()
     markers = read_markers()
     for name in sorted(engines):
+        kind = kind_of(engines[name])
         want = name in markers
-        live = is_active(name)
+        live = is_active(name, kind)
         if phase in ("stop", "all") and live and not want:
-            stop_engine(name)
+            stop_engine(name, kind)
         if phase in ("start", "all") and want and not live:
-            start_engine(name)
+            start_engine(name, kind)
 
 
 def reconcile_node(profile, *, phase="all", force=False, preserve=False, node=None) -> Plan:
@@ -422,10 +439,10 @@ def reconcile_node(profile, *, phase="all", force=False, preserve=False, node=No
         if phase in ("stop", "all"):
             previous = write_markers(p.markers, p.drop_markers)
             for engine in p.stop + p.restart:
-                stop_engine(engine)
+                stop_engine(engine, kind_of(engines[engine]))
         if phase in ("start", "all"):
             for engine in p.start + p.restart:
-                start_engine(engine)
+                start_engine(engine, kind_of(engines[engine]))
     except Exception as exc:
         # Live state must never be left != the markers. write_markers() already
         # rolled itself back if IT was what failed, so in every case re-driving to
@@ -449,7 +466,8 @@ def node_status(node: str | None = None) -> dict:
     engines, markers = read_engines(), read_markers()
     entries = []
     for name, env in sorted(engines.items()):
-        state = _systemctl("is-active", unit_of(name), check=False).stdout.strip() or "unknown"
+        kind = kind_of(env)
+        state = _systemctl("is-active", unit_of(name, kind), check=False).stdout.strip() or "unknown"
         # ADR-0009's recovery state is NARROW: this engine is desired, systemd left it
         # stopped, and the unclean-shutdown marker survived to prove why. Everything
         # else that merely isn't `active` is something in motion, and reporting it as
@@ -461,14 +479,15 @@ def node_status(node: str | None = None) -> dict:
         # That window used to render as "⚠ Fail-safe recovery" on every switch.
         entries.append({
             "name": name,
+            "kind": kind,
             "profile": env.get("ENGINE_PROFILE"),
-            "unit": unit_of(name),
+            "unit": unit_of(name, kind),
             "state": state,
-            "active_for": active_for(name),
+            "active_for": active_for(name, kind),
             "desired": name in markers,
             "pending": name in markers and markers[name] != env["_hash"],
             "failsafe": (name in markers and state == "inactive"
-                         and (STATE_DIR / f"vllm-{name}.running").exists()),
+                         and running_marker(name, kind).exists()),
         })
     return {"node": node, "engines": entries}
 
@@ -566,7 +585,8 @@ def topology_entries(profile: str) -> list[dict]:
     index = [e for e in read_index() if e.get("profile") == profile]
     if not index:
         index = [
-            {"name": name, "profile": profile, "nodes": env.get("ENGINE_NODES", "").split(),
+            {"name": name, "kind": kind_of(env), "profile": profile,
+             "nodes": env.get("ENGINE_NODES", "").split(),
              "api_node": env.get("ENGINE_API_NODE"), "api_addr": env.get("ENGINE_API_ADDR"),
              "port": env.get("ENGINE_PORT"), "model": env.get("ENGINE_MODEL"),
              "served_as": env.get("ENGINE_SERVED_AS"),
@@ -577,12 +597,13 @@ def topology_entries(profile: str) -> list[dict]:
     entries = []
     for e in sorted(index, key=lambda x: x.get("name", "")):
         name = e["name"]
+        kind = e.get("kind", "vllm")
         nodes = e.get("nodes") or []
         entries.append({
             "name": name,
-            "kind": "vllm",
-            "unit": unit_of(name),
-            "container": f"vllm-{name}",
+            "kind": kind,
+            "unit": unit_of(name, kind),
+            "container": f"{kind}-{name}",
             "nodes": nodes,
             "api_node": e.get("api_node") or (nodes[0] if nodes else None),
             "port": int(e.get("port") or 0),
@@ -590,7 +611,7 @@ def topology_entries(profile: str) -> list[dict]:
             "served_as": e.get("served_as") or "",
             "stable_name": e.get("stable_name") or "",
             "model": e.get("model") or "",
-            "marker": str(STATE_DIR / f"vllm-{name}.running"),
+            "marker": str(running_marker(name, kind)),
         })
     return entries
 

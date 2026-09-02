@@ -16,7 +16,7 @@
 #   weights          16 x 5.0 GB + 346 MB = ~80.3 GB = **74.8 GiB**
 #   TP=2, per node   ~37.4 GiB of 121 usable
 #   gmu 0.80         budget ~96.8 GiB/node -> ~59 GiB/node for KV (~118 GiB total)
-#   KV at 4 KiB/tok  ~31M tokens, against a 262,144 max_model_len
+#   KV at 4 KiB/tok  ~31M tokens, against a 262,144 context_length
 # It also fits TP=1 (74.8 GiB on one node), but TP=2 is the shape: measured 2026-08-10,
 # TP=2 beat TP=1 on decode, throughput AND cache for every model tried.
 #
@@ -64,14 +64,14 @@ hf_repo: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
 # What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
 # to this model's name (sparky/topology.py: ARCHETYPES).
 archetypes: [big-shared, tool-calling, mixed-precision]
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
+image: dgx-spark/vllm:26.07-xgrammar-fix  # 26.07 + xgrammar WAR (DEF-0010)
 serving_topology:
   - name: nvidia-nemotron-3-super-120b-a12b-nvfp4
     kind: vllm
     model: NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
     served_as: nvidia-nemotron-3-super-120b-a12b-nvfp4
-    gpu_memory_utilization: "0.80"
-    max_model_len: 262144
+    memory_fraction: "0.80"
+    context_length: 262144
     head_extra_args:
       - --enable-chunked-prefill
       - --enable-auto-tool-choice

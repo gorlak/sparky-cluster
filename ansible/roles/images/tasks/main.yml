@@ -4,7 +4,7 @@
 # node, codified in-repo — but using Docker's native pull/build rather than rsync
 # (Docker owns image distribution; you don't rsync /var/lib/docker). Runs on
 # hosts:all in the first play, so every image a profile might SELECT via
-# `vllm_image:` is GUARANTEED present before the vllm role docker-runs any unit.
+# a profile's `image:` is GUARANTEED present before the vllm role docker-runs any unit.
 #
 # Declaration: `container_images` in group_vars/all.yml. Each entry is either a
 # `pull:` (upstream image, ideally digest-pinned) or a `build:` (derived image,

@@ -36,8 +36,8 @@ def profile_yaml(name, *, model="M", nodes=("sparky", "snoopy"), engine=None,
             model: {model}
             served_as: {engine}
             tensor_parallel_size: {len(nodes)}
-            gpu_memory_utilization: "0.8"
-            max_model_len: 32768
+            memory_fraction: "0.8"
+            context_length: 32768
             head_extra_args: [{', '.join(json.dumps(a) for a in args)}]
             worker_extra_args: [{', '.join(json.dumps(a) for a in worker_args)}]
         """
@@ -204,7 +204,7 @@ def test_a_profile_selecting_an_unmanaged_image_is_rejected(dir_, monkeypatch):
     monkeypatch.setattr(fleet_mod, "managed_images",
                         lambda *a, **k: {"nvcr.io/nvidia/vllm@sha256:good"})
     write(dir_, "typo", profile_yaml("typo") +
-          "vllm_image: nvcr.io/nvidia/vllm@sha256:DEADBEEF\n")
+          "image: nvcr.io/nvidia/vllm@sha256:DEADBEEF\n")
     with pytest.raises(FleetError, match="not in container_images"):
         load_fleet(dir_).validate()
 
@@ -214,7 +214,7 @@ def test_a_profile_selecting_a_managed_image_passes(dir_, monkeypatch):
     monkeypatch.setattr(fleet_mod, "managed_images",
                         lambda *a, **k: {"nvcr.io/nvidia/vllm@sha256:good"})
     write(dir_, "ok", profile_yaml("ok") +
-          "vllm_image: nvcr.io/nvidia/vllm@sha256:good\n")
+          "image: nvcr.io/nvidia/vllm@sha256:good\n")
     load_fleet(dir_).validate()
 
 
@@ -224,8 +224,8 @@ def test_the_real_fleets_images_are_all_managed():
     managed = managed_images()
     assert managed, "container_images did not parse"
     for p in load_fleet().profiles:
-        if p.vllm_image:
-            assert p.vllm_image in managed, f"{p.name}: {p.vllm_image}"
+        if p.image:
+            assert p.image in managed, f"{p.name}: {p.image}"
 
 
 # --- flags that must reach every rank (2026-08-12) ----------------------------

@@ -29,13 +29,30 @@ QUALITY_SCENARIO = "quality:mmlu-pro"
 # (label, store scenario, column, format, higher_is_better)
 COLUMNS = [
     ("accuracy", QUALITY_SCENARIO, "accuracy", "{:.1%}", True),
-    ("out tok/s", "throughput", "output_toks_s", "{:.0f}", True),
-    ("req/s", "throughput", "requests_s", "{:.2f}", True),
+    # SINGLE-USER speed. Both come from the concurrency-1 (`latency`) scenario, because the
+    # fleet's real workload is one session hitting the model at a time (chosen 2026-09-02).
+    # The `throughput` scenario runs 16-way, and its aggregate out tok/s — ~5x higher for a
+    # small-active MoE that batches well — answers a saturation question this cluster does not
+    # face. That run is still recorded; it is just not what the board headlines. `req/s` here is
+    # therefore single-user turnaround (1/request-time), not aggregate completions.
+    ("out tok/s", "latency", "output_toks_s", "{:.0f}", True),
+    ("req/s", "latency", "requests_s", "{:.2f}", True),
     ("TTFT p99", "latency", "ttft_p99_ms", "{:.0f}ms", False),
     ("TPOT", "latency", "tpot_mean_ms", "{:.1f}ms", False),
     ("prefix TTFT", "prefix_cache", "ttft_mean_ms", "{:.0f}ms", False),
-    # How much it can READ. Long-context work is bound by this, not by tokens/s.
-    ("context", "latency", "kv_tokens", "{:,.0f}", True),
+    # Prefill speed at depth: prompt tokens ingested per second on a 64k-token prompt. This is
+    # the long-context "how long before it answers a whole document" cost — attention is
+    # O(n^2), so the `TTFT` column (a 512-token prompt) does not predict it. Blank until the
+    # sweep that gathers the prefill scenarios runs (added 2026-09-02).
+    ("prefill@64k", "prefill@64k", "prefill_toks_s", "{:,.0f}", True),
+    # How much it can READ per request — the configured context window. Long-context work is
+    # bound by this, not by tokens/s. NOT kv_tokens (the TOTAL KV pool, tens of millions): that
+    # is concurrency/cache size, and reading it as "context" is what produced the outlandish
+    # 34M numbers (2026-09-02). It was ALSO why sglang read blank — its kv_tokens was null, but
+    # context_length comes through from /v1/models on every engine. For the fleet the KV pool
+    # dwarfs the window, so configured == usable; a future tight-KV model (kv < window) would
+    # want min(kv_tokens, this).
+    ("context", "latency", "context_length", "{:,.0f}", True),
 ]
 
 
@@ -189,10 +206,51 @@ def pareto(table: list[Row], x_col: str = "out tok/s", y_col: str = "accuracy"
     return points, dominated
 
 
+NAME_W = 40   # legend name column: wide enough for all but the longest, which get middle-elided
+
+
+def _fit(text: str, width: int) -> str:
+    """Middle-elide to `width` so BOTH ends survive. The family prefix and the quant suffix
+    (`nvidia-nemotron-…-nvfp4`) are each identifying; lopping off either end makes two models
+    read alike. A fixed width is also what keeps the legend's later columns in alignment —
+    the old `{label:<34}` did not truncate, so a 43-char name shoved `tok/s` off to the right
+    and, with `(dominated)`, ran the line past the terminal edge."""
+    if len(text) <= width:
+        return text
+    if width <= 1:
+        return text[:width]
+    head = (width - 1) // 2
+    return text[:head] + "…" + text[len(text) - (width - 1 - head):]
+
+
+def _place(grid: list[list[str]], row: int, col: int, mark: str) -> None:
+    """Drop `mark` at (row, col), or the nearest free cell if that one is taken. Two models at
+    nearly-identical speed+accuracy map to the same cell (minimax and nemotron-super do), and a
+    plain assignment let the later one overwrite the earlier — which then vanished from the plot
+    with no sign it was ever there. The scatter is a qualitative trade-off view, so nudging a
+    collision to an adjacent cell is truer than dropping the point."""
+    h, w = len(grid), len(grid[0])
+    if grid[row][col] == " ":
+        grid[row][col] = mark
+        return
+    for radius in range(1, max(h, w) + 1):     # expanding ring — the closest free cell wins
+        for r in range(max(0, row - radius), min(h, row + radius + 1)):
+            for c in range(max(0, col - radius), min(w, col + radius + 1)):
+                if max(abs(r - row), abs(c - col)) == radius and grid[r][c] == " ":
+                    grid[r][c] = mark
+                    return
+    grid[row][col] = mark                      # grid full (more points than cells) — don't lose it
+
+
 def plot(points: list[tuple[str, float, float]], dominated: set[str],
          width: int = 56, height: int = 15) -> str:
-    """A terminal scatter. Deliberately ASCII: this belongs next to the table in the
-    same output, and a PNG the operator has to go and open would not get looked at."""
+    """A terminal scatter. Deliberately ASCII: this belongs next to the table in the same
+    output, and a PNG the operator has to go and open would not get looked at.
+
+    Two invariants keep it readable: every point gets a *visible* mark (collisions nudge to a
+    free cell via `_place`, rather than silently overwriting), and no line runs past the frame
+    (names middle-elide to a fixed column, and the right-hand axis label is flush to the edge,
+    not spilling past it)."""
     if len(points) < 2:
         return "  (need at least two measured models to plot a trade-off)"
     xs = [p[1] for p in points]
@@ -202,21 +260,29 @@ def plot(points: list[tuple[str, float, float]], dominated: set[str],
     span_x = (x1 - x0) or 1.0
     span_y = (y1 - y0) or 1.0
 
+    ordered = sorted(points, key=lambda p: -p[2])
+    marks = [chr(ord("a") + i) if i < 26 else "*" for i in range(len(ordered))]
+
     grid = [[" "] * width for _ in range(height)]
     legend = []
-    for i, (label, x, y) in enumerate(sorted(points, key=lambda p: -p[2])):
+    for mark, (label, x, y) in zip(marks, ordered):
         col = int((x - x0) / span_x * (width - 1))
         row = height - 1 - int((y - y0) / span_y * (height - 1))
-        mark = chr(ord("a") + i) if i < 26 else "*"
-        grid[row][col] = mark
+        _place(grid, row, col, mark)
         flag = "  (dominated)" if label in dominated else ""
-        legend.append(f"    {mark}  {label:<34} {x:>7.0f} tok/s  {y:>6.1%}{flag}")
+        legend.append(f"    {mark}  {_fit(label, NAME_W):<{NAME_W}} "
+                      f"{x:>5.0f} tok/s  {y:>5.1%}{flag}")
+
+    lo, hi = f"{x0:.0f} tok/s", f"{x1:.0f} tok/s"
+    # `hi` flush to the frame's right edge: the label line's "   " gutter (3) matches the axis
+    # rule's "  +" (3), and lo + pad + hi spans exactly `width`, so hi ends where the rule does.
+    axis = "   " + lo + " " * max(1, width - len(lo) - len(hi)) + hi
 
     out = [f"  accuracy {y1:.0%}"]
     out += ["  |" + "".join(r) for r in grid]
     out.append(f"  accuracy {y0:.0%}" if y1 != y0 else "  |")
-    out.append(f"  +{'-' * width}")
-    out.append(f"   {x0:.0f} tok/s{' ' * max(1, width - 22)}{x1:.0f} tok/s")
+    out.append("  +" + "-" * width)
+    out.append(axis)
     out.append("")
     out += legend
     return "\n".join(out)

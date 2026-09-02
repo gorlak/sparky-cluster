@@ -33,7 +33,7 @@
 #   KV/rank. That is the TIGHTEST of the staged models — comparable to `step-3.5-flash-fp8`'s
 #   squeeze — so 131072 rather than the model's nominal 1,048,576 context. **A 1M-token
 #   context is not reachable on this hardware at this footprint**; do not raise
-#   `max_model_len` toward it without redoing the arithmetic.
+#   `context_length` toward it without redoing the arithmetic.
 #   Outside headroom: ~24 GiB/node.
 #
 # RISK: weight load at ~78 GiB/node is the closest any current profile comes to the
@@ -57,21 +57,21 @@
 #
 # UNBLOCK WHEN: a container carrying **sm_121 NVFP4 kernels** (the expert-scale path)
 # probes clean. NOT "block-scaled FP8" — FP8 already works on SM 12.x; it is the FP4
-# experts that have no kernels. Route is a per-profile `vllm_image` (ADR-0013). See DEF-0014.
+# experts that have no kernels. Route is a per-profile `image` (ADR-0013). See DEF-0014.
 blocked: true
 profile_name: deepseek-v4-flash-0731
 hf_repo: deepseek-ai/DeepSeek-V4-Flash-0731
 # What this profile is an EXAMPLE OF, so tests can bind to the SHAPE rather than
 # to this model's name (sparky/topology.py: ARCHETYPES).
 archetypes: [big-shared]
-vllm_image: dgx-spark/vllm:26.07-xgrammar-fix
+image: dgx-spark/vllm:26.07-xgrammar-fix
 serving_topology:
   - name: deepseek-v4-flash-0731
     kind: vllm
     model: DeepSeek-V4-Flash-0731
     served_as: deepseek-v4-flash-0731
-    gpu_memory_utilization: "0.80"
-    max_model_len: 131072
+    memory_fraction: "0.80"
+    context_length: 131072
     # WAR candidate for DEF-0014. The model loads completely (48/48 shards, memory flat)
     # and then dies in DeepGEMM — "Unknown SF transformation" — because there is no
     # scale-factor layout for this format on sm_121. Disabling DeepGEMM should fall back

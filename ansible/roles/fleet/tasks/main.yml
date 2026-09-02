@@ -16,7 +16,9 @@
 #                        `_profile` / `_image` / `_blocked`
 #   fleet_allowlist    — ACTIVATABLE profile names (non-blocked), sorted
 #   fleet_models       — every model name the fleet keeps, sorted
-#   host_engines       — the engines whose `nodes` include this host
+#   host_engines       — the engines whose `nodes` include this host (every kind)
+#   host_vllm_engines  — host_engines of kind vllm  — what the `vllm` role renders
+#   host_sglang_engines— host_engines of kind sglang — what the `sglang` role renders
 #   host_models        — the weights THIS node must hold (see below)
 
 - name: Reset the fleet accumulators
@@ -43,6 +45,13 @@
           + fleet_engines | map(attribute='extra_models', default=[]) | flatten)
          | unique | sort | list }}
     host_engines: "{{ fleet_engines | selectattr('nodes', 'contains', inventory_hostname) | list }}"
+
+# Split host_engines by kind so each engine role renders only its own — a separate task
+# because these reference host_engines, which the set_fact above only just defined.
+- name: Split this host's engines by serving kind (ADR-0030)
+  ansible.builtin.set_fact:
+    host_vllm_engines: "{{ host_engines | selectattr('kind', 'equalto', 'vllm') | list }}"
+    host_sglang_engines: "{{ host_engines | selectattr('kind', 'equalto', 'sglang') | list }}"
 
 # Per-node disk tracks what each node actually RUNS, not the whole fleet — with one
 # deliberate exception: the head is the CANONICAL store. `sparky download` stages

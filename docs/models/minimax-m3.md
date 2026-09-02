@@ -46,7 +46,7 @@ Neither format fits on this 2-node cluster at TP=2.
 
 At TP=2 — the maximum this cluster supports (2 nodes × 1 GPU each) — the weights alone
 exceed the 121 GiB usable memory per node by ~4 GiB. There is no gmu setting that fixes
-this; `gpu_memory_utilization` controls KV cache allocation, not the weight footprint.
+this; `memory_fraction` controls KV cache allocation, not the weight footprint.
 
 **M3 requires at minimum 4 GPUs (TP=4) to distribute the weight shards below 121 GiB per node.**
 The official NVIDIA recipe uses `--tensor-parallel-size 8` (targeting 8× B200/H200 nodes).

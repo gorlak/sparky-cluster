@@ -455,7 +455,77 @@ def test_scoreboard_renders_the_snapshot(panel, tmp_path, monkeypatch):
     body = client.get("/scoreboard").text
     assert "75.0%" in body and "beaten" in body
     assert "†" in body, "an unreliable accuracy must stay flagged in the UI"
-    assert "Dominated: beaten" in body
+    # dominance now shows only as the faded/ringed dot — the word is not stamped on every
+    # legend row nor repeated as a whole-list note (that read as clutter). Check the visible
+    # markers are gone; the invisible JSON data blob still carries the field, which is fine.
+    assert ">dominated<" not in body, "per-row dominated tag should be gone from the legend"
+    assert "Dominated:" not in body, "the whole-list dominated note should be gone"
+
+
+def test_scatter_uses_family_marks_colours_and_keeps_dots_in_frame(panel):
+    """Model names printed ON the plot ran off the 640-wide right edge and overlapped each
+    other. The chart now carries a short per-family mark (q1, n2, mm1) coloured by family, with
+    the names in the legend. Marks number within a family in accuracy order, one family is one
+    colour, every dot stays in the 640x340 frame, and two models on one coordinate are nudged
+    apart rather than one hiding under the other."""
+    main, _client = panel
+    pts = [{"label": "qwen3.6-35b-a3b-nvfp4", "x": 96.0, "y": 0.807, "dominated": False},
+           {"label": "qwen3.8-flash-next-nvfp4", "x": 14.0, "y": 0.757, "dominated": True},
+           {"label": "nvidia-nemotron-3-super-120b-a12b-nvfp4", "x": 25.0, "y": 0.686,
+            "dominated": True},
+           {"label": "minimax-m2.7-nvfp4", "x": 25.0, "y": 0.686, "dominated": True},
+           {"label": "mistral-small-4-119b-2603-nvfp4", "x": 45.0, "y": 0.543, "dominated": True}]
+    placed = main._project_scatter(pts)["points"]
+    mark = {p["label"]: p["mark"] for p in placed}
+    assert mark["qwen3.6-35b-a3b-nvfp4"] == "q1"        # highest-accuracy qwen numbers first
+    assert mark["qwen3.8-flash-next-nvfp4"] == "q2"
+    assert mark["nvidia-nemotron-3-super-120b-a12b-nvfp4"] == "n1"   # `nvidia-` covers nemotron
+    assert mark["minimax-m2.7-nvfp4"] == "mm1"
+    assert mark["mistral-small-4-119b-2603-nvfp4"] == "ms1"
+    colour = {p["mark"]: p["colour"] for p in placed}
+    assert colour["q1"] == colour["q2"], "one family must be one colour"
+    assert colour["q1"] != colour["n1"], "different families must differ in colour"
+    assert all(60 <= p["cx"] <= 610 and 40 <= p["cy"] <= 290 for p in placed), "dot off-frame"
+    coords = [(p["cx"], p["cy"]) for p in placed]
+    assert len(set(coords)) == len(coords), "minimax and nemotron-super were not nudged apart"
+
+
+def test_legend_is_grouped_by_family_not_raw_accuracy(panel):
+    """Numbering is accuracy-ranked (q1 is the best qwen), but the legend GROUPS by family so a
+    colour block reads together and marks run q1,q2,g1,n1,n2 — not interleaved by accuracy.
+    Families lead with their strongest member (qwen first, holding the top model overall)."""
+    main, _client = panel
+    pts = [{"label": "qwen3.6-35b-a3b-nvfp4", "x": 96.0, "y": 0.807, "dominated": False},
+           {"label": "glm-4.7-flash", "x": 37.0, "y": 0.686, "dominated": True},
+           {"label": "qwen3-coder-next-nvfp4", "x": 54.0, "y": 0.729, "dominated": True},
+           {"label": "nvidia-nemotron-3-super-120b-a12b-nvfp4", "x": 25.0, "y": 0.680,
+            "dominated": True},
+           {"label": "nvidia-nemotron-labs-3-puzzle-75b-a9b-nvfp4", "x": 32.0, "y": 0.671,
+            "dominated": True}]
+    order = [p["mark"] for p in main._project_scatter(pts)["points"]]
+    assert order == ["q1", "q2", "g1", "n1", "n2"]
+
+
+def test_scatter_axes_are_zero_based_with_round_graduations(panel):
+    """The plot reads absolute magnitude, so the axes start at a true (0,0), not the data's
+    min, and graduations fall on round numbers above the data (96 tok/s -> a 100 top, 81% ->
+    100%). The dots map through those same tops, so a dot lands on the grid."""
+    main, _client = panel
+    pts = [{"label": "qwen3.6-35b-a3b-nvfp4", "x": 96.0, "y": 0.807, "dominated": False},
+           {"label": "minimax-m2.7-nvfp4", "x": 25.0, "y": 0.543, "dominated": True}]
+    svg = main._project_scatter(pts)
+    # zero-based: a 0 graduation on each axis, sitting exactly at the origin corner
+    x0 = next(t for t in svg["x_ticks"] if t["label"] == "0")
+    y0 = next(t for t in svg["y_ticks"] if t["label"] == "0%")
+    assert x0["px"] == 60 and y0["py"] == 290
+    # round tops above the data
+    assert svg["x_ticks"][-1]["label"] == "100"
+    assert svg["y_ticks"][-1]["label"] == "100%"
+    # graduations are evenly spaced (a real scale, not just endpoints)
+    assert [t["label"] for t in svg["x_ticks"]] == ["0", "25", "50", "75", "100"]
+    # the fastest model sits ~96/100 of the way along, on the grid — not pinned to the edge
+    fast = next(p for p in svg["points"] if p["mark"] == "q1")
+    assert 550 < fast["cx"] < 565
 
 
 def test_scoreboard_says_so_when_there_is_no_snapshot(panel, monkeypatch):
@@ -855,6 +925,19 @@ def test_all_three_pages_carry_the_wordmark():
 
     css = (root / "ansible/roles/control-panel/files/app/static/app.css").read_text()
     assert ".wordmark" in css, "the sizing rule must stay in the SHARED stylesheet"
+
+
+def test_the_panel_logos_go_to_the_site_root_not_the_admin_area():
+    """The wordmark is a HOME affordance: it takes you to the `/` landing page, not back into
+    the admin area. `{{ root }}/` resolves to `/admin/`, so the logo must hardcode `/`."""
+    root = Path(__file__).resolve().parent.parent
+    tpl = root / "ansible/roles/control-panel/files/app/templates"
+    for name in ("index.html", "scoreboard.html"):
+        html = (tpl / name).read_text()
+        assert '<a href="/" title="home"><img class="wordmark"' in html, \
+            f"{name}: the logo should link to the site root /"
+        assert '{{ root }}/"><img class="wordmark"' not in html, \
+            f"{name}: the logo still points into the admin area"
 
 
 def test_there_is_exactly_one_wordmark_and_the_readme_uses_it():
